@@ -1,6 +1,30 @@
 # jdocmunch-mcp
 
-**Version:** 1.68.0 | **Tests:** `pytest tests/ -q` (1293 passed)
+**Version:** 1.69.0 | **Tests:** `pytest tests/ -q` (1304 passed)
+
+## v1.69.0 - GitHub `ref` selection for versioned doc snapshots (PR #27, closes #26)
+Contributed by @DevItBetter; completes the index-identity arc (#17 -> #25
+-> #27). Adds an optional `ref` arg to `doc_index_repo`/`index_repo` to
+index a specific GitHub branch, tag, or commit-ish. Without `ref`,
+behavior is unchanged (HEAD).
+
+`ref` is selection input only, never persisted: explicit refs resolve to a
+concrete 40-hex commit SHA *before* fetching tree/content, and durable
+lookup/citation handles stay commit-SHA based (`repo_at_sha`,
+`source_repo_at_sha`). Because the SHA fast-path still gates on
+`current_sha == stored head_sha`, a different ref pointing at a different
+commit can never trigger a false no-change short-circuit. Refs are
+URL-encoded (`quote(ref, safe="")`) so branch names containing `/` (e.g.
+`release/1.x`) resolve correctly. Fails closed: an explicit unresolvable
+ref errors instead of silently falling back to HEAD, and invalid refs
+(empty, whitespace, non-string) are rejected before any network call. The
+omitted-ref path keeps the existing uncertified-HEAD fallback. Composes
+with PR #25 named indexes.
+
+Fully additive: `INDEX_VERSION` unchanged; omitted-`ref` calls behave
+exactly as before. Out of scope (deliberately): `owner/repo@branch|tag`
+lookup handles, moving aliases, persisted ref identity, snapshot
+retention, changes to strict `repo@sha` semantics.
 
 ## v1.68.0 - `doc_index_repo` name override for named GitHub doc indexes (PR #25, closes #24)
 Contributed by @DevItBetter; follow-up to #17 and #23. Adds an optional
