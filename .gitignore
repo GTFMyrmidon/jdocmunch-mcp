@@ -33,3 +33,7 @@ Thumbs.db
 
 # jDocMunch runtime data (local index cache — not source)
 ~/.local/share/jdocmunch/
+
+# Local tooling byproducts (not this repo's source/toolchain)
+uv.lock          # repo builds with hatchling, not uv
+AGENTS.md        # generic policy stamped by `jcodemunch-mcp init`; CLAUDE.md is the repo's authority
