@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.69.2] - 2026-06-10 - serialize concurrent same-repo index writes (PR #28)
+
+Patch release. Fixes a data race when two processes write the same repo's
+index at once (e.g. a scheduled reindex and a per-edit hook). Originally
+contributed by @Chrisr6records; the cross-platform lock and the Windows
+replace-retry were added here to carry it across the finish line.
+
+jdocmunch rewrites the whole `<name>.json` on every save. The two writers
+both wrote a shared deterministic `<name>.json.tmp` and then `os.replace`-d
+it into place with no lock, so concurrent writers could install corrupt or
+partial JSON (the repo then reads as both "corrupt" and "absent") or silently
+lose an update (last-replace-wins on the read-modify-write in
+`incremental_save`).
+
+Fix, in `storage/doc_store.py`:
+- **Per-PID temp name** (`<name>.json.<pid>.tmp`) so concurrent writers never
+  share, and clobber, one temp file.
+- **Cross-process write lock** around `save_index` / `incremental_save` (the
+  whole read-modify-write), backed by `flock` on POSIX and `msvcrt.locking`
+  on Windows, on a per-repo `<name>.json.lock`. This is what closes the
+  lost-update window, on both platforms.
+- **Bounded replace-retry** (`_atomic_replace`): on Windows a concurrent
+  reader holding the destination open makes `os.replace` raise
+  `PermissionError` (WinError 5/32) transiently; a brief backoff rides it out,
+  then re-raises the original error if it never clears. POSIX `rename` is
+  atomic and never hits this.
+- `delete_index` cleans up the per-repo `.lock` file.
+
+The PR's original lock was POSIX-only (`fcntl`), which no-op'd on Windows and
+left both the lost-update race and the `os.replace` `WinError 5` unfixed
+there; both are now covered. Fully additive: no `INDEX_VERSION` change, no
+tool/response change, and the default failure mode is unchanged (the retry
+never introduces a new raise -- 1.x contract). New regression tests in
+`tests/test_concurrent_index_writes.py` reproduce both races across real
+processes and pass on Windows and POSIX.
+
 ## [1.69.1] - 2026-06-10 - redirect git subprocess stdin to DEVNULL (PR #30)
 
 Patch release. Fixes a Windows-only deadlock that wedged the MCP stdio

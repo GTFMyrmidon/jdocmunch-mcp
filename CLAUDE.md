@@ -1,6 +1,24 @@
 # jdocmunch-mcp
 
-**Version:** 1.69.1 | **Tests:** `pytest tests/ -q` (1304 passed)
+**Version:** 1.69.2 | **Tests:** `pytest tests/ -q` (1306 passed)
+
+## v1.69.2 - serialize concurrent same-repo index writes (PR #28)
+Originally contributed by @Chrisr6records; carried across the finish line with
+a cross-platform lock + Windows replace-retry. Two processes writing the same
+repo's `<name>.json` at once (e.g. scheduled reindex + per-edit hook) could
+install corrupt/partial JSON or silently lose an update: both wrote a shared
+`<name>.json.tmp` and `os.replace`-d it with no lock. Fix in
+`storage/doc_store.py`: per-PID temp name (`<name>.json.<pid>.tmp`); a
+cross-process write lock around `save_index`/`incremental_save` (the whole
+read-modify-write), `flock` on POSIX and `msvcrt.locking` on Windows via a
+per-repo `<name>.json.lock`; and a bounded `_atomic_replace` retry for the
+Windows `PermissionError` (WinError 5/32) that a concurrent reader triggers on
+`os.replace`. The PR's lock was POSIX-only (`fcntl`) and no-op'd on Windows,
+leaving both the lost-update race and the replace error unfixed there; both are
+covered now. Fully additive (no `INDEX_VERSION`/tool/response change; the retry
+never newly-raises -- 1.x contract). Regression tests in
+`tests/test_concurrent_index_writes.py` reproduce both races across real
+processes and pass on Windows + POSIX.
 
 ## v1.69.1 - git subprocess stdin -> DEVNULL, fixes Windows stdio deadlock (PR #30)
 Contributed by @Derjyn. On Windows, every `index_local` over the MCP stdio
