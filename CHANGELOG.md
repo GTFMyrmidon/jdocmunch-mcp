@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.69.1] - 2026-06-10 - redirect git subprocess stdin to DEVNULL (PR #30)
+
+Patch release. Fixes a Windows-only deadlock that wedged the MCP stdio
+server permanently on any `index_local` call. Contributed by @Derjyn.
+
+`_git` and `_git_bytes` spawned git with `stdout=PIPE, stderr=DEVNULL`
+but left `stdin` un-redirected. Under the MCP stdio transport the git
+child inherited the server's stdin, which is the JSON-RPC pipe from the
+client; Git for Windows blocked on that inherited handle and never
+exited. The `JDOCMUNCH_GIT_TIMEOUT` guard couldn't recover: the timeout
+killed the direct child, but the post-kill `communicate()` drain then
+blocked forever joining the reader thread because the `cmd\git.exe`
+wrapper chain still held the inherited pipe handles. The event loop
+wedged inside the synchronous tool call.
+
+The CLI `index-local` path never hung because its stdin is a console
+handle, not a pipe, which made the bug look transport-specific. Both git
+and non-git target folders hung (a non-git folder still calls
+`local_git_head` -> `git rev-parse --is-inside-work-tree`).
+
+Fix: pass `stdin=subprocess.DEVNULL` in both helpers. Pure no-op for
+behavior; none of the spawned git commands (`rev-parse`,
+`status --porcelain`, `ls-files`) read stdin. With the patch the same
+stdio harness calls complete in 0.1-0.6s.
+
 ## [1.66.3] - 2026-05-16 - openai-compatible: probe actual dim at init (jdoc#20)
 
 Patch release. Hardens the openai-compatible provider added in v1.66.0.

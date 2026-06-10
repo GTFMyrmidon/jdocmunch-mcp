@@ -1,6 +1,21 @@
 # jdocmunch-mcp
 
-**Version:** 1.69.0 | **Tests:** `pytest tests/ -q` (1304 passed)
+**Version:** 1.69.1 | **Tests:** `pytest tests/ -q` (1304 passed)
+
+## v1.69.1 - git subprocess stdin -> DEVNULL, fixes Windows stdio deadlock (PR #30)
+Contributed by @Derjyn. On Windows, every `index_local` over the MCP stdio
+transport deadlocked the server permanently. `_git`/`_git_bytes` spawned git
+with `stdout=PIPE, stderr=DEVNULL` but no `stdin` redirect, so the git child
+inherited the server's stdin (the JSON-RPC pipe) and Git for Windows blocked
+on it forever. The `JDOCMUNCH_GIT_TIMEOUT` guard couldn't recover: the timeout
+killed the direct child but the post-kill `communicate()` drain wedged joining
+the reader thread, because the `cmd\git.exe` wrapper chain still held the
+inherited pipe handles. CLI `index-local` never hung (console-handle stdin, not
+a pipe), which masked the bug as transport-specific. Fix: `stdin=DEVNULL` in
+both helpers. Pure no-op for behavior (none of `rev-parse`/`status`/`ls-files`
+read stdin). Diagnosis via faulthandler traceback + raw stdio JSON-RPC harness;
+post-fix calls complete in 0.1-0.6s. `_git.py` is the only git-spawning module
+on the server tool path, so the two helpers cover every affected call.
 
 ## v1.69.0 - GitHub `ref` selection for versioned doc snapshots (PR #27, closes #26)
 Contributed by @DevItBetter; completes the index-identity arc (#17 -> #25
