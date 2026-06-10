@@ -34,6 +34,11 @@ def _git(cwd: Path, args: list[str]) -> tuple[bool, str]:
         proc = subprocess.run(
             ["git", *args],
             cwd=str(cwd),
+            # stdin must be redirected: when the MCP server runs over stdio,
+            # an un-redirected git child inherits the JSON-RPC pipe as its
+            # stdin and Git for Windows blocks on it indefinitely (the
+            # timeout's kill-then-drain also wedges on the inherited handle).
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -50,6 +55,7 @@ def _git_bytes(cwd: Path, args: list[str]) -> tuple[bool, bytes]:
         proc = subprocess.run(
             ["git", *args],
             cwd=str(cwd),
+            stdin=subprocess.DEVNULL,  # see _git: prevents stdio-server deadlock
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=_git_timeout(),
