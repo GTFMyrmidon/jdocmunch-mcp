@@ -1397,14 +1397,17 @@ def _all_tools() -> list[Tool]:
                 "Online weight tuning. Reads ranking_events from "
                 "~/.doc-index/telemetry.db (requires JDOCMUNCH_PERF_TELEMETRY=1) "
                 "and proposes a per-repo semantic_weight step. dry_run=true skips "
-                "the disk write. min_events gates against early overfitting."
+                "the disk write. min_events gates against early overfitting. "
+                "Learns from a recency window of the ledger (default 90 days) so "
+                "stale events can't anchor the weights."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "repo": {"type": "string", "description": "Optional — single repo to tune. Omit to scan all repos with events."},
                     "min_events": {"type": "integer", "default": 50},
-                    "dry_run": {"type": "boolean", "default": False}
+                    "dry_run": {"type": "boolean", "default": False},
+                    "max_age_days": {"type": "integer", "default": 90, "description": "Only learn from ledger events newer than this many days. Keeps stale events from anchoring weights to an outdated query distribution. 0 = lifetime ledger."}
                 }
             }
         ),
@@ -2039,6 +2042,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 repo=arguments.get("repo"),
                 min_events=arguments.get("min_events", 50),
                 dry_run=arguments.get("dry_run", False),
+                max_age_days=arguments.get("max_age_days", 90),
                 storage_path=storage_path,
             )
         elif name == "list_repo_groups":

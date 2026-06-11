@@ -438,11 +438,13 @@ def ranking_db_query(
     repo: Optional[str] = None,
     limit: int = 10000,
     base_path: Optional[str] = None,
+    window_seconds: Optional[float] = None,
 ) -> list[dict]:
     """Return recent ranking events as a list of dicts.
 
-    Filters by repo when supplied. Empty list when telemetry DB doesn't
-    exist or the table is missing. Always read-only.
+    Filters by repo when supplied, and by recency when ``window_seconds``
+    is set (events older than now − window are excluded). Empty list when
+    telemetry DB doesn't exist or the table is missing. Always read-only.
     """
     path = _telemetry_db_path(base_path)
     if not path.exists():
@@ -459,9 +461,15 @@ def ranking_db_query(
                 "SELECT ts, repo, tool, query, mode, semantic_used, semantic_weight, "
                 "top1_score, top2_score, confidence, result_count FROM ranking_events"
             )
+            clauses: list[str] = []
             if repo:
-                sql += " WHERE repo = ?"
-                params = (repo,)
+                clauses.append("repo = ?")
+                params = params + (repo,)
+            if window_seconds is not None:
+                clauses.append("ts >= ?")
+                params = params + (time.time() - float(window_seconds),)
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY ts DESC LIMIT ?"
             params = params + (int(limit),)
             rows = conn.execute(sql, params).fetchall()

@@ -13,6 +13,9 @@ Bounded:
   - Step size ±0.05 keeps drift gradual; clamped to [0.10, 0.85] so
     we never fully disable either channel.
   - Threshold |delta_conf| >= 0.05 — smaller swings stay flat.
+  - `max_age_days` (default 90) windows the ledger read so stale
+    events can't anchor weights to an old query distribution
+    (0 = lifetime).
 
 Persisted at `~/.doc-index/tuning.jsonc`:
 
@@ -46,6 +49,11 @@ SEMANTIC_WEIGHT_BOUNDS = (0.10, 0.85)
 MIN_EVENTS = 50
 DELTA_CONF_THRESHOLD = 0.05
 STEP = 0.05
+# Recency window for ledger reads, in days. A repo's query distribution
+# drifts as the corpus and the agent's habits change; lifetime events act
+# as stale anchors that drag learned weights toward old behavior.
+# 0 disables the window (lifetime ledger, pre-v1.70.0 behavior).
+MAX_AGE_DAYS = 90
 
 _TUNING_FILENAME = "tuning.jsonc"
 _TUNING_LOCK = threading.Lock()
@@ -152,10 +160,14 @@ def tune_one_repo(
     *,
     min_events: int = MIN_EVENTS,
     dry_run: bool = False,
+    max_age_days: int = MAX_AGE_DAYS,
     base_path: Optional[str] = None,
 ) -> dict:
     """Compute and (optionally) persist a tuned weight for one repo."""
-    events = ranking_db_query(repo=repo, limit=10000, base_path=base_path)
+    window = float(max_age_days) * 86_400 if max_age_days > 0 else None
+    events = ranking_db_query(
+        repo=repo, limit=10000, base_path=base_path, window_seconds=window
+    )
     n = len(events)
     if n < min_events:
         return {
@@ -163,6 +175,7 @@ def tune_one_repo(
             "status": "insufficient_events",
             "events_seen": n,
             "min_events": min_events,
+            "max_age_days": max_age_days,
         }
 
     confidences_with: list[float] = []
@@ -227,6 +240,7 @@ def tune_one_repo(
         "mean_without_semantic": round(mean_without, 4),
         "previous_semantic_weight": current,
         "new_semantic_weight": proposed,
+        "max_age_days": max_age_days,
         "dry_run": dry_run,
     }
 
@@ -235,9 +249,20 @@ def tune_all_repos(
     *,
     min_events: int = MIN_EVENTS,
     dry_run: bool = False,
+    max_age_days: int = MAX_AGE_DAYS,
     base_path: Optional[str] = None,
 ) -> list[dict]:
-    """Tune every repo that has any events. Empty list when none."""
-    events = ranking_db_query(limit=100000, base_path=base_path)
+    """Tune every repo with events inside the window. Empty list when none."""
+    window = float(max_age_days) * 86_400 if max_age_days > 0 else None
+    events = ranking_db_query(limit=100000, base_path=base_path, window_seconds=window)
     repos = sorted({e.get("repo") for e in events if e.get("repo")})
-    return [tune_one_repo(repo=r, min_events=min_events, dry_run=dry_run, base_path=base_path) for r in repos]
+    return [
+        tune_one_repo(
+            repo=r,
+            min_events=min_events,
+            dry_run=dry_run,
+            max_age_days=max_age_days,
+            base_path=base_path,
+        )
+        for r in repos
+    ]

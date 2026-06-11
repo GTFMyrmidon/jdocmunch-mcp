@@ -161,6 +161,45 @@ class TestWeightTuner:
         weight = tuning.get_semantic_weight("never/seen", base_path=str(tmp_path))
         assert weight == tuning.DEFAULT_SEMANTIC_WEIGHT
 
+    def _backdate(self, tmp_path, repo: str, days: float):
+        """Shift every ranking event for ``repo`` into the past."""
+        conn = sqlite3.connect(str(Path(tmp_path) / "telemetry.db"))
+        try:
+            conn.execute(
+                "UPDATE ranking_events SET ts = ts - ? WHERE repo = ?",
+                (days * 86_400, repo),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_old_events_excluded_by_default_window(self, tmp_path, monkeypatch):
+        self._seed_events(tmp_path, monkeypatch, n_with=40, n_without=40,
+                          with_conf=0.75, without_conf=0.55)  # strong signal...
+        self._backdate(tmp_path, "r/x", 200)  # ...but 200 days old
+        out = tuning.tune_one_repo(repo="r/x", min_events=20, base_path=str(tmp_path))
+        assert out["status"] == "insufficient_events"
+        assert out["max_age_days"] == 90
+
+    def test_zero_window_reads_lifetime_ledger(self, tmp_path, monkeypatch):
+        self._seed_events(tmp_path, monkeypatch, n_with=40, n_without=40,
+                          with_conf=0.75, without_conf=0.55)
+        self._backdate(tmp_path, "r/x", 200)
+        out = tuning.tune_one_repo(repo="r/x", min_events=20, max_age_days=0,
+                                   base_path=str(tmp_path))
+        assert out["status"] == "semantic_helps"
+
+    def test_all_repos_skips_window_aged_repos(self, tmp_path, monkeypatch):
+        self._seed_events(tmp_path, monkeypatch, n_with=40, n_without=40,
+                          with_conf=0.75, without_conf=0.55, repo="r/old")
+        self._backdate(tmp_path, "r/old", 200)
+        self._seed_events(tmp_path, monkeypatch, n_with=40, n_without=40,
+                          with_conf=0.75, without_conf=0.55, repo="r/new")
+        results = tuning.tune_all_repos(min_events=20, base_path=str(tmp_path))
+        by_repo = {r["repo"]: r for r in results}
+        assert "r/old" not in by_repo  # no in-window events → not even scanned
+        assert by_repo["r/new"]["status"] == "semantic_helps"
+
     def test_clamp_bounds(self, tmp_path, monkeypatch):
         # Force the persisted weight outside bounds; resolver should clamp.
         path = tuning._tuning_path(str(tmp_path))

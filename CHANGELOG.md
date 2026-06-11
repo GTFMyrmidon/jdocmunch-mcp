@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.70.0] - 2026-06-11 - recency window on weight tuning
+
+`tune_weights` now learns from a recency window of the ranking ledger
+instead of the lifetime history. New `max_age_days` parameter (default 90;
+`0` restores the lifetime read) on the MCP tool, `tune_one_repo`, and
+`tune_all_repos`; `ranking_db_query` gains a `window_seconds` filter to
+support it.
+
+Previously every ranking event ever recorded for a repo fed the
+`semantic_weight` proposal, so as a doc corpus and its query patterns
+drifted, stale events kept anchoring the learned weight to a distribution
+that no longer exists. Recent research on memory systems documents exactly
+this failure mode: accumulated context that can't distinguish current from
+stale signal degrades retrieval quality over time. Mirrors jcodemunch-mcp
+v1.108.53.
+
+Additive per the 1.x contract: new defaulted kwargs and new response keys
+(`max_age_days` on tuner results) only; existing call shapes keep working.
+
 ## [1.69.2] - 2026-06-10 - serialize concurrent same-repo index writes (PR #28)
 
 Patch release. Fixes a data race when two processes write the same repo's

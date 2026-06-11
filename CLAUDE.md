@@ -1,6 +1,17 @@
 # jdocmunch-mcp
 
-**Version:** 1.69.2 | **Tests:** `pytest tests/ -q` (1306 passed)
+**Version:** 1.70.0 | **Tests:** `pytest tests/ -q` (1309 passed)
+
+## v1.70.0 - tune_weights recency window (mirrors jcm v1.108.53)
+New `max_age_days` param (default 90, `0` = lifetime/pre-1.70 behavior) on
+`tune_weights` / `tune_one_repo` / `tune_all_repos`; `ranking_db_query` gained
+`window_seconds`. Closes the stale-anchor exposure from the 2026-06-10
+memory-degradation research sweep: lifetime ledger events anchored
+`semantic_weight` proposals to dead query distributions. `tune_all_repos`
+discovery is also windowed, so repos with only aged-out events aren't scanned.
+Additive (defaulted kwargs + new response keys) per the 1.x contract. 3 new
+tests in `tests/test_v1_23_0.py` (`_backdate` helper shifts ledger ts).
+jdata swept clean the same day (no tuner/learned state at all — no change).
 
 ## v1.69.2 - serialize concurrent same-repo index writes (PR #28)
 Originally contributed by @Chrisr6records; carried across the finish line with
