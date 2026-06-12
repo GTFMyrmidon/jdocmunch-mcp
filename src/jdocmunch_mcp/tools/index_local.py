@@ -182,13 +182,18 @@ def _resolve_explicit_paths(
       * a directory (recursed via ``discover_doc_files`` against that subtree),
       * a file (validated and added when its extension is known).
 
-    Returns ``(files, warnings)``. Mirrors ``discover_doc_files`` semantics for
-    security: rejects symlink escapes, path-traversal attempts, and entries
-    outside ``folder_path``. Skips entries with unknown extensions silently
-    (caller gets a `warnings` entry per skip).
+    Returns ``(files, warnings, requested)``. ``requested`` is the list of
+    root-relative POSIX paths for every entry that resolved inside
+    ``folder_path`` — including entries that no longer exist on disk — so the
+    caller can scope an incremental diff to exactly what was asked for
+    (jdoc#31). Mirrors ``discover_doc_files`` semantics for security: rejects
+    symlink escapes, path-traversal attempts, and entries outside
+    ``folder_path``. Skips entries with unknown extensions silently (caller
+    gets a `warnings` entry per skip).
     """
     files: list = []
     warnings: list = []
+    requested: list = []
     seen: set = set()
 
     for raw in paths:
@@ -205,7 +210,7 @@ def _resolve_explicit_paths(
             continue
 
         try:
-            p.relative_to(folder_path)
+            requested.append(p.relative_to(folder_path).as_posix())
         except ValueError:
             warnings.append(f"Skipped path outside folder: {raw!r}")
             continue
@@ -252,7 +257,7 @@ def _resolve_explicit_paths(
         if len(files) >= max_files:
             break
 
-    return files[:max_files], warnings
+    return files[:max_files], warnings, requested
 
 
 def index_local(
@@ -301,6 +306,10 @@ def index_local(
             in the list) are indexed. Each entry may be absolute or relative to
             ``path``. Useful for batch-indexing exactly the files an agent already
             knows about — e.g. the doc files git just touched.
+            On an existing index with ``incremental=True`` the diff is scoped to
+            the listed subset (jdoc#31): listed files are added/updated, a listed
+            file that no longer exists on disk is removed, and indexed files NOT
+            in the list are left untouched (never treated as deleted).
 
     Returns:
         Dict with indexing results.
@@ -317,8 +326,9 @@ def index_local(
     warnings = []
 
     try:
+        requested_rels: list = []
         if paths:
-            doc_files, discover_warnings = _resolve_explicit_paths(
+            doc_files, discover_warnings, requested_rels = _resolve_explicit_paths(
                 folder_path,
                 list(paths),
                 max_files=max_files,
@@ -335,18 +345,25 @@ def index_local(
             )
         warnings.extend(discover_warnings)
 
-        if not doc_files:
-            err: dict = {"success": False, "error": "No documentation files found"}
-            if warnings:
-                err["warnings"] = warnings
-            return err
-
         repo_name = name if name else folder_path.name
         owner = "local"
         repo_id = f"{owner}/{repo_name}"
         initial_git_state = (local_git_head(folder_path), False)
         store = DocStore(base_path=storage_path)
         existing_index = store.load_index(owner, repo_name)
+
+        # jdoc#31: when explicit `paths` target an existing incremental index,
+        # an empty resolution is not a dead end — every listed file may have
+        # been deleted from disk, and the subset-scoped diff below must still
+        # run to remove them. Every other shape keeps the early return.
+        can_diff_subset = bool(
+            paths and requested_rels and incremental and existing_index is not None
+        )
+        if not doc_files and not can_diff_subset:
+            err: dict = {"success": False, "error": "No documentation files found"}
+            if warnings:
+                err["warnings"] = warnings
+            return err
 
         # Read all discovered files
         current_files: dict = {}
@@ -379,6 +396,24 @@ def index_local(
         # --- Incremental path ---
         if incremental and existing_index is not None:
             changed, new, deleted = store.detect_changes(owner, repo_name, current_files)
+
+            # jdoc#31: `paths` narrows current_files to a subset, so the
+            # corpus-wide diff above marks every unlisted indexed file as
+            # deleted. Rescope deletions to what the caller actually listed:
+            # an indexed file is deleted only when a requested entry covers it
+            # (exact file, or under a listed directory) and it was not read
+            # back from disk. Unlisted files are never pruned.
+            if paths:
+                old_files = set(existing_index.file_hashes)
+                if any(req in ("", ".") for req in requested_rels):
+                    covered = old_files  # the root itself was listed
+                else:
+                    covered = {
+                        fp for fp in old_files
+                        if any(fp == req or fp.startswith(req + "/")
+                               for req in requested_rels)
+                    }
+                deleted = sorted(covered - set(current_files))
 
             if not changed and not new and not deleted:
                 updated = existing_index

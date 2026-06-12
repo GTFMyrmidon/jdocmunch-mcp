@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.70.1] - 2026-06-12 - `paths` subset refresh no longer prunes the rest of the index (#31)
+
+Patch release. Fixes a data-loss bug reported by @mmashwani in #31:
+`index_local(paths=[...])` (and CLI `index-local --paths-from FILE`) on an
+existing incremental index treated every indexed file NOT in the list as
+deleted. A refresh of 1-3 changed files collapsed a whole corpus — e.g.
+176 files / ~2957 sections reduced to the listed file's 11 sections —
+directly contradicting the documented intent of `paths` ("batch-indexing
+exactly the files an agent already knows about").
+
+Root cause: `paths` only narrowed which files were read into
+`current_files`; `DocStore.detect_changes` then computed deletions as
+`old_set - new_set` against the full existing index, so every unlisted
+file was pruned by `incremental_save`.
+
+Fix, in `tools/index_local.py`: when `paths` is provided on the
+incremental path, the deletion diff is scoped to the requested subset.
+Listed files are added/updated; a listed file that no longer exists on
+disk is removed; files under a listed directory are diffed against that
+subtree; indexed files outside the listed subset are never touched.
+Listing the corpus root (`.`) keeps the full-corpus diff, and the
+walk-based (no-`paths`) path is unchanged. A subset refresh can now also
+process pure deletions (every listed file gone from disk) instead of
+failing with "No documentation files found"; that error still applies
+when there is no existing index to update.
+
+Additive per the 1.x contract: no tool/response shape changes; the only
+behavioral change removes an undocumented destructive side effect.
+Regression tests in `tests/test_v1_70_1.py`.
+
 ## [1.70.0] - 2026-06-11 - recency window on weight tuning
 
 `tune_weights` now learns from a recency window of the ranking ledger

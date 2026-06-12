@@ -1,6 +1,19 @@
 # jdocmunch-mcp
 
-**Version:** 1.70.0 | **Tests:** `pytest tests/ -q` (1309 passed)
+**Version:** 1.70.1 | **Tests:** `pytest tests/ -q` (1316 passed)
+
+## v1.70.1 - `paths` subset refresh no longer prunes the index (#31)
+Data-loss fix reported by @mmashwani. `index_local(paths=[...])` / CLI
+`--paths-from` on an existing incremental index marked every unlisted indexed
+file as deleted (`detect_changes` diffed the subset against the whole index),
+collapsing a corpus on a 1-file refresh. Now the deletion diff is scoped to
+the requested subset: listed files add/update, a listed file missing from disk
+deletes, listed dirs diff their subtree, unlisted files are never pruned, and
+`paths=["."]` keeps the full-corpus diff. Pure-deletion subset refreshes work
+(no more "No documentation files found" early-return when an index exists).
+`_resolve_explicit_paths` now returns `(files, warnings, requested)`.
+Tests: `tests/test_v1_70_1.py` (7). Related rough edge (index-file owner
+detection needing a `--repo` override) deliberately NOT addressed here.
 
 ## v1.70.0 - tune_weights recency window (mirrors jcm v1.108.53)
 New `max_age_days` param (default 90, `0` = lifetime/pre-1.70 behavior) on
