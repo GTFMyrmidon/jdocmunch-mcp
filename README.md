@@ -44,10 +44,10 @@ Index once. Query cheaply forever.
 > - [Studio — $99](https://j.gravelle.us/jCodeMunch/descriptions.php#studio) — up to 5 developers
 > - [Platform — $499](https://j.gravelle.us/jCodeMunch/descriptions.php#platform) — org-wide internal deployment
 >
-> **Want both code and docs retrieval?**
-> - [Munch Duo Builder Bundle — $89](https://j.gravelle.us/jCodeMunch/descriptions.php#builder)
-> - [Munch Duo Studio Bundle — $399](https://j.gravelle.us/jCodeMunch/descriptions.php#studio)
-> - [Munch Duo Platform Bundle — $2,249](https://j.gravelle.us/jCodeMunch/descriptions.php#platform)
+> **Want the full jMunch suite (code + docs + data)?**
+> - [Munch Trio Builder Bundle — $99](https://j.gravelle.us/jCodeMunch/descriptions.php#builder)
+> - [Munch Trio Studio Bundle — $449](https://j.gravelle.us/jCodeMunch/descriptions.php#studio)
+> - [Munch Trio Platform Bundle — $2,499](https://j.gravelle.us/jCodeMunch/descriptions.php#platform)
 
 > ### 1.x compatibility commitment
 > Every 1.x license entitles you to every future 1.x release. We will never ship a 1.x version that:
