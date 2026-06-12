@@ -1670,7 +1670,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     try:
         if name == "index_local":
-            result = index_local(
+            # jdoc#34: index_local is a long synchronous pipeline (walk +
+            # parse + summarize + embed). Called inline it blocks the single
+            # asyncio event loop past client tool timeouts, and every
+            # subsequent call then times out while the server keeps working.
+            # Run it in a worker thread so cheap tools stay responsive; the
+            # cross-process index-write lock (v1.69.2) already serializes
+            # concurrent same-repo writes.
+            result = await asyncio.to_thread(
+                index_local,
                 path=arguments["path"],
                 name=arguments.get("name"),
                 use_ai_summaries=arguments.get("use_ai_summaries", True),

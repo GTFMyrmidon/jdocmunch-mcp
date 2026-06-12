@@ -1,6 +1,21 @@
 # jdocmunch-mcp
 
-**Version:** 1.70.1 | **Tests:** `pytest tests/ -q` (1316 passed)
+**Version:** 1.70.2 | **Tests:** `pytest tests/ -q` (1324 passed)
+
+## v1.70.2 - search/verify/event-loop fixes (#32, #33, #34)
+Closes the rest of @mmashwani's issue batch. **#32**: `path_glob` was a
+tool-layer post-filter after the index top-k cut, starving single-document
+globs to 0 results on large corpora; now a candidate pre-filter inside
+`DocStore.search` (new defaulted `path_glob` kwarg, shared `_path_excluded`
+helper across lexical/semantic/hybrid). **#33**: `verify_index` bare-`continue`d
+zero-byte-range sections (every structured-OpenAPI section is 0,0; even plain
+markdown indexes carry one for the synthetic doc root), so counters didn't sum;
+new `skipped_count`/`skipped_sections` (reason `empty_byte_range`), invariant
+clean+drift+missing+error+skipped == section_count tested. **#34**: `index_local`
+was a sync call inside async `call_tool`, wedging the stdio server past client
+timeouts on big embeddings corpora; now `asyncio.to_thread` (write-safety via
+the v1.69.2 cross-process lock). Deferred from #34: background-job/progress
+architecture + vectorized cosine. Tests: `tests/test_v1_70_2.py` (8).
 
 ## v1.70.1 - `paths` subset refresh no longer prunes the index (#31)
 Data-loss fix reported by @mmashwani. `index_local(paths=[...])` / CLI

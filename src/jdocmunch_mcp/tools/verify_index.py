@@ -9,16 +9,24 @@ Output:
 
     {
         repo, section_count,
-        clean_count, drift_count, missing_count, error_count,
+        clean_count, drift_count, missing_count, error_count, skipped_count,
         drift_sections:[{section_id, doc_path, expected_hash, actual_hash}],
         missing_sections:[{section_id, doc_path, reason}],
+        skipped_sections:[{section_id, doc_path, reason}],
         _meta: {latency_ms}
     }
 
 Reasons for ``missing``:
   - "no_doc_path" (section persisted without a doc_path)
   - "file_missing" (cached raw file not on disk)
+
+Reasons for ``skipped`` (jdoc#33 — unverifiable by design, distinct from
+corruption; e.g. the structured OpenAPI parser persists every section with
+``byte_start=0, byte_end=0``):
   - "empty_byte_range" (byte_end <= byte_start)
+
+Invariant: clean_count + drift_count + missing_count + error_count +
+skipped_count == section_count, so every section is accounted for.
 
 Designed to be cheap enough for CI: O(N) where N is section count, with
 one file read per distinct doc_path (cached within the call).
@@ -59,6 +67,7 @@ def verify_index(
     clean = 0
     drift: list[dict] = []
     missing: list[dict] = []
+    skipped: list[dict] = []
     error_count = 0
 
     # Cache file bytes per doc_path so we hash each file at most once.
@@ -90,7 +99,11 @@ def verify_index(
         expected_hash = sec.get("content_hash") or ""
 
         if byte_end <= byte_start:
-            # Section persisted without a byte range — skip; not a drift.
+            # Section persisted without a byte range — unverifiable by
+            # design, not a drift. Tracked so the counters sum (jdoc#33).
+            skipped.append(
+                {"section_id": sid, "doc_path": doc_path, "reason": "empty_byte_range"}
+            )
             continue
 
         data = _bytes_for(doc_path)
@@ -125,8 +138,10 @@ def verify_index(
         "drift_count": len(drift),
         "missing_count": len(missing),
         "error_count": error_count,
+        "skipped_count": len(skipped),
         "drift_sections": drift,
         "missing_sections": missing,
+        "skipped_sections": skipped,
         "_meta": {
             "latency_ms": latency_ms,
             "files_read": sum(1 for v in file_cache.values() if v is not None),

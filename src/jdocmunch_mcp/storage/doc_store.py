@@ -1,5 +1,6 @@
 """DocIndex + DocStore: CRUD, search scoring, and byte-range content reads."""
 
+import fnmatch
 import functools
 import hashlib
 import json
@@ -193,6 +194,21 @@ class DocIndex:
         """Return True if at least some sections have embeddings stored."""
         return any(s.get("embedding") for s in self.sections)
 
+    @staticmethod
+    def _path_excluded(sec: dict, doc_path: Optional[str], path_glob: Optional[str]) -> bool:
+        """Candidate pre-filter shared by every search mode (jdoc#32).
+
+        ``path_glob`` must run here, before any top-k cut — as a tool-layer
+        post-filter it starved single-document queries whenever the target
+        document didn't rank in the corpus-wide top k.
+        """
+        sec_path = sec.get("doc_path", "")
+        if doc_path and sec_path != doc_path:
+            return True
+        if path_glob and not fnmatch.fnmatch(sec_path, path_glob):
+            return True
+        return False
+
     def search(
         self,
         query: str,
@@ -202,6 +218,7 @@ class DocIndex:
         semantic_only: bool = False,
         semantic_weight: float = 0.5,
         lexical_engine: str = "bm25",
+        path_glob: Optional[str] = None,
     ) -> list:
         # Per-call content cache — bounded scope keeps memory predictable.
         self._content_cache = {}
@@ -225,20 +242,26 @@ class DocIndex:
         """
         has_emb = self._has_embeddings()
         if semantic_only:
-            return self._semantic_search(query, doc_path, max_results) if has_emb else []
+            return self._semantic_search(query, doc_path, max_results, path_glob) if has_emb else []
 
         want_semantic = semantic if semantic is not None else has_emb
         if want_semantic and has_emb and 0.0 < semantic_weight <= 1.0:
-            results = self._hybrid_search(query, doc_path, max_results, semantic_weight)
+            results = self._hybrid_search(query, doc_path, max_results, semantic_weight, path_glob)
             if results:
                 return results
-        return self._lexical_search(query, doc_path, max_results)
+        return self._lexical_search(query, doc_path, max_results, path_glob)
 
     @staticmethod
     def _strip(sec: dict) -> dict:
         return {k: v for k, v in sec.items() if k not in ("content", "embedding")}
 
-    def _semantic_search(self, query: str, doc_path: Optional[str], max_results: int) -> list:
+    def _semantic_search(
+        self,
+        query: str,
+        doc_path: Optional[str],
+        max_results: int,
+        path_glob: Optional[str] = None,
+    ) -> list:
         """Cosine-similarity search using stored section embeddings."""
         query_vec = embed_query(query)
         if not query_vec:
@@ -246,7 +269,7 @@ class DocIndex:
 
         scored = []
         for sec in self.sections:
-            if doc_path and sec.get("doc_path") != doc_path:
+            if self._path_excluded(sec, doc_path, path_glob):
                 continue
             sec_emb = sec.get("embedding")
             if not sec_emb:
@@ -268,6 +291,7 @@ class DocIndex:
         doc_path: Optional[str],
         max_results: int,
         semantic_weight: float,
+        path_glob: Optional[str] = None,
     ) -> list:
         """Hybrid lexical + semantic ranking via Reciprocal Rank Fusion (v1.13.0).
 
@@ -285,7 +309,7 @@ class DocIndex:
         query_vec = embed_query(query) if semantic_weight > 0 else None
         if semantic_weight > 0 and query_vec is None:
             # Embedding provider unavailable at query time — degrade to lexical.
-            return self._lexical_search(query, doc_path, max_results)
+            return self._lexical_search(query, doc_path, max_results, path_glob)
 
         # ----- Lexical ranking (Stage A prune + BM25) -----
         engine = getattr(self, "_lexical_engine", "bm25")
@@ -300,7 +324,7 @@ class DocIndex:
         for sec in self.sections:
             if candidate_ids is not None and sec.get("id") not in candidate_ids:
                 continue
-            if doc_path and sec.get("doc_path") != doc_path:
+            if self._path_excluded(sec, doc_path, path_glob):
                 continue
             score = self._score_section(sec, query_lower, query_words)
             if score > 0:
@@ -312,7 +336,7 @@ class DocIndex:
         sem_pairs: list[tuple[float, dict]] = []
         if query_vec:
             for sec in self.sections:
-                if doc_path and sec.get("doc_path") != doc_path:
+                if self._path_excluded(sec, doc_path, path_glob):
                     continue
                 sec_emb = sec.get("embedding")
                 if not sec_emb:
@@ -342,7 +366,13 @@ class DocIndex:
                 out.append(stripped)
         return out
 
-    def _lexical_search(self, query: str, doc_path: Optional[str], max_results: int) -> list:
+    def _lexical_search(
+        self,
+        query: str,
+        doc_path: Optional[str],
+        max_results: int,
+        path_glob: Optional[str] = None,
+    ) -> list:
         """Two-stage retrieval (v1.13.0): posting-list prune → BM25 rescore.
 
         Stage A reduces the candidate set to sections containing at least one
@@ -369,7 +399,7 @@ class DocIndex:
         for sec in self.sections:
             if candidate_ids is not None and sec.get("id") not in candidate_ids:
                 continue
-            if doc_path and sec.get("doc_path") != doc_path:
+            if self._path_excluded(sec, doc_path, path_glob):
                 continue
             score = self._score_section(sec, query_lower, query_words)
             if score > 0:

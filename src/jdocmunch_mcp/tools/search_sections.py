@@ -170,6 +170,11 @@ def search_sections(
     # up-front so post-filter trimming doesn't starve the result set.
     fetch_n = max_results * 5 if role else max_results
     try:
+        # jdoc#32: path_glob is a candidate pre-filter inside the index
+        # search (next to the doc_path equality check), NOT a post-filter
+        # here — post-filtering the globally ranked top-k starved any
+        # single-document glob whose sections didn't make the corpus-wide
+        # cut. Ranking now happens within the glob-matched set.
         results = index.search(
             query,
             doc_path=doc_path,
@@ -178,17 +183,10 @@ def search_sections(
             semantic_only=semantic_only,
             semantic_weight=semantic_weight,
             lexical_engine=lexical_engine,
+            path_glob=path_glob,
         )
     except ValueError as exc:
         return {"error": str(exc), "_meta": {"lexical_engine": lexical_engine}}
-
-    # v1.36.0: optional path_glob filter — restrict results to sections
-    # whose doc_path matches the fnmatch pattern. Runs before dedup +
-    # role/profile filtering so the limit math stays right.
-    if path_glob:
-        import fnmatch
-        results = [r for r in results
-                   if fnmatch.fnmatch(r.get("doc_path", ""), path_glob)]
 
     # v1.45.0: optional tags filter. AND semantics — section must
     # contain every listed tag. Tag matching is case-insensitive.

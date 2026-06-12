@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.70.2] - 2026-06-12 - search/verify/event-loop fixes (#32, #33, #34)
+
+Patch release closing the remaining three issues from @mmashwani's
+2026-06-11/12 report batch (the first, #31, shipped in v1.70.1).
+
+**#32 - `search_sections` `path_glob` now pre-filters candidates.**
+The glob was a tool-layer post-filter applied AFTER the index-layer top-k
+cut (only `role` triggered candidate over-fetch), so a glob naming a single
+document returned 0 results with confidence 0.0 whenever that document
+didn't rank in the corpus-wide top k - near-certain on large corpora.
+`DocStore.search` gains a `path_glob` parameter applied as a candidate
+pre-filter in all three modes (lexical, semantic, hybrid) alongside the
+existing `doc_path` equality check, via a shared `_path_excluded` helper;
+the tool-layer post-filter is removed. Ranking now happens within the
+glob-matched set, as documented.
+
+**#33 - `verify_index` accounts for unverifiable sections.**
+Sections persisted with an empty byte range (`byte_end <= byte_start`) were
+skipped with a bare `continue`, so the failure counters didn't sum to
+`section_count` and hundreds of unverifiable sections (e.g. every section
+from the structured OpenAPI parser) read as a fully clean index. New
+`skipped_count` and `skipped_sections` (reason `"empty_byte_range"`) close
+the arithmetic; the invariant `clean + drift + missing + error + skipped ==
+section_count` is now tested. The docstring's stale promise to route these
+into `missing_sections` is corrected: unverifiable-by-design is a distinct
+signal from corruption.
+
+**#34 - `index_local` no longer blocks the MCP event loop.**
+The full index + embed pipeline ran synchronously inside the async
+`call_tool` handler, monopolizing the server's single asyncio loop past
+client tool timeouts; once the client timed out, every subsequent call also
+timed out while the server kept working. `index_local` now dispatches via
+`asyncio.to_thread`, so cheap tools (`doc_list_repos`, `search_sections`)
+stay responsive during long indexing runs. The v1.69.2 cross-process
+index-write lock already serializes concurrent same-repo writes. The
+larger suggestions from #34 (background job + progress polling, vectorized
+cosine scoring) are acknowledged and deliberately deferred.
+
+Additive per the 1.x contract: new defaulted kwarg on `DocStore.search`,
+new response keys on `verify_index`, no tool or wire-shape removals.
+Regression tests in `tests/test_v1_70_2.py`.
+
 ## [1.70.1] - 2026-06-12 - `paths` subset refresh no longer prunes the rest of the index (#31)
 
 Patch release. Fixes a data-loss bug reported by @mmashwani in #31:
