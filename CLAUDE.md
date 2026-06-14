@@ -1,6 +1,27 @@
 # jdocmunch-mcp
 
-**Version:** 1.75.0 | **Tests:** `pytest tests/ -q` (1370 passed)
+**Version:** 1.76.0 | **Tests:** `pytest tests/ -q` (1381 passed)
+
+## v1.76.0 - extract_references rewrite: inline grammar + reference defs (#47, #48)
+First of three links-group releases (tracking #61); the parser-layer reference
+extractor. **#47 (High):** `references` was built by two naive regexes over the
+raw section body, so titled links `[t](x "title")` and angle-bracket
+destinations `[t](<a b>)` stored the junk verbatim (broken-link false positive
++ backlink-zero false orphan from one defect), images were file-checked,
+parenthesized URLs truncated at the first `)`, autolinks/bare URLs kept trailing
+`>`/`.`/`,`, and link syntax shown inside code fences/spans became permanent
+"broken" links. `extract_references` is now a proper inline pass: scrub fenced
+code + inline code spans + HTML comments, then match inline links (images
+skipped, titles + `<...>` stripped, one level of balanced parens for wiki URLs),
+autolinks (`<https://...>` and `<user@email>`), and bare URLs (trailing
+punctuation trimmed); empty `[t]()` destinations skipped. **#48 (High):**
+reference-style links (`[t][ref]`, `[t][]`, `[t]`) contributed no edge; the
+`[ref]: target` definition targets are now captured (file-level edges for
+broken-links / backlinks / orphans / blast-radius). Section-precise resolution
+of reference usages is a noted follow-up. **Reindex required** (rebuilds the
+stored `references` artifact). Tests: `tests/test_v1_76_0.py` (11). Next:
+get_broken_links fixes (#47 symptom-6 scheme parsing + #49 fs-existence + #50
+GitHub-anchor namespace), then #59 inline_code bridge.
 
 ## v1.75.0 - parse-loop block detection: indentation + HTML blocks (#43, #45)
 Second half of the block-detection sub-group (tracking #61); the two

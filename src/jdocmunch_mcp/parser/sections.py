@@ -174,22 +174,76 @@ def compute_content_hash(content: str) -> str:
 
 # --- Reference and Tag Extraction ---
 
-_URL_RE = re.compile(r"https?://[^\s\)\"\']+")
-_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
 _TAG_RE = re.compile(r"(?:^|\s)#([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
+
+# Reference extraction (#47, #48). A proper inline-link pass with code-region
+# awareness, replacing the two naive regexes that captured titles, angle
+# brackets, image targets, and in-code link syntax verbatim.
+_REF_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)   # drop comment regions
+_REF_FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)  # drop fenced code
+_REF_INLINE_CODE_RE = re.compile(r"`[^`]+`")                   # drop inline code spans
+# Inline link / image: [text](dest...). Group 1 '!' marks an image; group 2 is
+# the raw destination, tolerating one level of balanced parens (wiki URLs).
+_REF_LINK_RE = re.compile(r"(!?)\[[^\]]*\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
+# Link reference definition: [label]: dest "optional title".
+_REF_DEF_RE = re.compile(r"^[ \t]{0,3}\[[^\]]+\]:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+# Autolink: <scheme:...> or <email>.
+_REF_AUTOLINK_RE = re.compile(
+    r"<([A-Za-z][A-Za-z0-9+.\-]*:[^>\s]+|[^>\s@]+@[^>\s]+)>"
+)
+# Bare URL (excludes <>, so it doesn't double-grab an autolink's inner URL).
+_REF_BARE_URL_RE = re.compile(r"https?://[^\s)\]'\"<>]+")
+_REF_TITLE_RE = re.compile(r"^(\S+)\s+[\"'(].*$")
+
+
+def _clean_destination(dest: str) -> str:
+    """Normalize a link destination: strip a surrounding <...>, split off an
+    optional trailing title, and trim whitespace (#47)."""
+    dest = dest.strip()
+    if dest.startswith("<") and dest.endswith(">"):
+        return dest[1:-1].strip()
+    m = _REF_TITLE_RE.match(dest)
+    if m:
+        dest = m.group(1)
+    return dest.strip()
 
 
 def extract_references(content: str) -> list:
-    """Extract URLs and markdown link targets from content."""
-    refs = []
-    # Markdown links first
-    for _, url in _MD_LINK_RE.findall(content):
-        if url not in refs:
-            refs.append(url)
-    # Bare URLs not already captured
-    for url in _URL_RE.findall(content):
-        if url not in refs:
-            refs.append(url)
+    """Extract link/reference targets from content.
+
+    Handles inline links, reference-definition targets, autolinks, and bare
+    URLs; skips images and any link syntax that appears inside fenced code,
+    inline code spans, or HTML comments. Titles and angle brackets are stripped
+    from destinations, and bare URLs lose trailing punctuation.
+    """
+    refs: list = []
+
+    def add(ref: str) -> None:
+        ref = ref.strip()
+        if ref and ref not in refs:
+            refs.append(ref)
+
+    scrubbed = _REF_HTML_COMMENT_RE.sub(" ", content)
+    scrubbed = _REF_FENCE_RE.sub(" ", scrubbed)
+    scrubbed = _REF_INLINE_CODE_RE.sub(" ", scrubbed)
+
+    # Reference-style definition targets (#48): [label]: target.
+    for dest in _REF_DEF_RE.findall(scrubbed):
+        add(_clean_destination(dest))
+    # Inline links (images skipped — they are not doc links).
+    for bang, dest in _REF_LINK_RE.findall(scrubbed):
+        if bang:
+            continue
+        add(_clean_destination(dest))
+    # Strip inline link/image syntax so the autolink/bare-URL passes don't
+    # re-grab (and truncate at ')') a destination already handled above.
+    rest = _REF_LINK_RE.sub(" ", scrubbed)
+    # Autolinks: <https://...> and <user@example.com>.
+    for auto in _REF_AUTOLINK_RE.findall(rest):
+        add(auto)
+    # Bare URLs, trailing punctuation trimmed.
+    for url in _REF_BARE_URL_RE.findall(rest):
+        add(url.rstrip(".,;:"))
     return refs
 
 
