@@ -70,6 +70,12 @@ _SETEXT_H2_RE = re.compile(r"^-+\s*$")
 # arbitrary info string. A backtick fence's info string may not contain a
 # backtick (the negative lookahead enforces that); a tilde fence's may.
 _FENCE_OPEN_RE = re.compile(r"^(`{3,}(?!.*`)|~{3,}).*$")
+# Block starters that are NOT paragraph text, so a following setext underline
+# is not a heading (#44). Fences, ATX headings, and frontmatter are handled by
+# their own branches; these cover list items, blockquotes, and thematic breaks.
+_LIST_ITEM_RE = re.compile(r"^\s*([-*+]|\d{1,9}[.)])\s+")
+_BLOCKQUOTE_RE = re.compile(r"^\s*>")
+_THEMATIC_BREAK_RE = re.compile(r"^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$")
 
 
 def _frontmatter_end_line(lines: list) -> int | None:
@@ -98,6 +104,11 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         List of Section objects, in document order, without hierarchy wiring.
     """
     lines = content.splitlines(keepends=True)
+    # Byte view of the document. Section bodies are derived from this by byte
+    # range (#55) so content, byte range, and content_hash cannot diverge:
+    # sha256(content_bytes[byte_start:byte_end]) == content_hash holds by
+    # construction, which is the invariant the whole verify family relies on.
+    content_bytes = content.encode("utf-8")
     used_slugs: dict = {}
     slug_stack: list = []
     sections = []
@@ -107,7 +118,6 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
     current_level: int = 0
     current_slug: str = ""
     current_byte_start: int = 0
-    current_lines: list = []
 
     byte_cursor = 0
 
@@ -119,7 +129,10 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
     def _finalize_section(byte_end: int) -> None:
         """Close the current open section and append it to sections."""
         nonlocal current_slug, current_code_blocks
-        body = "".join(current_lines)
+        # Derive the body from the byte range. Section starts and ends always
+        # fall on line boundaries (the cursor advances by whole-line byte
+        # lengths), so the slice is on a UTF-8 char boundary and decodes safely.
+        body = content_bytes[current_byte_start:byte_end].decode("utf-8")
         slug = current_slug or slugify(current_title)
         section_id = make_section_id(repo, doc_path, slug, current_level)
         # Stamp block_ids ("section_id::code#0", "::code#1", …).
@@ -154,8 +167,15 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         sections.append(sec)
         current_code_blocks = []
 
-    prev_line: str = ""
-    prev_byte_start: int = 0
+    # Paragraph block state for CommonMark setext detection (#44). A setext
+    # underline (===/---) forms a heading only when the block immediately above
+    # it is a paragraph. We accumulate the open paragraph's lines (so a
+    # multi-line setext title is captured whole) and the byte offset where it
+    # began; every non-paragraph context (blank line, ATX heading, fence,
+    # frontmatter, list item, blockquote, thematic break) clears it, so a
+    # following ---/=== is treated as content, not a fabricated heading.
+    para_lines: list = []
+    para_byte_start: int = 0
 
     # Fenced-code-block state (B2 + v1.17.0). When inside a fence, ATX and
     # setext detection are suppressed so '# comment' inside code does not
@@ -173,13 +193,10 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         line_bytes = len(line.encode("utf-8"))
         line_stripped = line.rstrip("\n").rstrip("\r")
 
+        # Frontmatter region: root content; YAML metadata never seeds setext.
         if frontmatter_end_line is not None and i <= frontmatter_end_line:
-            current_lines.append(line)
+            para_lines = []
             byte_cursor += line_bytes
-            # YAML metadata is not Markdown body text, so it must not seed
-            # Setext heading detection for the closing delimiter.
-            prev_line = ""
-            prev_byte_start = byte_cursor
             continue
 
         # --- Fence state machine (B2 + v1.17.0 capture) ---
@@ -210,11 +227,8 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
                 fence_body_lines = []
             else:
                 fence_body_lines.append(line)
-            # Whether opening or closing, lines inside a fence are body content,
-            # not headings. Append and advance.
-            current_lines.append(line)
-            prev_line = line_stripped
-            prev_byte_start = byte_cursor
+            # Code is not paragraph text; an underline after the fence is content.
+            para_lines = []
             byte_cursor += line_bytes
             continue
 
@@ -232,62 +246,65 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             fence_body_lines = []
             # Body starts at the byte cursor for the NEXT line after this fence opener.
             fence_body_byte_start = byte_cursor + line_bytes
-            current_lines.append(line)
-            prev_line = line_stripped
-            prev_byte_start = byte_cursor
+            para_lines = []
             byte_cursor += line_bytes
             continue
         # --- end fence handling ---
 
-        # Setext heading detection (with B3 guards: reject when prev_line is
-        # blank or table-like — '|' present means we're inside a table).
-        prev_clean = prev_line.strip()
-        prev_is_setext_candidate = bool(prev_clean) and "|" not in prev_clean
+        # Setext heading: only when the block above is an open paragraph (#44).
+        heading_text = None
+        heading_level = None
+        if para_lines:
+            para_text = " ".join(p.strip() for p in para_lines).strip()
+            if _SETEXT_H1_RE.match(line_stripped):
+                heading_text = para_text
+                heading_level = 1
+            elif _SETEXT_H2_RE.match(line_stripped) and "|" not in para_text:
+                # Narrow pipe guard: keeps a GFM pipe-table header
+                # (e.g. 'Name | Age' over '-----') from becoming a phantom H2.
+                # H1 (===) needs no such guard — tables never use '='.
+                heading_text = para_text
+                heading_level = 2
 
-        if i > 0 and _SETEXT_H1_RE.match(line_stripped) and prev_is_setext_candidate:
-            heading_text = prev_clean
-            heading_level = 1
-        elif i > 0 and _SETEXT_H2_RE.match(line_stripped) and prev_is_setext_candidate and len(line_stripped) >= 2:
-            heading_text = prev_clean
-            heading_level = 2
-        else:
-            heading_text = None
-            heading_level = None
+        if heading_text is not None:
+            # Close the previous section where the heading paragraph began,
+            # then open the setext section spanning the paragraph + underline.
+            _finalize_section(byte_end=para_byte_start)
+            current_title = heading_text
+            current_level = heading_level
+            current_slug = make_hierarchical_slug(heading_text, heading_level, slug_stack, used_slugs)
+            current_byte_start = para_byte_start
+            para_lines = []
+            byte_cursor += line_bytes
+            continue
 
-        # Check for ATX heading
+        # ATX heading: the current line is the heading.
         atx_match = _ATX_RE.match(line_stripped)
-        if atx_match and not heading_text:
-            heading_text = atx_match.group(2).strip()
-            heading_level = len(atx_match.group(1))
+        if atx_match:
+            _finalize_section(byte_end=byte_cursor)
+            current_title = atx_match.group(2).strip()
+            current_level = len(atx_match.group(1))
+            current_slug = make_hierarchical_slug(current_title, current_level, slug_stack, used_slugs)
+            current_byte_start = byte_cursor
+            # ATX is not paragraph text; a following === is body, not a heading.
+            para_lines = []
+            byte_cursor += line_bytes
+            continue
 
-        if heading_text and heading_level:
-            # Setext: the previous line was the heading text — remove it from current_lines
-            if _SETEXT_H1_RE.match(line_stripped) or (_SETEXT_H2_RE.match(line_stripped) and len(line_stripped) >= 2):
-                # prev_line is heading text; finalize up to prev_byte_start
-                if current_lines:
-                    # Remove the last line (prev_line) from current_lines
-                    current_lines = current_lines[:-1]
-                _finalize_section(byte_end=prev_byte_start)
-
-                current_title = heading_text
-                current_level = heading_level
-                current_slug = make_hierarchical_slug(heading_text, heading_level, slug_stack, used_slugs)
-                current_byte_start = prev_byte_start
-                current_lines = []
-            else:
-                # ATX: current line is the heading
-                _finalize_section(byte_end=byte_cursor)
-
-                current_title = heading_text
-                current_level = heading_level
-                current_slug = make_hierarchical_slug(heading_text, heading_level, slug_stack, used_slugs)
-                current_byte_start = byte_cursor
-                current_lines = [line]
+        # Plain content line. Maintain paragraph state for setext detection:
+        # arm only on real paragraph text, reset on blanks and non-paragraph
+        # block starters (list items, blockquotes, thematic breaks).
+        if (
+            line_stripped.strip()
+            and not _LIST_ITEM_RE.match(line_stripped)
+            and not _BLOCKQUOTE_RE.match(line_stripped)
+            and not _THEMATIC_BREAK_RE.match(line_stripped)
+        ):
+            if not para_lines:
+                para_byte_start = byte_cursor
+            para_lines.append(line_stripped)
         else:
-            current_lines.append(line)
-
-        prev_line = line_stripped
-        prev_byte_start = byte_cursor
+            para_lines = []
         byte_cursor += line_bytes
 
     # Finalize last open section

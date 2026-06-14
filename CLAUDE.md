@@ -1,6 +1,30 @@
 # jdocmunch-mcp
 
-**Version:** 1.70.3 | **Tests:** `pytest tests/ -q` (1328 passed)
+**Version:** 1.71.0 | **Tests:** `pytest tests/ -q` (1338 passed)
+
+## v1.71.0 - CommonMark setext/paragraph correctness + byte/hash invariant (#44, #35, #55)
+Second drop of @mmashwani's parser batch (tracking #61); the parser-correctness
+core. `parse_markdown` was rewritten around the CommonMark paragraph rule.
+**#44 (High):** setext underline detection keyed on a prev-line heuristic
+(non-blank + no `|`), so `---`/`===` after a list item, blockquote, fence-close,
+or ATX heading fabricated phantom H2s, destroyed the real section as a `[0:0]`
+range, or mis-titled it; multi-line setext titles kept only the last line; and
+single-dash H2 / pipe-bearing H1 underlines were rejected. Now a `para_lines` +
+`para_byte_start` block-state tracker arms only on real paragraph text and
+clears on every non-paragraph context (blank, ATX, fence, frontmatter, list,
+blockquote, thematic break via new `_LIST_ITEM_RE`/`_BLOCKQUOTE_RE`/
+`_THEMATIC_BREAK_RE`); narrow `|` guard on H2 only (H1 never collides with
+tables) keeps all five GFM pipe-table shapes from becoming headings.
+**#35 + #55:** section bodies are now derived from the byte range
+(`content_bytes[byte_start:byte_end].decode()`) instead of a separately
+bookkept line buffer, so `sha256(raw[byte_start:byte_end]) == content_hash`
+holds by construction. The old setext path hashed a subset of its range and
+made `verify_index` report false drift on every setext section; a fresh setext
+index now verifies `drift: 0` (was 3) end-to-end. Removed the `current_lines`
+body buffer and `prev_line` bookkeeping entirely. **Reindex required** to clear
+prior false drift and pick up corrected sections. Tests: `tests/test_v1_71_0.py`
+(10, incl. #44 families a-d + the 5-shape table gate + the invariant).
+Next: #52 (CRLF disk-byte fidelity) + #53 (BOM), the ingestion/mirror-space pair.
 
 ## v1.70.3 - fence-open regex accepts arbitrary CommonMark info strings (#42)
 First fix of @mmashwani's 26-issue parser-correctness batch (#42-60) + CLI
