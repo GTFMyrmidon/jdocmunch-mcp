@@ -98,7 +98,10 @@ def index_file(
 
     # Read and parse the file
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        # newline="" preserves CRLF/CR so offsets/hashes address the real
+        # on-disk bytes (#52); Path.read_text lacks newline before 3.13.
+        with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+            content = fh.read()
         content = preprocess_content(content, rel_path)
     except Exception as e:
         return {"success": False, "error": f"Failed to read: {e}", "exit_code": 2}

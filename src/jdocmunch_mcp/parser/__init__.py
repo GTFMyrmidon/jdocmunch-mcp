@@ -61,6 +61,13 @@ def preprocess_content(content: str, doc_path: str) -> str:
         Content ready for parse_file() and for storage as the raw file.
     """
     import os
+    # Strip a leading UTF-8 BOM (U+FEFF) (#53). It survives both ingestion legs
+    # (read_text and httpx response.text) and is not Python whitespace, so it
+    # silently breaks every first-line detector (ATX heading, frontmatter fence,
+    # setext underline). Stripping here fixes all formats at once and keeps the
+    # stored content mirror aligned with the parsed string.
+    if content.startswith("\ufeff"):
+        content = content[1:]
     ext = os.path.splitext(doc_path)[1].lower()
     if ext == ".mdx":
         return strip_mdx(content)

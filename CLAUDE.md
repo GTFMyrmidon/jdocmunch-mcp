@@ -1,6 +1,30 @@
 # jdocmunch-mcp
 
-**Version:** 1.71.0 | **Tests:** `pytest tests/ -q` (1338 passed)
+**Version:** 1.72.0 | **Tests:** `pytest tests/ -q` (1342 passed)
+
+## v1.72.0 - byte-space fidelity: CRLF preservation + BOM strip (#52, #53)
+Third drop of @mmashwani's parser batch (tracking #61); the ingestion /
+mirror-space pair. **#52 (CRLF):** `index_local`/`index_file` read with
+`Path.read_text` under universal newlines, collapsing `\r\n`/`\r` to `\n`
+*before* byte offsets were measured, so every published `byte_start`/`byte_end`/
+`content_hash` verified only against a hidden LF-normalized mirror, never the
+on-disk file, and disagreed byte-for-byte with the GitHub leg (which preserves
+CRLF via `response.text`). Local reads now use
+`open(..., encoding="utf-8", errors="replace", newline="")` (Path.read_text
+lacks `newline` before 3.13), so offsets/hashes address the real on-disk bytes
+and the local path converges onto the already-correct GitHub path. **#53 (BOM):**
+a leading UTF-8 BOM (U+FEFF) survived both ingestion legs and broke every
+first-line detector (the first ATX heading folded into the root, YAML
+frontmatter became a phantom `author: Bar` section, setext titles embedded
+U+FEFF). `preprocess_content` now strips one leading BOM as its first step,
+fixing all formats + both legs at once and keeping the stored mirror aligned
+with the parsed string (so the #55 invariant still holds end-to-end:
+`sha256(disk[bs:be]) == content_hash`, verify drift 0 on a fresh CRLF index).
+**Reindex required** (CRLF corpora get new disk-accurate offsets/hashes/mirror).
+Not in scope: `get_section_diff`'s `@disk` label still compares index-vs-mirror
+snapshots, so it can't observe a *post-index* on-disk edit — tracked as a
+follow-on on #52. Tests: `tests/test_v1_72_0.py` (4, CRLF end-to-end +
+BOM survival + preprocess unit).
 
 ## v1.71.0 - CommonMark setext/paragraph correctness + byte/hash invariant (#44, #35, #55)
 Second drop of @mmashwani's parser batch (tracking #61); the parser-correctness

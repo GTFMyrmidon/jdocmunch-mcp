@@ -375,7 +375,12 @@ def index_local(
             except ValueError:
                 continue
             try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
+                # newline="" preserves CRLF/CR so byte offsets and hashes
+                # address the real on-disk bytes, matching the GitHub leg and
+                # the disk file (#52). Path.read_text lacks newline before 3.13,
+                # so use open(). errors="replace" stays for invalid UTF-8.
+                with open(file_path, encoding="utf-8", errors="replace", newline="") as fh:
+                    content = fh.read()
                 parsed_content = preprocess_content(content, rel_path)
                 current_files[rel_path] = parsed_content
             except Exception as e:
