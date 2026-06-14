@@ -1,6 +1,28 @@
 # jdocmunch-mcp
 
-**Version:** 1.73.0 | **Tests:** `pytest tests/ -q` (1351 passed)
+**Version:** 1.74.0 | **Tests:** `pytest tests/ -q` (1360 passed)
+
+## v1.74.0 - markdown block-detection, isolated set (#46, #51, #56, #57)
+First half of the block-detection sub-group (tracking #61); the four fixes that
+don't rewrite the parse loop. **#46 (High):** `strip_mdx` ran its import/export
++ JSX removers over the whole `.mdx` document, mutilating code inside fences and
+storing the corrupted text as the hash-verified mirror. Now fence-aware: split
+into `strip_mdx` (frontmatter + mermaid whole-doc, then segment on backtick/
+tilde fences) + `_strip_mdx_plain` (the substitution pipeline, applied only to
+non-fence regions). **#51 (bug half):** code blocks were emitted only on fence
+close, so a fence left open at EOF was buffered then dropped; now flushed before
+the final `_finalize_section` (CommonMark closes an unterminated fence at EOF).
+The 4-space indented-code enhancement is descoped (documented limitation; lands
+with the #43 indentation work). **#56:** a leading `---` thematic break plus a
+later bare `---` was read as frontmatter, silently swallowing every heading
+between; `_frontmatter_end_line` now rejects the opener when the next line is
+blank (pandoc's discriminator). **#57:** `extract_tags` ran over the raw body
+incl. fenced code + YAML frontmatter, so `#include`/`#fff`/YAML values became
+corpus tags; new `_prose_view` blanks fenced-code byte ranges + the frontmatter
+span (via a C-speed translate table) before tag extraction. Content/byte/hash
+untouched. **Reindex required** for #46/#57 (changes stored mirror / tags).
+Tests: `tests/test_v1_74_0.py` (9). Next: #43 (indentation) + #45 (HTML-block
+state machine), the two loop-rewriting fixes.
 
 ## v1.73.0 - CLI/config ergonomics batch (#36-41)
 Cluster B of @mmashwani's batch (tracking #61); six independent CLI/config gaps,

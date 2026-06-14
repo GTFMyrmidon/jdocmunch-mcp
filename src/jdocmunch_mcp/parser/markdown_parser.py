@@ -38,19 +38,55 @@ def strip_mdx(content: str) -> str:
     Returns:
         Clean Markdown string suitable for the standard parser.
     """
+    # Frontmatter (file-start) and mermaid (already fence-targeted) are removed
+    # over the whole document. The remaining MDX substitutions must NOT reach
+    # inside fenced code blocks: CommonMark fence content is a literal leaf, so
+    # deleting import/export lines or JSX there mutilates the code examples that
+    # are MDX docs' primary payload (#46). Segment on fences and strip only the
+    # plain (non-fence) regions.
     content = _MDX_FRONTMATTER_RE.sub("", content)
+    content = _MDX_MERMAID_RE.sub("", content)
+
+    out: list = []
+    plain: list = []
+    in_fence = False
+    fence_marker = ""
+
+    def _flush_plain() -> None:
+        if plain:
+            out.append(_strip_mdx_plain("".join(plain)))
+            plain.clear()
+
+    for line in content.splitlines(keepends=True):
+        bare = line.rstrip("\n").rstrip("\r")
+        if not in_fence and _FENCE_OPEN_RE.match(bare):
+            _flush_plain()
+            in_fence = True
+            fence_marker = bare.lstrip()[0] * 3
+            out.append(line)
+        elif in_fence:
+            out.append(line)
+            if bare.lstrip().startswith(fence_marker):
+                in_fence = False
+        else:
+            plain.append(line)
+    _flush_plain()
+    return "".join(out).strip()
+
+
+def _strip_mdx_plain(content: str) -> str:
+    """Apply the MDX substitution pipeline to a non-fence text region (#46)."""
     content = _MDX_DISCARD_FENCE_RE.sub("", content)
     content = _MDX_FENCE_DELIM_RE.sub("", content)
     content = _MDX_API_LINK_BACKTICK_RE.sub(r"\1", content)
     content = _MDX_API_LINK_RE.sub(r"\1", content)
-    content = _MDX_MERMAID_RE.sub("", content)
     content = _MDX_OPEN_TAG_RE.sub("", content)
     content = _MDX_CLOSE_TAG_RE.sub("", content)
     content = _MDX_SELF_CLOSE_KNOWN_RE.sub("", content)
     content = _MDX_SELF_CLOSE_UNKNOWN_RE.sub("", content)
     content = _MDX_IMPORT_EXPORT_RE.sub("", content)
     content = _MDX_BLANK_LINES_RE.sub("\n\n", content)
-    return content.strip()
+    return content
 
 from .sections import (
     Section,
@@ -78,9 +114,46 @@ _BLOCKQUOTE_RE = re.compile(r"^\s*>")
 _THEMATIC_BREAK_RE = re.compile(r"^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$")
 
 
+def _prose_view(seg_bytes: bytes, seg_start: int, blocks: list, fm_byte_end: int) -> str:
+    """Return a prose-only view of a section's bytes for tag extraction (#57).
+
+    Blanks out fenced-code byte ranges and (for the root section) the
+    frontmatter span, so code tokens (#include, #fff) and YAML values don't
+    become tags. Newlines are preserved so the ``(?:^|\\s)#`` tag regex still
+    anchors. Operates on a copy: Section.content and content_hash are untouched,
+    so byte accuracy and the verify invariant are preserved.
+    """
+    buf = bytearray(seg_bytes)
+    seg_end = seg_start + len(seg_bytes)
+
+    def blank(abs_start: int, abs_end: int) -> None:
+        lo = max(abs_start, seg_start) - seg_start
+        hi = min(abs_end, seg_end) - seg_start
+        if lo < hi:
+            buf[lo:hi] = bytes(buf[lo:hi]).translate(_BLANK_TABLE)
+
+    for blk in blocks:
+        blank(blk.get("byte_start", 0), blk.get("byte_end", 0))
+    if fm_byte_end:
+        blank(0, fm_byte_end)
+    return buf.decode("utf-8", errors="replace")
+
+
+# Maps every byte to a space except newlines, so blanking a region preserves
+# line structure for the tag regex's ``(?:^|\s)#`` anchor.
+_BLANK_TABLE = bytes(c if c in (0x0A, 0x0D) else 0x20 for c in range(256))
+
+
 def _frontmatter_end_line(lines: list) -> int | None:
     """Return the closing line index for top-of-file YAML frontmatter."""
     if not lines or lines[0].strip() != "---":
+        return None
+    # A '---' opener followed by a blank line is a thematic break, not a YAML
+    # metadata block (pandoc's discriminator); real frontmatter starts its
+    # key:value body immediately. Without this, a document that opens with a
+    # '---' horizontal rule and uses a later bare '---' as a section separator
+    # silently folds every heading in between into the root section (#56).
+    if len(lines) < 2 or not lines[1].strip():
         return None
     for i, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
@@ -120,6 +193,9 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
     current_byte_start: int = 0
 
     byte_cursor = 0
+    # Byte offset where top-of-file frontmatter ends (#57): the root section's
+    # prose view blanks this span so YAML values don't become tags.
+    fm_byte_end = 0
 
     # Per-section buffer of code blocks parsed inside the current section
     # (v1.17.0). Each entry is a dict {lang, content, byte_start, byte_end};
@@ -132,7 +208,8 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         # Derive the body from the byte range. Section starts and ends always
         # fall on line boundaries (the cursor advances by whole-line byte
         # lengths), so the slice is on a UTF-8 char boundary and decodes safely.
-        body = content_bytes[current_byte_start:byte_end].decode("utf-8")
+        seg_bytes = content_bytes[current_byte_start:byte_end]
+        body = seg_bytes.decode("utf-8")
         slug = current_slug or slugify(current_title)
         section_id = make_section_id(repo, doc_path, slug, current_level)
         # Stamp block_ids ("section_id::code#0", "::code#1", …).
@@ -163,7 +240,11 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         )
         sec.content_hash = compute_content_hash(body)
         sec.references = extract_references(body)
-        sec.tags = extract_tags(body)
+        # Tags come from a prose-only view: fenced code and frontmatter are
+        # blanked so code tokens / YAML values don't pollute the taxonomy (#57).
+        sec.tags = extract_tags(
+            _prose_view(seg_bytes, current_byte_start, finalized_blocks, fm_byte_end)
+        )
         sections.append(sec)
         current_code_blocks = []
 
@@ -197,6 +278,8 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         if frontmatter_end_line is not None and i <= frontmatter_end_line:
             para_lines = []
             byte_cursor += line_bytes
+            if i == frontmatter_end_line:
+                fm_byte_end = byte_cursor  # span end for the prose view (#57)
             continue
 
         # --- Fence state machine (B2 + v1.17.0 capture) ---
@@ -306,6 +389,19 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         else:
             para_lines = []
         byte_cursor += line_bytes
+
+    # CommonMark closes an unterminated fence at end of document; flush the
+    # buffered block so the code-block tools see it (#51). The body byte range
+    # already excludes the opener; at EOF there is no closer to exclude.
+    if in_fence:
+        current_code_blocks.append(
+            {
+                "lang": fence_lang,
+                "content": "".join(fence_body_lines),
+                "byte_start": fence_body_byte_start,
+                "byte_end": byte_cursor,
+            }
+        )
 
     # Finalize last open section
     _finalize_section(byte_end=byte_cursor)
