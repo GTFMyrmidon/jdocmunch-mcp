@@ -66,8 +66,10 @@ from .sections import (
 _ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$")
 _SETEXT_H1_RE = re.compile(r"^=+\s*$")
 _SETEXT_H2_RE = re.compile(r"^-+\s*$")
-# Code-fence delimiters per CommonMark: 3+ backticks or 3+ tildes, optional info string.
-_FENCE_OPEN_RE = re.compile(r"^(`{3,}|~{3,})\s*[\w.+-]*\s*$")
+# Code-fence delimiters per CommonMark 4.5: 3+ backticks or 3+ tildes, with an
+# arbitrary info string. A backtick fence's info string may not contain a
+# backtick (the negative lookahead enforces that); a tilde fence's may.
+_FENCE_OPEN_RE = re.compile(r"^(`{3,}(?!.*`)|~{3,}).*$")
 
 
 def _frontmatter_end_line(lines: list) -> int | None:
@@ -223,7 +225,10 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             fence_char = marker[0]
             fence_len = len(marker)
             # Info string after the fence run = language tag (e.g. ```python).
-            fence_lang = line_stripped[len(marker):].strip().split()[0] if line_stripped[len(marker):].strip() else ""
+            # First whitespace-delimited token; strip RMarkdown braces so
+            # ```{r} filters as `r`.
+            _info = line_stripped[len(marker):].strip()
+            fence_lang = _info.split()[0].strip("{}") if _info else ""
             fence_body_lines = []
             # Body starts at the byte cursor for the NEXT line after this fence opener.
             fence_body_byte_start = byte_cursor + line_bytes

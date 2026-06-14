@@ -1,6 +1,25 @@
 # jdocmunch-mcp
 
-**Version:** 1.70.2 | **Tests:** `pytest tests/ -q` (1324 passed)
+**Version:** 1.70.3 | **Tests:** `pytest tests/ -q` (1328 passed)
+
+## v1.70.3 - fence-open regex accepts arbitrary CommonMark info strings (#42)
+First fix of @mmashwani's 26-issue parser-correctness batch (#42-60) + CLI
+batch (#35-41). `_FENCE_OPEN_RE` accepted only an empty info string or one bare
+`[\w.+-]` token, so attribute-bearing fences (`` ```python title="x" ``,
+`` ```js {1,3} ``, RMarkdown `` ```{r} ``, `` ```c# ``) were not recognized as
+openers. The fence state machine then inverted: block body parsed as markdown
+(phantom `# comment` sections), the block's bare closing ``` opened a phantom
+`lang=""` fence that swallowed every real heading after it until the next bare
+fence or EOF, and code blocks were lost - and the corruption self-verified
+green (`get_section_diff` `identical:true`, `check_section_delete_safe`
+`safe_to_delete` over real content). Fix: widen to CommonMark 4.5
+(`r"^(`{3,}(?!.*`)|~{3,}).*$"` - backtick fences reject a backtick in the info
+string, tilde fences accept anything); strip RMarkdown `{}` from `fence_lang`
+so `{r}` filters as `r`. Existing indexes built over such fences carry phantom
++ missing sections and need a reindex. Tests: `tests/test_v1_70_3.py` (4,
+incl. the report's fixture + 8 regex unit cases). Next: #55 finalize-time
+`sha256(raw[byte_start:byte_end]) == content_hash` invariant, then the #52/#53
+byte-space cluster.
 
 ## v1.70.2 - search/verify/event-loop fixes (#32, #33, #34)
 Closes the rest of @mmashwani's issue batch. **#32**: `path_glob` was a
