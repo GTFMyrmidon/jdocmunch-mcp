@@ -456,7 +456,11 @@ class DocStore:
         if base_path:
             self.base_path = Path(base_path)
         else:
-            self.base_path = Path.home() / ".doc-index"
+            # #37: honor DOC_INDEX_PATH for EVERY entry point (CLI + hooks), not
+            # just the MCP dispatch path, so storage can't split-brain. An
+            # explicit base_path still takes precedence.
+            env_path = os.environ.get("DOC_INDEX_PATH")
+            self.base_path = Path(env_path) if env_path else Path.home() / ".doc-index"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _safe_repo_component(self, value: str, field_name: str) -> str:

@@ -45,20 +45,45 @@ _MCP_ENTRY = {
     "args": ["jdocmunch-mcp"],
 }
 
-_ENFORCEMENT_HOOKS = {
-    "PreToolUse": [{
-        "matcher": "Read",
-        "hooks": [{"type": "command", "command": "jdocmunch-mcp hook-pretooluse"}],
-    }],
-    "PostToolUse": [{
-        "matcher": "Edit|Write",
-        "hooks": [{"type": "command", "command": "jdocmunch-mcp hook-posttooluse"}],
-    }],
-    "PreCompact": [{
-        "matcher": "",
-        "hooks": [{"type": "command", "command": "jdocmunch-mcp hook-precompact"}],
-    }],
-}
+def _hook_invocation() -> str:
+    """Return the executable path used in hook command strings (#39).
+
+    Claude Code spawns hooks via /bin/sh (macOS/Linux) or bash (Windows
+    Git Bash / MSYS), which uses a minimal PATH that excludes ~/.local/bin,
+    user venvs, and pipx shims. Writing the bare name ``jdocmunch-mcp`` works
+    only when the subshell's PATH happens to match — fragile. Resolve to an
+    absolute path at install time so hooks run regardless of the spawning
+    shell. On Windows, normalise to forward slashes: bash treats every ``\\``
+    as an escape and silently eats them, mangling the path at execution time.
+    """
+    resolved = shutil.which("jdocmunch-mcp")
+    if not resolved:
+        # Fall back to bare name; user gets a clear error if PATH is wrong.
+        return "jdocmunch-mcp"
+    if platform.system() == "Windows":
+        resolved = resolved.replace("\\", "/")
+    if " " in resolved:
+        return f'"{resolved}"'
+    return resolved
+
+
+def _enforcement_hooks() -> dict[str, list]:
+    """Build the enforcement hook entries from the resolved executable (#39)."""
+    exe = _hook_invocation()
+    return {
+        "PreToolUse": [{
+            "matcher": "Read",
+            "hooks": [{"type": "command", "command": f"{exe} hook-pretooluse"}],
+        }],
+        "PostToolUse": [{
+            "matcher": "Edit|Write",
+            "hooks": [{"type": "command", "command": f"{exe} hook-posttooluse"}],
+        }],
+        "PreCompact": [{
+            "matcher": "",
+            "hooks": [{"type": "command", "command": f"{exe} hook-precompact"}],
+        }],
+    }
 
 # Cursor rules use MDC format (frontmatter + markdown).
 _CURSOR_RULES_CONTENT = """\
@@ -381,7 +406,9 @@ def install_hooks(*, dry_run: bool = False, backup: bool = True) -> str:
     """
     path = _settings_json_path()
     data = _read_json(path)
-    added = _merge_hooks(data, _ENFORCEMENT_HOOKS, "jdocmunch-mcp hook-p")
+    # Marker matches bare, absolute, and .EXE spellings of our command so a
+    # re-init dedups against an existing install instead of appending a copy.
+    added = _merge_hooks(data, _enforcement_hooks(), "jdocmunch-mcp")
 
     if not added:
         return f"  hooks already present in {path}"

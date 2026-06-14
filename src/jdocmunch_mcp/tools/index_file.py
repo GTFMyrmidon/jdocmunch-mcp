@@ -63,15 +63,50 @@ def _find_owning_index(
     return None
 
 
+def _resolve_named_index(
+    file_path: Path,
+    store: DocStore,
+    name: str,
+) -> Optional[tuple[str, str, str, Path]]:
+    """Resolve an explicitly named index and the file's path within it (#38).
+
+    Skips folder-name inference entirely: loads the index by its stored name
+    and computes the file's relative path from the index's ``source_root``.
+    This is the only path that works for a custom ``--name`` or a corpus whose
+    root folder name is not path-safe (e.g. contains spaces).
+
+    ``name`` may be ``owner/name`` or a bare name (owner defaults to ``local``).
+    Returns (owner, name, rel_path, source_root) or None.
+    """
+    owner, _, bare = name.rpartition("/")
+    owner = owner or "local"
+    try:
+        index = store.load_index(owner, bare)
+    except ValueError:
+        return None
+    if index is None:
+        return None
+    root = getattr(index, "source_root", "")
+    if not root:
+        return None
+    source_root = Path(root).expanduser().resolve()
+    try:
+        rel_path = file_path.relative_to(source_root).as_posix()
+    except ValueError:
+        return None
+    return (owner, bare, rel_path, source_root)
+
+
 def index_file(
     file_path: str,
     storage_path: Optional[str] = None,
     use_ai_summaries: bool = True,
+    name: Optional[str] = None,
 ) -> dict:
     """Re-index a single file within an existing index.
 
-    Finds which index owns the file, re-parses it, and updates the
-    index in place using incremental_save.
+    Finds which index owns the file (or uses ``name`` when given), re-parses
+    it, and updates the index in place using incremental_save.
 
     Returns dict with results.
     """
@@ -88,10 +123,17 @@ def index_file(
         return {"success": False, "error": f"Not a doc file ({ext}): {file_path}", "exit_code": 2}
 
     store = DocStore(base_path=storage_path)
-    match = _find_owning_index(path, store)
-
-    if match is None:
-        return {"success": False, "error": f"File not in any index: {file_path}", "exit_code": 1}
+    if name:
+        match = _resolve_named_index(path, store, name)
+        if match is None:
+            return {"success": False, "error": (
+                f"No index named {name!r} with a source_root containing "
+                f"{file_path}"
+            ), "exit_code": 1}
+    else:
+        match = _find_owning_index(path, store)
+        if match is None:
+            return {"success": False, "error": f"File not in any index: {file_path}", "exit_code": 1}
 
     owner, name, rel_path, detected_root = match
     repo_id = f"{owner}/{name}"
@@ -192,6 +234,6 @@ def index_file(
     return result
 
 
-def index_file_cli(file_path: str) -> dict:
+def index_file_cli(file_path: str, name: Optional[str] = None) -> dict:
     """CLI entry point for index-file subcommand."""
-    return index_file(file_path)
+    return index_file(file_path, name=name)

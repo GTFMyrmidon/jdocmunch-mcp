@@ -182,13 +182,12 @@ class TestInstallHooks:
         assert "PostToolUse" in hooks
         assert "PreCompact" in hooks
 
-        # Verify commands
-        pre_cmd = hooks["PreToolUse"][0]["hooks"][0]["command"]
-        assert pre_cmd == "jdocmunch-mcp hook-pretooluse"
-        post_cmd = hooks["PostToolUse"][0]["hooks"][0]["command"]
-        assert post_cmd == "jdocmunch-mcp hook-posttooluse"
-        compact_cmd = hooks["PreCompact"][0]["hooks"][0]["command"]
-        assert compact_cmd == "jdocmunch-mcp hook-precompact"
+        # Verify commands (#39: built from the resolved executable path).
+        from jdocmunch_mcp.cli.init import _hook_invocation
+        exe = _hook_invocation()
+        assert hooks["PreToolUse"][0]["hooks"][0]["command"] == f"{exe} hook-pretooluse"
+        assert hooks["PostToolUse"][0]["hooks"][0]["command"] == f"{exe} hook-posttooluse"
+        assert hooks["PreCompact"][0]["hooks"][0]["command"] == f"{exe} hook-precompact"
 
     def test_idempotent(self, tmp_path):
         from jdocmunch_mcp.cli.init import install_hooks
@@ -219,10 +218,11 @@ class TestInstallHooks:
 
         data = json.loads(settings.read_text())
         # Both jcodemunch and jdocmunch hooks should be present
+        from jdocmunch_mcp.cli.init import _hook_invocation
         pre_rules = data["hooks"]["PreToolUse"]
         cmds = [r["hooks"][0]["command"] for r in pre_rules]
         assert "jcodemunch-mcp hook-pretooluse" in cmds
-        assert "jdocmunch-mcp hook-pretooluse" in cmds
+        assert f"{_hook_invocation()} hook-pretooluse" in cmds
 
     def test_dry_run(self, tmp_path):
         from jdocmunch_mcp.cli.init import install_hooks
@@ -321,7 +321,7 @@ class TestCLIDispatch:
             with pytest.raises(SystemExit) as exc_info:
                 main(["index-file", str(tmp_path / "doc.md")])
             assert exc_info.value.code == 0
-            m.assert_called_once_with(str(tmp_path / "doc.md"))
+            m.assert_called_once_with(str(tmp_path / "doc.md"), name=None)
 
 
 # ---------------------------------------------------------------------------

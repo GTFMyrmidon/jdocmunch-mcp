@@ -1,6 +1,30 @@
 # jdocmunch-mcp
 
-**Version:** 1.72.0 | **Tests:** `pytest tests/ -q` (1342 passed)
+**Version:** 1.73.0 | **Tests:** `pytest tests/ -q` (1351 passed)
+
+## v1.73.0 - CLI/config ergonomics batch (#36-41)
+Cluster B of @mmashwani's batch (tracking #61); six independent CLI/config gaps,
+several with jcodemunch precedent. **#36 (High, operator-control bypass):**
+`JDOCMUNCH_DISABLED_TOOLS` was enforced against the literal incoming tool name,
+so a deprecated call-time alias (`index_repo`/`list_repos`) reached the disabled
+canonical handler unchecked. New module-level `_ALIAS_TO_CANONICAL` map resolved
+at the top of `call_tool` BEFORE the gate, so disabling a canonical tool blocks
+every spelling. **#37 (storage split-brain):** `DOC_INDEX_PATH` was honored only
+on the MCP dispatch path; `DocStore.__init__`'s default branch now consults it,
+so CLI + hooks resolve the same root (explicit `base_path` still wins). **#38:**
+`index-file` owner detection was folder-name inference only, unusable for a
+custom `--name` index or a non-path-safe (spaced) root; new `--name` arg +
+`_resolve_named_index` loads the index directly and derives the rel path from
+its `source_root`. **#39:** `init --hooks` wrote bare command names that fail
+under Claude Code's minimal-PATH `/bin/sh`; ported jcm's `_hook_invocation()` /
+`_enforcement_hooks()` (resolve `shutil.which` to an absolute path at install
+time, forward-slash on Windows, quote spaces, bare-name fallback). Dedup marker
+widened to `jdocmunch-mcp` so bare/absolute/.EXE spellings collapse to one.
+**#40:** `-V`/`--version` flag. **#41:** `delete-index --repo` CLI subcommand
+(wraps the existing `delete_index` tool). Tests: `tests/test_v1_73_0.py` (9) +
+3 updated `test_hooks.py` assertions for the absolute-path hooks. Byte-space +
+CLI clusters both done; remaining: block-detection/links/frontmatter/scoring
+tail (#43, #45-51, #54, #56-60).
 
 ## v1.72.0 - byte-space fidelity: CRLF preservation + BOM strip (#52, #53)
 Third drop of @mmashwani's parser batch (tracking #61); the ingestion /

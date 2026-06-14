@@ -162,6 +162,15 @@ _ALWAYS_PRESENT_TOOLS: frozenset[str] = frozenset({"jdocmunch_guide"})
 # (Mirrors jcodemunch-mcp v1.108.8 issue #298 resolution.)
 _UNDISABLEABLE_TOOLS: frozenset[str] = frozenset()
 
+# Deprecated call-time aliases -> canonical tool name (#36). The dispatcher
+# accepts these older spellings for backward compat, but they are never
+# advertised; mapping them here lets the disabled-tools gate block every
+# spelling when the canonical tool is disabled.
+_ALIAS_TO_CANONICAL: dict[str, str] = {
+    "index_repo": "doc_index_repo",
+    "list_repos": "doc_list_repos",
+}
+
 
 def _get_tool_profile() -> str:
     """Return the effective tool_profile from env, defaulting to 'full'."""
@@ -1659,8 +1668,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     # Honor JDOCMUNCH_DISABLED_TOOLS at call time. Tools in _UNDISABLEABLE_TOOLS
     # are exempt (currently empty; jdocmunch_guide is intentionally disable-able).
+    # #36: resolve a deprecated call-time alias to its canonical name FIRST, so
+    # disabling a canonical tool blocks every spelling that dispatches to it
+    # (the bare aliases are never advertised, so _filter_tools can't help).
+    _canonical_name = _ALIAS_TO_CANONICAL.get(name, name)
     _disabled_at_call = _get_disabled_tools() - _UNDISABLEABLE_TOOLS
-    if name in _disabled_at_call:
+    if name in _disabled_at_call or _canonical_name in _disabled_at_call:
         return [TextContent(type="text", text=json.dumps({
             "error": (
                 f"Tool '{name}' is disabled via JDOCMUNCH_DISABLED_TOOLS. "
@@ -2171,6 +2184,10 @@ def main(argv: Optional[list] = None):
         prog="jdocmunch-mcp",
         description="jDocMunch MCP — structured documentation retrieval server.",
     )
+    from . import __version__ as _ver
+    parser.add_argument(
+        "-V", "--version", action="version", version=f"%(prog)s {_ver}",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     # --- serve (default) ---
@@ -2232,6 +2249,14 @@ def main(argv: Optional[list] = None):
     if_parser.add_argument(
         "file", help="Path to the file to re-index",
     )
+    if_parser.add_argument(
+        "--name",
+        help=(
+            "Index name (owner/name or bare name) to update directly, skipping "
+            "folder-name detection. Required for a custom --name index or a "
+            "corpus root whose folder name is not path-safe (e.g. has spaces)."
+        ),
+    )
 
     # --- index-local ---
     il_parser = subparsers.add_parser(
@@ -2265,6 +2290,13 @@ def main(argv: Optional[list] = None):
     vi_parser.add_argument("--repo", required=True, help="jdocmunch repo identifier")
     vi_parser.add_argument("--sample", type=int, default=None,
                            help="Verify only the first N sections (cheap CI mode)")
+
+    # --- delete-index ---
+    di_parser = subparsers.add_parser(
+        "delete-index",
+        help="Delete a repo index and its cached raw files (offline)",
+    )
+    di_parser.add_argument("--repo", required=True, help="jdocmunch repo identifier")
 
     # --- hook-pretooluse ---
     subparsers.add_parser(
@@ -2311,7 +2343,7 @@ def main(argv: Optional[list] = None):
 
     if args.command == "index-file":
         from .tools.index_file import index_file_cli
-        result = index_file_cli(args.file)
+        result = index_file_cli(args.file, name=getattr(args, "name", None))
         print(json.dumps(result, indent=2))
         sys.exit(0 if result.get("success") else 1)
         return
@@ -2335,6 +2367,12 @@ def main(argv: Optional[list] = None):
         result = _verify(repo=args.repo, sample=args.sample)
         print(json.dumps(result, indent=2))
         sys.exit(0 if result.get("drift_count", 0) == 0 else 2)
+
+    if args.command == "delete-index":
+        from .tools.delete_index import delete_index as _delete
+        result = _delete(repo=args.repo)
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result.get("success") else 1)
 
     if args.command == "hook-pretooluse":
         from .cli.hooks import run_pretooluse
