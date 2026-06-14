@@ -1,6 +1,33 @@
 # jdocmunch-mcp
 
-**Version:** 1.74.0 | **Tests:** `pytest tests/ -q` (1360 passed)
+**Version:** 1.75.0 | **Tests:** `pytest tests/ -q` (1370 passed)
+
+## v1.75.0 - parse-loop block detection: indentation + HTML blocks (#43, #45)
+Second half of the block-detection sub-group (tracking #61); the two
+parse-loop-rewriting fixes, landed together since both classify lines before
+heading detection. **#43 (High):** every block-start regex ran against the raw
+column-0 line, so ATX/setext headings indented 1-3 spaces folded into the
+previous section and indented/list-nested fences never opened (their interiors
+parsed as markdown, minting phantoms; `find_code_examples` went blind).
+parse_markdown now computes leading indent: ATX/setext detection runs on a
+dedented view when indent <= 3 (4+ stays indented code, not a heading), and
+fence opens are indent-tolerant (`line.lstrip(" ")`, matching the already-loose
+close side) so list-nested runbook fences open. **#45 (High):** the loop had no
+HTML-block state, so `#`/`---` lines inside `<!-- -->`, `<script>`/`<pre>`/
+`<style>`/`<textarea>`, and `<div>`-class blocks became phantom indexed
+sections (hidden comment text searchable, raw code as section titles). New
+CommonMark HTML-block state machine (`_html_block_start`, types 1-7) suppresses
+heading detection inside HTML blocks like the fence machine does; type 1-5 end
+inclusively on their close marker, type 6-7 at the first blank line, type 7
+can't interrupt a paragraph, single-line blocks never enter the state. Byte
+ranges / content_hash unchanged (invariant holds across HTML regions).
+**Deferred:** #51's 4-space indented-code extraction stays out, it needs a list/
+container model the parser lacks (4-space list-continuation prose would be
+misclassified as code); documented limitation. Blockquote/list-item heading
+sectioning (`> # X`) is a follow-on per #43 (anchor side is #50). **Reindex
+required** (clears phantoms, picks up indented headings/fences). Tests:
+`tests/test_v1_75_0.py` (10). Block-detection sub-group complete; remaining:
+links (#47-50, #59) + frontmatter/scoring (#54, #58, #60).
 
 ## v1.74.0 - markdown block-detection, isolated set (#46, #51, #56, #57)
 First half of the block-detection sub-group (tracking #61); the four fixes that

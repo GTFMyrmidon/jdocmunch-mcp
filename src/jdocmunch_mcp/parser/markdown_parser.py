@@ -144,6 +144,48 @@ def _prose_view(seg_bytes: bytes, seg_start: int, blocks: list, fm_byte_end: int
 _BLANK_TABLE = bytes(c if c in (0x0A, 0x0D) else 0x20 for c in range(256))
 
 
+# --- CommonMark HTML blocks (#45) ------------------------------------------
+# Lines inside an HTML block are raw HTML, so ATX/setext detection must be
+# suppressed there (the same principle the fenced-code state machine uses).
+_HTML_TYPE1_OPEN = re.compile(r"^</?(?:script|pre|style|textarea)(?:\s|>|$)", re.I)
+_HTML_TYPE1_CLOSE = re.compile(r"</(?:script|pre|style|textarea)>", re.I)
+_HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
+    "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|"
+    "form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|"
+    "link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|"
+    "section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+_HTML_TYPE6_OPEN = re.compile(r"^</?(?:" + _HTML_BLOCK_TAGS + r")(?:\s|/?>|$)", re.I)
+_HTML_TYPE7_OPEN = re.compile(
+    r"^(?:<[A-Za-z][A-Za-z0-9-]*(?:\s[^>]*)?/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$"
+)
+_HTML_TYPE4_OPEN = re.compile(r"^<![A-Za-z]")
+
+
+def _html_block_start(text: str):
+    """Classify an HTML-block opener per CommonMark (text has <=3 leading
+    spaces already removed). Returns (type_num, end_kind, marker, open_len) or
+    None. end_kind: 'inline' (marker substring ends the block, inclusive),
+    'regex' (marker regex ends it, inclusive), 'blank' (first blank line ends
+    it, exclusive)."""
+    if text.startswith("<!--"):
+        return (2, "inline", "-->", 4)
+    if text.startswith("<?"):
+        return (3, "inline", "?>", 2)
+    if text.startswith("<![CDATA["):
+        return (5, "inline", "]]>", 9)
+    if _HTML_TYPE4_OPEN.match(text):
+        return (4, "inline", ">", 2)
+    if _HTML_TYPE1_OPEN.match(text):
+        return (1, "regex", _HTML_TYPE1_CLOSE, 0)
+    if _HTML_TYPE6_OPEN.match(text):
+        return (6, "blank", None, 0)
+    if _HTML_TYPE7_OPEN.match(text):
+        return (7, "blank", None, 0)
+    return None
+
+
 def _frontmatter_end_line(lines: list) -> int | None:
     """Return the closing line index for top-of-file YAML frontmatter."""
     if not lines or lines[0].strip() != "---":
@@ -268,6 +310,15 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
     fence_lang: str = ""
     fence_body_byte_start: int = 0
     fence_body_lines: list = []
+
+    # HTML-block state (#45). Heading detection is suppressed inside an HTML
+    # block, like inside a fence, so '# x' / '---' in raw HTML don't fabricate
+    # sections. `html_end_kind` is 'inline'/'regex'/'blank'; `html_marker` is
+    # the substring or regex that ends inline/regex blocks.
+    in_html_block: bool = False
+    html_end_kind: str = ""
+    html_marker = None
+
     frontmatter_end_line = _frontmatter_end_line(lines)
 
     for i, line in enumerate(lines):
@@ -281,6 +332,22 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             if i == frontmatter_end_line:
                 fm_byte_end = byte_cursor  # span end for the prose view (#57)
             continue
+
+        # --- HTML-block state machine (#45) ---
+        if in_html_block:
+            para_lines = []
+            if html_end_kind == "blank":
+                if not line_stripped.strip():  # type 6/7 end at first blank line
+                    in_html_block = False
+            elif html_end_kind == "inline":
+                if html_marker in line_stripped:
+                    in_html_block = False
+            else:  # regex (type 1 raw-text)
+                if html_marker.search(line_stripped):
+                    in_html_block = False
+            byte_cursor += line_bytes
+            continue
+        # --- end HTML-block handling ---
 
         # --- Fence state machine (B2 + v1.17.0 capture) ---
         if in_fence:
@@ -315,7 +382,12 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             byte_cursor += line_bytes
             continue
 
-        fence_open_match = _FENCE_OPEN_RE.match(line_stripped)
+        # Fence open. Tolerant of any leading indent so list-nested and
+        # indented fences open (#43); the close side already lstrips. The
+        # tradeoff is the rare 4-space indented-code block that begins with a
+        # backtick/tilde run, which is read as a fence instead.
+        fence_probe = line_stripped.lstrip(" ")
+        fence_open_match = _FENCE_OPEN_RE.match(fence_probe)
         if fence_open_match:
             marker = fence_open_match.group(1)
             in_fence = True
@@ -324,7 +396,7 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             # Info string after the fence run = language tag (e.g. ```python).
             # First whitespace-delimited token; strip RMarkdown braces so
             # ```{r} filters as `r`.
-            _info = line_stripped[len(marker):].strip()
+            _info = fence_probe[len(marker):].strip()
             fence_lang = _info.split()[0].strip("{}") if _info else ""
             fence_body_lines = []
             # Body starts at the byte cursor for the NEXT line after this fence opener.
@@ -334,15 +406,42 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             continue
         # --- end fence handling ---
 
+        # Block detection allows up to 3 leading spaces per CommonMark; 4+ is
+        # indented code, not a heading/HTML block (#43). Dedent the detection
+        # view only; byte offsets are unchanged.
+        indent = len(line_stripped) - len(line_stripped.lstrip(" "))
+        dedented = line_stripped.lstrip(" ") if indent <= 3 else line_stripped
+
+        # HTML block open (#45). Type 7 cannot interrupt an open paragraph.
+        if indent <= 3 and dedented.startswith("<"):
+            _html = _html_block_start(dedented)
+            if _html is not None and not (_html[0] == 7 and para_lines):
+                _type, _kind, _marker, _open_len = _html
+                # A single-line block (opener + closer on the same line) never
+                # enters the multi-line state.
+                if _kind == "inline":
+                    one_line = _marker in dedented[_open_len:]
+                elif _kind == "regex":
+                    one_line = bool(_marker.search(dedented))
+                else:
+                    one_line = False
+                if not one_line:
+                    in_html_block = True
+                    html_end_kind = _kind
+                    html_marker = _marker
+                para_lines = []
+                byte_cursor += line_bytes
+                continue
+
         # Setext heading: only when the block above is an open paragraph (#44).
         heading_text = None
         heading_level = None
         if para_lines:
             para_text = " ".join(p.strip() for p in para_lines).strip()
-            if _SETEXT_H1_RE.match(line_stripped):
+            if _SETEXT_H1_RE.match(dedented):
                 heading_text = para_text
                 heading_level = 1
-            elif _SETEXT_H2_RE.match(line_stripped) and "|" not in para_text:
+            elif _SETEXT_H2_RE.match(dedented) and "|" not in para_text:
                 # Narrow pipe guard: keeps a GFM pipe-table header
                 # (e.g. 'Name | Age' over '-----') from becoming a phantom H2.
                 # H1 (===) needs no such guard — tables never use '='.
@@ -362,7 +461,7 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             continue
 
         # ATX heading: the current line is the heading.
-        atx_match = _ATX_RE.match(line_stripped)
+        atx_match = _ATX_RE.match(dedented)
         if atx_match:
             _finalize_section(byte_end=byte_cursor)
             current_title = atx_match.group(2).strip()
