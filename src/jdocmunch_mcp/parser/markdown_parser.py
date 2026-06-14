@@ -188,18 +188,26 @@ def _html_block_start(text: str):
 
 
 def _frontmatter_end_line(lines: list) -> int | None:
-    """Return the closing line index for top-of-file YAML frontmatter."""
-    if not lines or lines[0].strip() != "---":
+    """Return the closing line index for top-of-file frontmatter.
+
+    Recognizes YAML (``---``) and TOML (``+++``, Hugo's default, #60); the
+    closer must use the same delimiter as the opener.
+    """
+    if not lines:
+        return None
+    opener = lines[0].strip()
+    if opener not in ("---", "+++"):
         return None
     # A '---' opener followed by a blank line is a thematic break, not a YAML
     # metadata block (pandoc's discriminator); real frontmatter starts its
     # key:value body immediately. Without this, a document that opens with a
     # '---' horizontal rule and uses a later bare '---' as a section separator
     # silently folds every heading in between into the root section (#56).
-    if len(lines) < 2 or not lines[1].strip():
+    # '+++' has no thematic-break collision, so it needs no such guard.
+    if opener == "---" and (len(lines) < 2 or not lines[1].strip()):
         return None
     for i, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
+        if line.strip() == opener:
             return i
     return None
 
@@ -282,11 +290,13 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
             code_blocks=finalized_blocks,
         )
         sec.content_hash = compute_content_hash(body)
-        sec.references = extract_references(body)
-        # Tags + inline code come from a prose-only view: fenced code and
-        # frontmatter are blanked so code tokens / YAML values don't pollute
-        # the taxonomy (#57) and fenced code isn't double-counted as inline (#59).
+        # References, tags, and inline code come from a prose-only view: fenced
+        # code and frontmatter are blanked so code tokens / YAML+TOML values
+        # don't pollute the taxonomy (#57), fenced code isn't double-counted as
+        # inline (#59), and frontmatter URLs / in-code link syntax don't become
+        # references (#60, #47 follow-on). content/content_hash are untouched.
         prose = _prose_view(seg_bytes, current_byte_start, finalized_blocks, fm_byte_end)
+        sec.references = extract_references(prose)
         sec.tags = extract_tags(prose)
         sec.inline_code = extract_inline_code(prose)
         sections.append(sec)

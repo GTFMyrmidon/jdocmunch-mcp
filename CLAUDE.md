@@ -1,6 +1,23 @@
 # jdocmunch-mcp
 
-**Version:** 1.78.0 | **Tests:** `pytest tests/ -q` (1394 passed)
+**Version:** 1.79.0 | **Tests:** `pytest tests/ -q` (1398 passed)
+
+## v1.79.0 - TOML (+++) frontmatter recognition (#60)
+First of the frontmatter/scoring tail (tracking #61). `_frontmatter_end_line`
+recognized only YAML `---`, so Hugo's TOML `+++ ... +++` block was indexed as
+root-section prose and its URLs (e.g. `canonical`) entered the stored
+`references` artifact. The detector now accepts a `+++` opener with a matching
+`+++` closer (composes with the #56 blank-line discriminator, which stays scoped
+to `---` since `+++` has no thematic-break collision). Also routed per-section
+`references` through the same frontmatter-free prose view already used for tags
+/ inline_code, so frontmatter values (YAML and TOML) and in-code link syntax no
+longer become references — this is the #47 HTML/frontmatter masking follow-on
+landing for the reference artifact too. `content`/`content_hash` untouched
+(frontmatter stays in the byte-accurate content). Deferred: the consumer half
+(get_stale_pages/get_tutorial_path parsing `+++` dates via tomllib) needs Python
+3.11+ (project floor is 3.10), tracked as a follow-on. **Reindex required**
+(rebuilds references). Tests: `tests/test_v1_79_0.py` (4). Next: #58 (shared
+prose view for embed/BM25 scoring), then #54 (structural-integrity health axis).
 
 ## v1.78.0 - inline_code artifact for the code<->docs bridge (#59)
 Final links-group release (tracking #61). The parser extracted only fenced
