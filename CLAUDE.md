@@ -1,6 +1,27 @@
 # jdocmunch-mcp
 
-**Version:** 1.76.0 | **Tests:** `pytest tests/ -q` (1381 passed)
+**Version:** 1.77.0 | **Tests:** `pytest tests/ -q` (1388 passed)
+
+## v1.77.0 - get_broken_links: fs existence + GitHub anchors + scheme parsing (#49, #50, #47.6)
+Second links-group release (tracking #61); the consumer-layer link-health
+fixes, no reindex needed. **#49:** existence was tested only against the indexed
+doc set, so links to existing non-doc files (images, LICENSE, source) reported
+`file_not_found`. Now the filesystem is consulted against `source_root` before
+flagging; with no `source_root` (GitHub indexes) non-doc extensions aren't
+claimed missing. **#50:** `#anchor` links were validated against jdocmunch's
+private hierarchical slug scheme, which diverges from rendered GitHub anchors on
+four axes (underscore flattening, hyphen-run collapse, `-2`-vs-`-1` duplicate
+suffix, raw-markup leakage). New `_build_github_anchors` derives the
+GitHub-rendered namespace per document (rendered text via `_rendered_text` +
+`_github_slug` with github-slugger rules), accepted alongside the existing forms
+so valid rendered anchors stop being flagged. (Accepting alongside fixes the
+false-positive direction, the dangerous one for a link checker; github-dead but
+private-valid anchors like `#install-2` stay unflagged, a documented limit.)
+**#47 symptom 6:** the blanket colon-skip silently dropped typo'd/unknown
+schemes; a scheme prefix that isn't a known-external scheme now reports
+`unknown_scheme`. Bare email autolinks are treated as external. Closes #47
+(extraction shipped in 1.76.0). Tests: `tests/test_v1_77_0.py` (7). Next: #59
+inline_code bridge, then the frontmatter/scoring tail (#54, #58, #60).
 
 ## v1.76.0 - extract_references rewrite: inline grammar + reference defs (#47, #48)
 First of three links-group releases (tracking #61); the parser-layer reference

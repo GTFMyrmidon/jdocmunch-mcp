@@ -7,9 +7,13 @@ import time
 from typing import Optional
 
 from ..storage import DocStore
+from ..parser import ALL_EXTENSIONS
 
 # Links that start with these are external — skip them
 _EXTERNAL_SCHEMES = ("http://", "https://", "ftp://", "mailto:", "tel:")
+_EMAIL_RE = re.compile(r"^[^\s/@]+@[^\s/@]+\.[^\s/@]+$")
+# A URL scheme prefix (scheme:) — used to flag typo'd/unknown schemes (#47.6).
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 
 # RST cross-reference patterns: :ref:`target`, :doc:`target`
 _RST_REF_RE = re.compile(r":(?:ref|doc):`([^`]+)`")
@@ -17,9 +21,67 @@ _RST_REF_RE = re.compile(r":(?:ref|doc):`([^`]+)`")
 # RST explicit hyperlink targets: `text <target>`_
 _RST_HYPERLINK_RE = re.compile(r"`[^`]+\s+<([^>]+)>`_")
 
+# --- GitHub-rendered anchor namespace (#50) --------------------------------
+# Section titles preserve the raw inline markdown, but a renderer emits anchors
+# from the heading's rendered TEXT content, then github-slugger rules. Validate
+# #anchor links against that namespace, not jdocmunch's private section slugs.
+_GH_REDUCTIONS = [
+    (re.compile(r"!\[([^\]]*)\]\([^)]*\)"), r"\1"),   # inline image -> alt
+    (re.compile(r"!\[([^\]]*)\]\[[^\]]*\]"), r"\1"),  # reference image -> alt
+    (re.compile(r"\[([^\]]*)\]\([^)]*\)"), r"\1"),    # inline link -> label
+    (re.compile(r"\[([^\]]*)\]\[[^\]]*\]"), r"\1"),   # reference link -> label
+    (re.compile(r"`([^`]+)`"), r"\1"),                # code span -> content
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),          # strong -> inner
+    (re.compile(r"__([^_]+)__"), r"\1"),
+    (re.compile(r"\*([^*]+)\*"), r"\1"),              # emphasis -> inner
+]
+_GH_SLUG_STRIP_RE = re.compile(r"[^\w\- ]")
+
+
+def _rendered_text(title: str) -> str:
+    """Reduce raw inline markdown to the text content a renderer emits."""
+    text = title
+    for _ in range(8):  # fixed point; handles nesting like [**x**](y)
+        before = text
+        for pattern, repl in _GH_REDUCTIONS:
+            text = pattern.sub(repl, text)
+        if text == before:
+            break
+    return text
+
+
+def _github_slug(text: str) -> str:
+    """github-slugger base rules: lowercase, drop punctuation except - and _,
+    spaces to hyphens; underscores and hyphen runs are preserved."""
+    return _GH_SLUG_STRIP_RE.sub("", text.lower()).replace(" ", "-")
+
+
+def _build_github_anchors(sections: list) -> dict:
+    """Map each doc_path to the set of anchors GitHub would render for its
+    headings (rendered text + github-slugger, duplicates suffixed -1/-2 in
+    document order)."""
+    by_doc: dict = {}
+    occ: dict = {}
+    for sec in sections:
+        if sec.get("level", 0) == 0:
+            continue  # synthetic doc root has no heading anchor
+        doc = sec.get("doc_path", "")
+        base = _github_slug(_rendered_text(sec.get("title", "")))
+        if not base:
+            continue
+        d_occ = occ.setdefault(doc, {})
+        if base in d_occ:
+            d_occ[base] += 1
+            anchor = f"{base}-{d_occ[base]}"
+        else:
+            d_occ[base] = 0
+            anchor = base
+        by_doc.setdefault(doc, set()).add(anchor)
+    return by_doc
+
 
 def _is_external(href: str) -> bool:
-    return any(href.startswith(s) for s in _EXTERNAL_SCHEMES)
+    return any(href.startswith(s) for s in _EXTERNAL_SCHEMES) or bool(_EMAIL_RE.match(href))
 
 
 def _split_href(href: str) -> tuple:
@@ -46,18 +108,22 @@ def _resolve_file_path(source_doc: str, target_file: str) -> str:
     return posixpath.normpath(joined)
 
 
-def _anchor_matches_section(anchor: str, doc_path: str, sections: list) -> bool:
+def _anchor_matches_section(anchor: str, doc_path: str, sections: list,
+                            gh_anchors: Optional[set] = None) -> bool:
     """Return True if any section in doc_path has a slug matching the anchor.
 
     Comparison is case-insensitive but preserves hyphens and underscores —
     'foo-bar' must NOT match 'foobar'. The hierarchical slug stored in the
     section ID (e.g. ``installation/prerequisites``) is canonical; anchors
     typically reference only the leaf, so we accept either the full path or
-    the trailing path segment.
+    the trailing path segment. ``gh_anchors`` (#50) adds the GitHub-rendered
+    anchor namespace for the document so valid rendered anchors aren't flagged.
     """
     target = anchor.strip().lower()
     if not target:
         return False
+    if gh_anchors and target in gh_anchors:
+        return True
     for sec in sections:
         if sec.get("doc_path") != doc_path:
             continue
@@ -102,6 +168,8 @@ def get_broken_links(
 
     doc_path_set = set(index.doc_paths)
     sections = index.sections
+    src_root = getattr(index, "source_root", "") or ""
+    gh_by_doc = _build_github_anchors(sections)  # #50
     broken: list = []
 
     for sec in sections:
@@ -130,7 +198,8 @@ def get_broken_links(
 
             # Anchor-only link (e.g. #installation): relative to the current document
             if not file_part and anchor:
-                if not _anchor_matches_section(anchor, source_doc, sections):
+                if not _anchor_matches_section(anchor, source_doc, sections,
+                                               gh_by_doc.get(source_doc)):
                     broken.append({
                         "source_file": source_doc,
                         "source_section": sec_title,
@@ -144,13 +213,33 @@ def get_broken_links(
             if not file_part:
                 continue
 
-            # Skip things that look like mailto: or protocol:// but weren't caught above
-            if ":" in file_part and not file_part.startswith("."):
+            # A scheme prefix means a URL. Known external schemes were already
+            # filtered; anything still here is an unrecognized/typo'd scheme —
+            # a genuinely dead link, not something to silently drop (#47.6).
+            if _SCHEME_RE.match(file_part):
+                broken.append({
+                    "source_file": source_doc,
+                    "source_section": sec_title,
+                    "source_section_id": sec_id,
+                    "target": href,
+                    "reason": "unknown_scheme",
+                })
                 continue
 
             resolved = _resolve_file_path(source_doc, file_part)
 
             if resolved not in doc_path_set:
+                # Not an indexed doc — but it may be an existing non-doc file
+                # (image, LICENSE, source). Stat the filesystem before flagging
+                # it missing (#49). With no source_root (e.g. GitHub indexes) we
+                # can't stat, so don't claim missing for non-doc extensions.
+                if src_root:
+                    if os.path.exists(os.path.join(src_root, resolved)):
+                        continue
+                else:
+                    ext = os.path.splitext(resolved)[1].lower()
+                    if ext and ext not in ALL_EXTENSIONS:
+                        continue
                 broken.append({
                     "source_file": source_doc,
                     "source_section": sec_title,
@@ -161,7 +250,8 @@ def get_broken_links(
                 continue
 
             # File exists; now check anchor if present
-            if anchor and not _anchor_matches_section(anchor, resolved, sections):
+            if anchor and not _anchor_matches_section(anchor, resolved, sections,
+                                                      gh_by_doc.get(resolved)):
                 broken.append({
                     "source_file": source_doc,
                     "source_section": sec_title,
