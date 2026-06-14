@@ -97,6 +97,7 @@ from .sections import (
     compute_content_hash,
     extract_references,
     extract_tags,
+    extract_inline_code,
 )
 
 _ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$")
@@ -282,11 +283,12 @@ def parse_markdown(content: str, doc_path: str, repo: str) -> list:
         )
         sec.content_hash = compute_content_hash(body)
         sec.references = extract_references(body)
-        # Tags come from a prose-only view: fenced code and frontmatter are
-        # blanked so code tokens / YAML values don't pollute the taxonomy (#57).
-        sec.tags = extract_tags(
-            _prose_view(seg_bytes, current_byte_start, finalized_blocks, fm_byte_end)
-        )
+        # Tags + inline code come from a prose-only view: fenced code and
+        # frontmatter are blanked so code tokens / YAML values don't pollute
+        # the taxonomy (#57) and fenced code isn't double-counted as inline (#59).
+        prose = _prose_view(seg_bytes, current_byte_start, finalized_blocks, fm_byte_end)
+        sec.tags = extract_tags(prose)
+        sec.inline_code = extract_inline_code(prose)
         sections.append(sec)
         current_code_blocks = []
 

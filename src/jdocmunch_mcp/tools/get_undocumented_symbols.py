@@ -110,11 +110,19 @@ def get_undocumented_symbols(
     from ..retrieval.tokenize import tokenize_unique
 
     haystack_tokens: set[str] = set()
+    # Exact lowercased inline-code spans (#59): an exact name match here is an
+    # authoritative "documented" signal, stronger than incidental token overlap.
+    exact_spans: set[str] = set()
     for sec in index.sections:
         haystack_tokens |= tokenize_unique(sec.get("title") or "")
         haystack_tokens |= tokenize_unique(sec.get("summary") or "")
         if sec.get("content"):
             haystack_tokens |= tokenize_unique(sec["content"])
+        # Inline backtick mentions are how prose names symbols (#59): feed them
+        # into the haystack (recall) and keep their exact forms (precision).
+        for span in sec.get("inline_code", []) or []:
+            haystack_tokens |= tokenize_unique(span)
+            exact_spans.add(span.lower())
 
     undocumented: list[dict] = []
     documented_count = 0
@@ -123,9 +131,10 @@ def get_undocumented_symbols(
         qualified = sym.get("qualified_name") or sym.get("fqn") or ""
         sym_tokens = tokenize_unique(name) | tokenize_unique(qualified)
         sym_tokens = {t for t in sym_tokens if len(t) >= 3}
-        # Symbol is documented when at least one of its meaningful tokens
-        # appears in the doc index.
-        hit = bool(sym_tokens) and bool(sym_tokens & haystack_tokens)
+        # Documented when an exact inline-span names the symbol, or at least one
+        # of its meaningful tokens appears in the doc index.
+        exact_hit = name.lower() in exact_spans or (qualified and qualified.lower() in exact_spans)
+        hit = exact_hit or (bool(sym_tokens) and bool(sym_tokens & haystack_tokens))
         if hit:
             documented_count += 1
         else:

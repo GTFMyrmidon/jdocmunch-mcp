@@ -29,6 +29,10 @@ class Section:
     #    "byte_start": int, "byte_end": int}
     # block_id format: "{section_id}::code#{n}" (n is 0-based per section).
     code_blocks: list = field(default_factory=list)
+    # v1.78.0 (#59): identifier-shaped inline code spans (`name`) from the
+    # section's prose, deduped, for the code<->docs bridge tools. Persisted
+    # only when non-empty (like code_blocks).
+    inline_code: list = field(default_factory=list)
     # v1.18.0: format-specific structured metadata. Examples:
     #   metadata.openapi_op    = {method, path, operationId, summary, ...}
     #   metadata.openapi_schema = {name, type, properties, required, ...}
@@ -56,6 +60,8 @@ class Section:
             d["embedding"] = self.embedding
         if self.code_blocks:
             d["code_blocks"] = self.code_blocks
+        if self.inline_code:
+            d["inline_code"] = self.inline_code
         if self.metadata:
             d["metadata"] = self.metadata
         # Preserve inline content for sections that cannot be recovered via
@@ -85,6 +91,7 @@ class Section:
             content_hash=data.get("content_hash", ""),
             embedding=data.get("embedding", []),
             code_blocks=data.get("code_blocks", []),
+            inline_code=data.get("inline_code", []),
             metadata=data.get("metadata", {}),
         )
 
@@ -250,3 +257,33 @@ def extract_references(content: str) -> list:
 def extract_tags(content: str) -> list:
     """Extract #hashtag style tags from content."""
     return list(dict.fromkeys(_TAG_RE.findall(content)))
+
+
+# Identifier-shaped inline code spans for the code<->docs bridge (#59).
+_INLINE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def extract_inline_code(content: str, cap: int = 40) -> list:
+    """Extract deduped, identifier-shaped inline code spans from prose.
+
+    Callers should pass a fenced-code-free view (fenced code is its own
+    artifact). A trailing ``()`` is dropped; spans must look like an
+    identifier and be >= 3 chars. Capped to keep index growth negligible.
+    """
+    out: list = []
+    seen: set = set()
+    for span in _INLINE_SPAN_RE.findall(content):
+        name = span.strip()
+        if name.endswith("()"):
+            name = name[:-2]
+        if len(name) < 3 or not _IDENT_RE.match(name):
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+        if len(out) >= cap:
+            break
+    return out

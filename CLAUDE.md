@@ -1,6 +1,26 @@
 # jdocmunch-mcp
 
-**Version:** 1.77.0 | **Tests:** `pytest tests/ -q` (1388 passed)
+**Version:** 1.78.0 | **Tests:** `pytest tests/ -q` (1394 passed)
+
+## v1.78.0 - inline_code artifact for the code<->docs bridge (#59)
+Final links-group release (tracking #61). The parser extracted only fenced
+`code_blocks`, so inline backtick mentions (`name`) — the conventional way prose
+names symbols — never reached `link_code_to_symbols` or
+`get_undocumented_symbols`; on a prose-heavy corpus the symbol<->docs bridge saw
+~2 of 10 symbol-naming files. Three layers: **parser** — new
+`extract_inline_code` collects identifier-shaped spans (trailing `()` stripped,
+`^[A-Za-z_][A-Za-z0-9_.]*$`, len>=3, deduped, cap 40) from the same prose view
+used for tags (so fenced code isn't double-counted), persisted as
+`Section.inline_code` (omitted when empty; `from_dict`/`to_dict` round-trip,
+no migration). **link_code_to_symbols** — each section's inline spans become a
+synthetic `{section_id}::inline` bridge input routed through the same
+identifier->search_symbols->by_block/by_symbol path (loop refactored to handle
+code blocks + inline uniformly). **get_undocumented_symbols** — inline spans
+feed the haystack (recall) and an exact lowercased-span set marks an exact
+name/qualified_name as authoritative-documented (precision). **Reindex
+required** to populate `inline_code`. Tests: `tests/test_v1_78_0.py` (6).
+**Links group complete** (#47, #48, #49, #50, #59). Remaining: frontmatter/
+scoring tail (#54, #58, #60) + the #52 get_section_diff follow-on.
 
 ## v1.77.0 - get_broken_links: fs existence + GitHub anchors + scheme parsing (#49, #50, #47.6)
 Second links-group release (tracking #61); the consumer-layer link-health

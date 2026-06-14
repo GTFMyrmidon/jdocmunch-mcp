@@ -108,12 +108,19 @@ def link_code_to_symbols(
 
     if bridge_available:
         for sec in index.sections:
-            blocks = sec.get("code_blocks", []) or []
-            for blk in blocks:
+            # Fenced blocks plus a synthetic entry for the section's inline code
+            # spans (#59) — inline backtick mentions are how prose names symbols.
+            inputs: list[tuple[str, list[str]]] = [
+                (blk.get("block_id", ""), _extract_identifiers(blk.get("content", "")))
+                for blk in (sec.get("code_blocks", []) or [])
+            ]
+            inline = sec.get("inline_code", []) or []
+            if inline:
+                inputs.append((f"{sec.get('id', '')}::inline", list(inline)))
+            for block_id, idents in inputs:
                 if blocks_examined >= max_examples:
                     break
                 blocks_examined += 1
-                idents = _extract_identifiers(blk.get("content", ""))
                 if not idents:
                     continue
                 resolved: list[str] = []
@@ -136,7 +143,6 @@ def link_code_to_symbols(
                     if len(resolved) >= max_symbols_per_block:
                         break
                 if resolved:
-                    block_id = blk.get("block_id", "")
                     by_block[block_id] = resolved
                     for sid in resolved:
                         by_symbol.setdefault(sid, []).append(block_id)
