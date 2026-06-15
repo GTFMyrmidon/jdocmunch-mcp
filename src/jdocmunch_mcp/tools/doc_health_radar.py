@@ -65,6 +65,7 @@ def doc_health_radar(
         role_distribution=role_dist,
         has_canary=has_canary,
         drift_alarm=drift_alarm,
+        structural_warnings=int((health.get("structural") or {}).get("structural_warning_count") or 0),
     )
 
     result = {

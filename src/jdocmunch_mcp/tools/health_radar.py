@@ -43,6 +43,16 @@ def _score_link_integrity(broken_links: int, section_count: int) -> float:
     return _clamp(100.0 - 1000.0 * ratio)
 
 
+def _score_structural_integrity(structural_warnings: int, section_count: int) -> float:
+    """0 warnings -> 100; 10% of sections warned -> 0 (#54). Structural damage
+    (fence accidents swallowing sections, level skips) is severe, so it uses the
+    same steep slope as link_integrity."""
+    if section_count <= 0:
+        return 100.0
+    ratio = structural_warnings / section_count
+    return _clamp(100.0 - 1000.0 * ratio)
+
+
 def _score_orphan_health(orphan_count: int, section_count: int) -> float:
     """0% orphans -> 100; 50% orphans -> 0."""
     if section_count <= 0:
@@ -94,6 +104,7 @@ def compute_radar(
     role_distribution: dict[str, int],
     has_canary: bool = False,
     drift_alarm: Optional[bool] = None,
+    structural_warnings: int = 0,
 ) -> dict:
     """Compute the six-axis radar from raw doc signals.
 
@@ -130,6 +141,10 @@ def compute_radar(
         "role_coverage": {
             "score": _score_role_coverage(role_distribution, section_count),
             "raw_unknown": role_distribution.get("unknown", 0),
+        },
+        "structural_integrity": {
+            "score": _score_structural_integrity(structural_warnings, section_count),
+            "raw_warnings": structural_warnings,
         },
     }
 

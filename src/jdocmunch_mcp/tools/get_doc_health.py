@@ -19,7 +19,42 @@ Single round-trip; cheap to run. Useful as a CI check or periodic ping.
 
 from __future__ import annotations
 
+import re
 import time
+
+# Structural-integrity signals (#54). A column-0 H2+ line inside a stored
+# fenced body means a fence accident swallowed real headings as code; a
+# heading-level jump (e.g. H2 -> H4) signals a malformed outline. Markdown-
+# variant fences are exempt (legitimate markdown examples).
+_SWALLOWED_HEADING_RE = re.compile(r"(?m)^#{2,6}\s")
+_MD_FENCE_LANGS = {"md", "markdown", "mdx"}
+
+
+def _structural_signals(sections: list) -> dict:
+    """Compute structural-integrity warnings from already-persisted data (#54):
+    headings swallowed into stored code blocks, and heading-level skips. No
+    parser change and no reindex needed beyond what populated code_blocks."""
+    swallowed = 0
+    level_skips = 0
+    prev_level: dict[str, int] = {}
+    for sec in sections:
+        for blk in (sec.get("code_blocks") or []):
+            if (blk.get("lang") or "").lower() in _MD_FENCE_LANGS:
+                continue
+            if _SWALLOWED_HEADING_RE.search(blk.get("content") or ""):
+                swallowed += 1
+        lvl = int(sec.get("level") or 0)
+        if lvl > 0:
+            doc = sec.get("doc_path", "")
+            prev = prev_level.get(doc)
+            if prev is not None and lvl - prev > 1:
+                level_skips += 1
+            prev_level[doc] = lvl
+    return {
+        "swallowed_heading_blocks": swallowed,
+        "level_skips": level_skips,
+        "structural_warning_count": swallowed + level_skips,
+    }
 from typing import Optional
 
 from ..retrieval.freshness import FreshnessProbe
@@ -99,6 +134,8 @@ def get_doc_health(
     has_emb = index._has_embeddings()
     embedding_count = sum(1 for s in index.sections if s.get("embedding"))
 
+    structural = _structural_signals(index.sections)
+
     payload = {
         "repo": f"{owner}/{name}",
         "section_count": len(index.sections),
@@ -107,6 +144,7 @@ def get_doc_health(
         "freshness": fresh_counts,
         "broken_link_count": broken_link_count,
         "orphan_section_count": orphan_count,
+        "structural": structural,
         "drift": {"has_canary": drift_alarm is not None, "alarm": drift_alarm, "max_drift": drift_max},
         "bm25": bm25_summary,
         "embeddings": {"present": has_emb, "covered_sections": embedding_count},

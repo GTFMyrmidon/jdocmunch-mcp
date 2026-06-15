@@ -1,6 +1,26 @@
 # jdocmunch-mcp
 
-**Version:** 1.80.0 | **Tests:** `pytest tests/ -q` (1403 passed)
+**Version:** 1.81.0 | **Tests:** `pytest tests/ -q` (1409 passed)
+
+## v1.81.0 - structural_integrity health axis (#54) — @mmashwani batch COMPLETE
+Last issue of the 26-issue batch (tracking #61). `doc_health_radar` /
+`get_doc_health` had no structural axis, so an index that silently lost sections
+to a fence accident (unclosed fence at EOF, or a stray early closer) graded
+identically to its repair — the documented CI gate gave false assurance on the
+worst failure mode. New `structural_integrity` axis, fed entirely from
+already-persisted data (no parser change, no reindex beyond what populates
+code_blocks): `_structural_signals` counts headings swallowed into stored fenced
+bodies (column-0 `^#{2,6}` lines, markdown-variant fences exempt — catches both
+the EOF-open shape via the #51 flush and the early-close shape) plus
+heading-level skips (consecutive `level` jumps > 1 per doc, the persisted-but-
+unread `level` field). `compute_radar` grows a `structural_integrity` axis
+(`_score_structural_integrity`, same steep slope as link_integrity); the
+warnings flow get_doc_health -> doc_health_radar -> compute_radar. On the report's
+repro, repairing the swallowed sections now moves the axis 0 -> 100 and the
+composite/grade (was identical before). Deferred sub-signal: empty-link
+(`[t]()`) detection needs extraction-layer plumbing; the level-skip already
+flags the report's good.md, so coverage holds. Tests: `tests/test_v1_81_0.py`
+(6). **All 26 of @mmashwani's issues now shipped** (v1.70.3 -> v1.81.0).
 
 ## v1.80.0 - shared prose view for hybrid-search scoring (#58)
 Second of the frontmatter/scoring tail (tracking #61). Hybrid `search_sections`
