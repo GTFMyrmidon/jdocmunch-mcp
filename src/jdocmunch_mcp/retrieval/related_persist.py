@@ -40,6 +40,7 @@ still returns identical shapes when the sidecar is absent.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -56,6 +57,19 @@ _FILENAME = "{name}.related.json"
 _LOCK = threading.Lock()
 _SCHEMA_VERSION = 1
 
+logger = logging.getLogger(__name__)
+
+# Rows of the cosine matrix computed per matmul; bounds peak extra memory to
+# roughly _SEMANTIC_ROW_BLOCK * N * 8 bytes regardless of corpus size.
+_SEMANTIC_ROW_BLOCK = 512
+
+# When numpy is unavailable the semantic build falls back to the pure-Python
+# all-pairs path (O(N^2) interpreted cosine). Above this many embedded sections
+# that fallback would stall indexing (jdoc#62), so we skip semantic edges and
+# log instead. The numpy fast path -- the normal embedded-corpus case, since the
+# embedding stack already pulls numpy in -- has no such cap.
+_PUREPY_SEMANTIC_MAX = 2_000
+
 
 def _path(base_path: Optional[str], owner: str, name: str) -> Path:
     root = Path(base_path) if base_path else Path.home() / ".doc-index"
@@ -64,14 +78,87 @@ def _path(base_path: Optional[str], owner: str, name: str) -> Path:
     return root / safe_owner / _FILENAME.format(name=safe_name)
 
 
+def _semantic_edges_matrix(section_dicts, *, top_n, min_score):
+    """All-pairs semantic neighbors in one normalized matmul (jdoc#62).
+
+    Equivalent to calling ``semantic_neighbors`` for every section, but computes
+    the whole cosine matrix in bulk rather than one pure-Python pair at a time.
+    Returns ``{section_id: [edge, ...]}`` for sections that carry an embedding
+    (others are absent; the caller maps them to ``[]``). Returns ``None`` when
+    numpy cannot be imported, so ``build`` can fall back to the pure-Python path.
+
+    Parity with ``semantic_neighbors`` is deliberate and exact:
+      * cosine via L2-normalized dot product (a zero vector scores 0 against
+        everything, matching ``cosine_similarity``'s ``norm == 0 -> 0.0`` guard);
+      * keep edges with ``score >= min_score``, self excluded;
+      * order by score descending, ties broken by ascending section order (the
+        reference appends in order, then stable-sorts ``reverse=True``);
+      * ``top_n`` cap; each edge ``{id, title, level, score}`` rounded to 4dp.
+    """
+    try:
+        import numpy as np
+    except Exception:
+        return None
+
+    # Embedded sections only, kept in original order (drives the tie-break).
+    ids: list = []
+    titles: list = []
+    levels: list = []
+    vectors: list = []
+    for sec in section_dicts:
+        sid = sec.get("id")
+        emb = sec.get("embedding")
+        if sid and emb:
+            ids.append(sid)
+            titles.append(sec.get("title", ""))
+            levels.append(sec.get("level", 0))
+            vectors.append(emb)
+    if not vectors:
+        return {}
+
+    # float64 so cosine values round to the same 4 decimals as the pure-Python
+    # reference. Normalize once; cosine is then a plain dot product.
+    matrix = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0  # zero vector stays zero -> scores 0, never NaN
+    matrix /= norms
+
+    n = matrix.shape[0]
+    edges: dict = {}
+    for start in range(0, n, _SEMANTIC_ROW_BLOCK):
+        block = matrix[start:start + _SEMANTIC_ROW_BLOCK]   # (b, D)
+        sims = block @ matrix.T                              # (b, N) cosine
+        for offset in range(sims.shape[0]):
+            i = start + offset
+            row = sims[offset]
+            row[i] = -1.0                                    # never self
+            cand = np.nonzero(row >= min_score)[0]
+            if cand.size == 0:
+                edges[ids[i]] = []
+                continue
+            # lexsort's last key is primary: score desc, then original index asc.
+            chosen = cand[np.lexsort((cand, -row[cand]))][:top_n]
+            edges[ids[i]] = [
+                {
+                    "id": ids[j],
+                    "title": titles[j],
+                    "level": levels[j],
+                    "score": round(float(row[j]), 4),
+                }
+                for j in chosen
+            ]
+    return edges
+
+
 def build(sections: list, *, top_n_semantic: int = 5, min_score: float = 0.6) -> dict:
     """Compute the full adjacency list from a list of section dicts.
 
     Hot-path build for `index_local`: was O(N^2) per outer iteration (jdoc#14)
     because `section_dicts`, the by-id map, and per-parent child scans were
-    rebuilt inside the loop. Precomputed once now; structural build is O(N),
-    semantic build remains O(N^2) on embedding sets (capped output per
-    section keeps the sidecar size linear).
+    rebuilt inside the loop. Precomputed once now; structural build is O(N).
+    The semantic half is vectorized via a single numpy matmul (jdoc#62) when
+    numpy is present, with a pure-Python all-pairs fallback (size-guarded)
+    when it is not. Output is unchanged either way.
     """
     # Single normalization pass — Section objects → dicts.
     section_dicts = [
@@ -79,6 +166,26 @@ def build(sections: list, *, top_n_semantic: int = 5, min_score: float = 0.6) ->
     ]
     by_id_cache = _related_by_id(section_dicts)
     children_cache = _children_by_parent(section_dicts)
+
+    # jdoc#62: compute every semantic edge in one vectorized pass when numpy
+    # is available, instead of an O(N^2) per-section pure-Python cosine. The
+    # result is identical to calling semantic_neighbors() for every section.
+    semantic_map = _semantic_edges_matrix(
+        section_dicts, top_n=top_n_semantic, min_score=min_score
+    )
+    skip_semantic = False
+    if semantic_map is None:
+        embedded = sum(
+            1 for s in section_dicts if s.get("id") and s.get("embedding")
+        )
+        if embedded > _PUREPY_SEMANTIC_MAX:
+            logger.warning(
+                "related sidecar: numpy unavailable and %d embedded sections "
+                "exceed the pure-Python cap (%d); skipping semantic edges. "
+                "Install numpy for full semantic neighbors at this scale.",
+                embedded, _PUREPY_SEMANTIC_MAX,
+            )
+            skip_semantic = True
 
     by_section: dict = {}
     for sec in section_dicts:
@@ -91,13 +198,19 @@ def build(sections: list, *, top_n_semantic: int = 5, min_score: float = 0.6) ->
             _by_id_cache=by_id_cache,
             _children_cache=children_cache,
         )
-        sem = semantic_neighbors(
-            section_dicts,
-            sid,
-            top_n=top_n_semantic,
-            min_score=min_score,
-            _by_id_cache=by_id_cache,
-        )
+        if semantic_map is not None:
+            sem = semantic_map.get(sid, [])
+        elif skip_semantic:
+            sem = []
+        else:
+            # numpy absent and corpus small enough: identical pure-Python path.
+            sem = semantic_neighbors(
+                section_dicts,
+                sid,
+                top_n=top_n_semantic,
+                min_score=min_score,
+                _by_id_cache=by_id_cache,
+            )
         by_section[sid] = {"structural": struct, "semantic": sem}
     return {
         "version": _SCHEMA_VERSION,

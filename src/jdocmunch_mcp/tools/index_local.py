@@ -551,6 +551,22 @@ def index_local(
                 owner=owner, name=repo_name, storage_path=storage_path,
             )
 
+        # jdoc#62: persist the core index BEFORE the optional sidecars. The
+        # sidecars (the related-graph build especially) are best-effort
+        # enrichment; a slow or failing one must never delay or block the
+        # index that retrieval actually needs.
+        saved = store.save_index(
+            owner=owner,
+            name=repo_name,
+            sections=all_sections,
+            raw_files=raw_files,
+            doc_types=doc_types,
+            head_sha=head_sha,
+            source_dirty=source_dirty,
+            sha_certified=sha_certified,
+            source_root=str(folder_path),
+        )
+
         # v1.19.0: glossary sidecar built from final section content.
         try:
             entries = extract_glossary(all_sections)
@@ -593,18 +609,6 @@ def index_local(
                 )
             except Exception:
                 autotune_result = None
-
-        saved = store.save_index(
-            owner=owner,
-            name=repo_name,
-            sections=all_sections,
-            raw_files=raw_files,
-            doc_types=doc_types,
-            head_sha=head_sha,
-            source_dirty=source_dirty,
-            sha_certified=sha_certified,
-            source_root=str(folder_path),
-        )
 
         latency_ms = int((time.perf_counter() - t0) * 1000)
         result = {

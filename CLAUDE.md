@@ -1,6 +1,35 @@
 # jdocmunch-mcp
 
-**Version:** 1.81.0 | **Tests:** `pytest tests/ -q` (1409 passed)
+**Version:** 1.82.0 | **Tests:** `pytest tests/ -q` (1413 passed)
+
+## v1.82.0 - vectorized related-graph semantic build + core index saved first (#62)
+New report from @mmashwani (his first since the 26-issue batch closed at
+v1.81.0). `related_persist.build`'s semantic half was an O(N^2) pure-Python
+all-pairs cosine (`semantic_neighbors` per section, each a full
+`cosine_similarity` scan), so on his ~10.7k-section embedded corpus it pinned a
+core for an extrapolated ~45 min and never produced `related.json`; worse, the
+sidecar was sequenced BEFORE `save_index` in `index_local`, so the slow build
+gated the core index (sections + embeddings, all retrieval needs) from being
+written, and the single tool call exceeded the client timeout even after #34's
+`asyncio.to_thread`. **Two fixes.** (1) **Vectorized semantic build:** new
+`_semantic_edges_matrix` L2-normalizes the embedding set once and computes
+cosine as a single chunked numpy matmul (`block @ matrix.T`, 512-row blocks to
+bound peak memory), top-N per row via `lexsort` — byte-for-byte identical
+output to `semantic_neighbors` (same `>= min_score` threshold, top-5 cap,
+self-exclusion, 4dp rounding, score-desc/index-asc tie order). numpy is
+imported lazily with a pure-Python fallback, so it stays a soft dep (the
+embedding stack already pulls numpy in wherever this path does real work); a
+`_PUREPY_SEMANTIC_MAX` (2000) guard skips the semantic half with a logged
+warning in the rare numpy-absent-but-large case rather than stalling.
+Clean-room implementation (not the reporter's patch); a dedicated parity test
+asserts exact equivalence to the untouched reference across the 512-row block
+boundary with ties / no-embedding / zero-vector / top-5-cap cases. (2)
+**Sidecar ordering:** `index_local` now calls `save_index` BEFORE the
+related/boilerplate/dedup sidecars, so the core index always lands first and a
+slow or failing sidecar can never block it. Additive, 1.x-compatible (faster
+internal algorithm, identical public output). Tests: `tests/test_v1_82_0.py`
+(4). Query-time `_semantic_search`/`_hybrid_search` in doc_store stay
+per-section pure-Python (a separate deferred path, out of scope here).
 
 ## v1.81.0 - structural_integrity health axis (#54) — @mmashwani batch COMPLETE
 Last issue of the 26-issue batch (tracking #61). `doc_health_radar` /
