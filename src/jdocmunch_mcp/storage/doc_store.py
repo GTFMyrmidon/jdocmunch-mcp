@@ -255,6 +255,66 @@ class DocIndex:
     def _strip(sec: dict) -> dict:
         return {k: v for k, v in sec.items() if k not in ("content", "embedding")}
 
+    def _ensure_semantic_matrix(self):
+        """Lazily build and cache this index's L2-normalized embedding matrix
+        (jdoc#63). Returns (np, matrix, rows) with rows the embedded sections in
+        matrix-row order, or None when numpy is unavailable or there are no
+        embeddings (caller then scores per-section in pure Python). Cached on the
+        instance; DocStore caches a DocIndex by index path + mtime, so a re-index
+        yields a fresh instance and the matrix rebuilds -- no manual invalidation.
+        The cache attr is set lazily (not a dataclass field), so it never
+        serializes.
+        """
+        cached = getattr(self, "_sem_matrix_cache", "unset")
+        if cached != "unset":
+            return cached
+        try:
+            import numpy as np
+        except Exception:
+            self._sem_matrix_cache = None
+            return None
+        rows = [s for s in self.sections if s.get("embedding")]
+        result = None
+        if rows:
+            mat = np.asarray([s["embedding"] for s in rows], dtype=np.float64)
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0.0] = 1.0   # zero vector stays zero -> cosine 0, never NaN
+            mat /= norms
+            result = (np, mat, rows)
+        self._sem_matrix_cache = result
+        return result
+
+    def _semantic_scored(self, query_vec, doc_path, path_glob):
+        """Unsorted [(cosine, section), ...] for embedded, path-included sections
+        (jdoc#63). One matrix-vector product when numpy is present, else the
+        original per-section pure-Python cosine. Equivalent to the loop it
+        replaces: same self / no-embedding / path filters, same cosine score.
+        """
+        built = self._ensure_semantic_matrix()
+        if built is None:
+            out = []
+            for sec in self.sections:
+                if self._path_excluded(sec, doc_path, path_glob):
+                    continue
+                emb = sec.get("embedding")
+                if not emb:
+                    continue
+                out.append((cosine_similarity(query_vec, emb), sec))
+            return out
+        np, mat, rows = built
+        q = np.asarray(query_vec, dtype=np.float64)
+        qn = float(np.linalg.norm(q))
+        if qn == 0.0:
+            return []
+        q = q / qn
+        scores = mat @ q   # (R,) cosine in one BLAS call
+        out = []
+        for i, sec in enumerate(rows):
+            if self._path_excluded(sec, doc_path, path_glob):
+                continue
+            out.append((float(scores[i]), sec))
+        return out
+
     def _semantic_search(
         self,
         query: str,
@@ -267,16 +327,8 @@ class DocIndex:
         if not query_vec:
             return []
 
-        scored = []
-        for sec in self.sections:
-            if self._path_excluded(sec, doc_path, path_glob):
-                continue
-            sec_emb = sec.get("embedding")
-            if not sec_emb:
-                continue
-            score = cosine_similarity(query_vec, sec_emb)
-            scored.append((score, sec))
-
+        # jdoc#63: one matrix-vector product instead of a per-section cosine.
+        scored = self._semantic_scored(query_vec, doc_path, path_glob)
         scored.sort(key=lambda x: (-x[0], x[1].get("id", "")))
         out: list[dict] = []
         for score, sec in scored[:max_results]:
@@ -333,16 +385,9 @@ class DocIndex:
         lex_ranking = [s.get("id", "") for _, s in lex_pairs]
 
         # ----- Semantic ranking (cosine over stored embeddings) -----
-        sem_pairs: list[tuple[float, dict]] = []
-        if query_vec:
-            for sec in self.sections:
-                if self._path_excluded(sec, doc_path, path_glob):
-                    continue
-                sec_emb = sec.get("embedding")
-                if not sec_emb:
-                    continue
-                sem_pairs.append((cosine_similarity(query_vec, sec_emb), sec))
-            sem_pairs.sort(key=lambda x: (-x[0], x[1].get("id", "")))
+        # jdoc#63: vectorized semantic scoring (same ranking as the loop).
+        sem_pairs = self._semantic_scored(query_vec, doc_path, path_glob) if query_vec else []
+        sem_pairs.sort(key=lambda x: (-x[0], x[1].get("id", "")))
         sem_ranking = [s.get("id", "") for _, s in sem_pairs]
 
         if not lex_ranking and not sem_ranking:

@@ -1,6 +1,29 @@
 # jdocmunch-mcp
 
-**Version:** 1.82.0 | **Tests:** `pytest tests/ -q` (1413 passed)
+**Version:** 1.83.0 | **Tests:** `pytest tests/ -q` (1418 passed)
+
+## v1.83.0 - vectorized query-time semantic scoring (#63)
+Companion to #62 from @mmashwani, on the query path he flagged as the separate
+deferred item. `DocIndex._semantic_search` and the semantic half of
+`_hybrid_search` scored the query against every embedded section with a
+per-section pure-Python `cosine_similarity` (O(N*D) per query, ~242 ms on his
+10.7k-section corpus, and synchronous on the event loop so it blocked other
+calls). Fix: new `DocIndex._ensure_semantic_matrix` builds + caches an
+L2-normalized embedding matrix once per index (cached on the instance, which
+DocStore already keys by index path + mtime, so a re-index rebuilds it with no
+manual invalidation; the cache attr is not a dataclass field so it never
+serializes), and `_semantic_scored` replaces both scoring loops with a single
+matrix-vector product (`mat @ q`). numpy is imported lazily with the original
+per-section loop as the fallback. Same returned tuples, same `(-score, id)`
+sort, same `_path_excluded` / no-embedding filtering, same downstream RRF;
+float64 keeps `_score` equal to the pure-Python value to fp noise. Clean-room
+implementation (not the reporter's patch); parity test `tests/test_v1_83_0.py`
+(5) asserts the vectorized `_semantic_search` matches the untouched
+`cosine_similarity` reference (top-k order + scores within 1e-9), plus
+tie / no-embedding / zero-vector / path_glob / cache / fallback cases. Additive,
+1.x-compatible. Deferred (low urgency now the scan is sub-ms): dispatching
+`search_sections` via `asyncio.to_thread`, and the same matrix for
+`find_similar_sections`.
 
 ## v1.82.0 - vectorized related-graph semantic build + core index saved first (#62)
 New report from @mmashwani (his first since the 26-issue batch closed at
