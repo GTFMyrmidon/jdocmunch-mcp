@@ -22,18 +22,34 @@ from typing import Optional
 # Text preparation
 # ---------------------------------------------------------------------------
 
+# Bump when _section_embed_text's derivation changes, so the content_hash-keyed
+# embedding cache re-embeds instead of serving vectors built from the old text.
+_EMBED_TEXT_VERSION = "pv1"
+
+
 def _section_embed_text(section) -> str:
     """Build the text to embed for a section.
 
     Prepends title so short-titled sections (e.g. "Emotional Consequences"
-    followed by a bullet list) still get a semantically rich embedding.
+    followed by a bullet list) still get a semantically rich embedding. The
+    content is reduced to its prose view (frontmatter + fences stripped, #58)
+    BEFORE the cap, so the embed window holds prose rather than YAML/TOML keys
+    or fenced code, matching the BM25 channel's text.
     """
+    from ..retrieval.tokenize import prose_view
     parts = [section.title]
     if section.summary and section.summary != section.title:
         parts.append(section.summary)
     if section.content:
-        parts.append(section.content[:1000])
+        parts.append(prose_view(section.content).strip()[:1000])
     return "\n".join(parts)
+
+
+def _embed_cache_key(section) -> str:
+    """Cache key for a section's embedding: content_hash salted with the embed
+    text-derivation version, so a derivation change (#58) invalidates cleanly."""
+    h = getattr(section, "content_hash", "") or ""
+    return f"{h}#{_EMBED_TEXT_VERSION}" if h else ""
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +403,8 @@ def embed_sections(
     misses: list = []
     miss_indices: list[int] = []
     for i, sec in enumerate(sections):
-        h = getattr(sec, "content_hash", "") or ""
-        vec = cached.get(h) if h else None
+        k = _embed_cache_key(sec)
+        vec = cached.get(k) if k else None
         if vec:
             sec.embedding = vec
         else:
@@ -411,10 +427,10 @@ def embed_sections(
         from . import cache as _cache
         entries = []
         for sec in sections:
-            h = getattr(sec, "content_hash", "") or ""
+            k = _embed_cache_key(sec)
             vec = getattr(sec, "embedding", None)
-            if h and vec:
-                entries.append((h, list(vec)))
+            if k and vec:
+                entries.append((k, list(vec)))
         if entries:
             try:
                 _cache.write(

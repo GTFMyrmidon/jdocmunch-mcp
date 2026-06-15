@@ -2,9 +2,10 @@
 
 Produces a flat list of lowercase tokens suitable for indexing or scoring:
 
-- Strips fenced code blocks (already excluded by the v1.10.0 parser, but
-  we re-scrub here to be defensive about non-parser callers like ad-hoc
-  scoring helpers).
+- Strips top-of-text frontmatter (YAML --- / TOML +++) and fenced code
+  blocks. (Section content is byte-accurate and retains both; this is the
+  shared prose view both the lexical and semantic channels score over, so
+  fusion compares the same text — see prose_view and #58.)
 - Strips inline backticks but keeps their contents.
 - URLs collapse to host + path tokens (so ``https://api.example.com/v2/users``
   yields ``api`` ``example`` ``com`` ``v2`` ``users``).
@@ -34,8 +35,23 @@ STOP_WORDS: frozenset[str] = frozenset(
     }
 )
 
+# Top-of-text frontmatter: a --- or +++ opener at offset 0 closed by the SAME
+# delimiter (backreference), so a YAML/TOML metadata block doesn't flood the
+# scoring text (acutely the capped embed window — #58).
+_FRONTMATTER_RE = re.compile(
+    r"\A(---|\+\+\+)[ \t]*\r?\n.*?^\1[ \t]*\r?\n?", re.DOTALL | re.MULTILINE
+)
 # ``` or ~~~ fenced code, dotall to span newlines.
 _FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
+
+
+def prose_view(text: str) -> str:
+    """Front-matter-free, fence-free view of section content (#58).
+
+    The shared derivation for both scoring channels so hybrid fusion compares
+    the same text. Does not touch Section.content / content_hash.
+    """
+    return _FENCE_RE.sub(" ", _FRONTMATTER_RE.sub(" ", text))
 # Inline code: drop the backticks but keep contents (often valuable identifiers).
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 # URLs: capture and replace with their host + path tokens.
@@ -72,7 +88,8 @@ def tokenize(text: str) -> list[str]:
     if not text:
         return []
 
-    # 1. Scrub fenced code, then markdown links, then URLs.
+    # 1. Scrub frontmatter, fenced code, then markdown links, then URLs.
+    text = _FRONTMATTER_RE.sub(" ", text)
     text = _FENCE_RE.sub(" ", text)
     text = _MD_LINK_RE.sub(lambda m: " " + m.group(1) + " ", text)
     text = _URL_RE.sub(lambda m: " " + _expand_url(m.group(0)) + " ", text)

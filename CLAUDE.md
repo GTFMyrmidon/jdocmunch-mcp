@@ -1,6 +1,24 @@
 # jdocmunch-mcp
 
-**Version:** 1.79.0 | **Tests:** `pytest tests/ -q` (1398 passed)
+**Version:** 1.80.0 | **Tests:** `pytest tests/ -q` (1403 passed)
+
+## v1.80.0 - shared prose view for hybrid-search scoring (#58)
+Second of the frontmatter/scoring tail (tracking #61). Hybrid `search_sections`
+fused a BM25 score (fences stripped by the tokenizer) with an embedding score
+(`title + summary + content[:1000]`, fences AND frontmatter raw), so the two
+channels scored different texts of the same section; a Jekyll/Hugo page with
+long frontmatter got a root embedding of title + pure YAML keys (the prose never
+reached the capped window). Fix at the consumption layer (parser content +
+content_hash untouched, avoiding the #35 hash-vs-byte-range pathology): new
+`prose_view` in `retrieval/tokenize.py` strips top-of-text frontmatter (YAML
+`---` / TOML `+++`, same-delimiter backreference) + fences; `tokenize()` applies
+the frontmatter strip (so the BM25 content path matches), and
+`_section_embed_text` reduces content via `prose_view` BEFORE the 1000-char cap.
+Embedding cache is keyed by `content_hash` (unchanged by the text fix), so the
+key is now salted with `_EMBED_TEXT_VERSION` ("pv1") — old vectors miss and
+re-embed instead of serving stale text. Stale tokenizer docstring corrected.
+**Reindex + re-embed** picks it up (cache salt forces it). Tests:
+`tests/test_v1_80_0.py` (5). Last in the batch: #54 (structural-integrity axis).
 
 ## v1.79.0 - TOML (+++) frontmatter recognition (#60)
 First of the frontmatter/scoring tail (tracking #61). `_frontmatter_end_line`
