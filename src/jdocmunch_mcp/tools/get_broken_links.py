@@ -21,10 +21,12 @@ _RST_REF_RE = re.compile(r":(?:ref|doc):`([^`]+)`")
 # RST explicit hyperlink targets: `text <target>`_
 _RST_HYPERLINK_RE = re.compile(r"`[^`]+\s+<([^>]+)>`_")
 
-# --- GitHub-rendered anchor namespace (#50) --------------------------------
+# --- Rendered-anchor namespace (#50, #64) -----------------------------------
 # Section titles preserve the raw inline markdown, but a renderer emits anchors
 # from the heading's rendered TEXT content, then github-slugger rules. Validate
-# #anchor links against that namespace, not jdocmunch's private section slugs.
+# #anchor links against the anchors a renderer actually emits, NOT jdocmunch's
+# private section slugs: the private slug is an internal index artifact no
+# renderer ever produces, so trusting it only hid genuinely broken links (#64).
 _GH_REDUCTIONS = [
     (re.compile(r"!\[([^\]]*)\]\([^)]*\)"), r"\1"),   # inline image -> alt
     (re.compile(r"!\[([^\]]*)\]\[[^\]]*\]"), r"\1"),  # reference image -> alt
@@ -56,27 +58,120 @@ def _github_slug(text: str) -> str:
     return _GH_SLUG_STRIP_RE.sub("", text.lower()).replace(" ", "-")
 
 
-def _build_github_anchors(sections: list) -> dict:
-    """Map each doc_path to the set of anchors GitHub would render for its
-    headings (rendered text + github-slugger, duplicates suffixed -1/-2 in
-    document order)."""
+# Explicit heading ids: a trailing {#custom-id} (Kramdown / Python-Markdown /
+# SSG attribute syntax). The id is a rendered anchor in its own right; the
+# marker is NOT part of the generated text slug, so it is stripped before
+# slugging — a heading "Foo {#bar}" renders anchors `bar` and the text slug
+# `foo`, never the marker-polluted `foo-bar`.
+_EXPLICIT_ID_MARKER_RE = re.compile(r"\s*\{#[^}]*\}\s*$")
+_EXPLICIT_ID_CAPTURE_RE = re.compile(r"\{#(?P<id>[^}]*)\}\s*$")
+# Raw HTML anchor targets embedded in doc bodies: <a id=>, <a name=>, <h* id=>.
+# Every Markdown engine that allows inline HTML renders these as real anchors.
+_HTML_ANCHOR_RE = re.compile(r"""<a\b[^>]*?\b(?:id|name)\s*=\s*["'](?P<id>[^"']+)["']""", re.I)
+_HTML_HEADING_ID_RE = re.compile(r"""<h[1-6]\b[^>]*?\bid\s*=\s*["'](?P<id>[^"']+)["']""", re.I)
+# A renderer-safe explicit/HTML id: starts with a letter, id-safe chars only. A
+# leading digit or whitespace means no renderer emits a usable fragment
+# (e.g. id="bad id with spaces", {#1-invalid} both fall back to a text slug).
+_SAFE_ANCHOR_ID_RE = re.compile(r"^[A-Za-z][\w-]*$")
+# Code/comment scrubbing so an <a id=> shown inside a fenced example or an HTML
+# comment is not mistaken for a real anchor target.
+_FENCE_TOGGLE_RE = re.compile(r"^\s{0,3}(```+|~~~+)")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def _split_explicit_id(title: str) -> tuple:
+    """Split a heading title into (text_without_marker, explicit_id_or_None).
+
+    ``explicit_id`` is returned (lowercased) only when the {#id} payload is a
+    renderer-safe id; an unsafe payload still has its marker stripped from the
+    text so the generated slug is the marker-free text slug, never the polluted
+    'heading-text-custom-id' form (#64)."""
+    m = _EXPLICIT_ID_CAPTURE_RE.search(title)
+    if not m:
+        return title, None
+    raw_id = m.group("id").strip()
+    text = _EXPLICIT_ID_MARKER_RE.sub("", title).rstrip()
+    explicit = raw_id.lower() if _SAFE_ANCHOR_ID_RE.match(raw_id) else None
+    return text, explicit
+
+
+def _scrub_code(text: str) -> str:
+    """Blank fenced-code blocks, inline code spans, and HTML comments so an
+    anchor that only appears inside a code example or a comment is not collected
+    as a live target."""
+    text = _HTML_COMMENT_RE.sub(" ", text)
+    kept = []
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_TOGGLE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            kept.append(line)
+    return _INLINE_CODE_RE.sub(" ", "\n".join(kept))
+
+
+def _build_rendered_anchors(sections: list, raw_by_doc: Optional[dict] = None) -> dict:
+    """Map each doc_path to the set of anchors a Markdown renderer would emit.
+
+    The namespace (NOT jdocmunch's private section slugs, #64):
+      - generated heading anchors: rendered heading text (explicit-id marker
+        stripped) via github-slugger, duplicates suffixed -1/-2 in doc order;
+      - explicit ``{#custom-id}`` heading ids (Kramdown / Python-Markdown / SSG);
+      - raw HTML ``<a id=>`` / ``<a name=>`` / ``<h* id=>`` anchors in the body;
+      - GitHub ``user-content-`` aliases for explicit and HTML ids.
+
+    ``sections`` supplies the heading anchors (titles are persisted). ``raw_by_doc``
+    maps doc_path -> raw source text and supplies the HTML anchors (section
+    bodies are NOT persisted — only byte ranges — so the raw cached file is the
+    source). Omitting it simply yields no HTML anchors for that doc.
+
+    Models GitHub-flavored Markdown plus the explicit-id / HTML-anchor surface
+    common to static-site generators (MkDocs, Docusaurus, Hugo, Jekyll, ...).
+    Non-GitHub slug dialects (GitLab hyphen-collapse, Bitbucket
+    ``markdown-header-`` prefix, Obsidian wikilinks) are deliberately out of
+    scope — modeling them would only widen acceptance and re-hide broken links.
+    """
     by_doc: dict = {}
     occ: dict = {}
+
+    def _add(doc: str, anchor: str) -> None:
+        if anchor:
+            by_doc.setdefault(doc, set()).add(anchor.lower())
+
+    # Generated + explicit heading anchors (headings only; the synthetic level-0
+    # doc root has no heading of its own).
     for sec in sections:
         if sec.get("level", 0) == 0:
-            continue  # synthetic doc root has no heading anchor
-        doc = sec.get("doc_path", "")
-        base = _github_slug(_rendered_text(sec.get("title", "")))
-        if not base:
             continue
-        d_occ = occ.setdefault(doc, {})
-        if base in d_occ:
-            d_occ[base] += 1
-            anchor = f"{base}-{d_occ[base]}"
-        else:
-            d_occ[base] = 0
-            anchor = base
-        by_doc.setdefault(doc, set()).add(anchor)
+        doc = sec.get("doc_path", "")
+        text, explicit_id = _split_explicit_id(sec.get("title", ""))
+        if explicit_id:
+            _add(doc, explicit_id)
+            _add(doc, f"user-content-{explicit_id}")
+        base = _github_slug(_rendered_text(text))
+        if base:
+            d_occ = occ.setdefault(doc, {})
+            if base in d_occ:
+                d_occ[base] += 1
+                _add(doc, f"{base}-{d_occ[base]}")
+            else:
+                d_occ[base] = 0
+                _add(doc, base)
+
+    # Raw HTML anchors from the cached source (prose view only — fenced/inline
+    # code and HTML comments are scrubbed so example/commented anchors don't
+    # count as live targets).
+    for doc, raw in (raw_by_doc or {}).items():
+        body = _scrub_code(raw or "")
+        for rx in (_HTML_ANCHOR_RE, _HTML_HEADING_ID_RE):
+            for m in rx.finditer(body):
+                anchor_id = m.group("id").strip()
+                if _SAFE_ANCHOR_ID_RE.match(anchor_id):
+                    _add(doc, anchor_id)
+                    _add(doc, f"user-content-{anchor_id}")
+
     return by_doc
 
 
@@ -108,40 +203,20 @@ def _resolve_file_path(source_doc: str, target_file: str) -> str:
     return posixpath.normpath(joined)
 
 
-def _anchor_matches_section(anchor: str, doc_path: str, sections: list,
-                            gh_anchors: Optional[set] = None) -> bool:
-    """Return True if any section in doc_path has a slug matching the anchor.
+def _anchor_matches_section(anchor: str, rendered_anchors: Optional[set]) -> bool:
+    """Return True if ``anchor`` is in the document's rendered-anchor namespace.
 
-    Comparison is case-insensitive but preserves hyphens and underscores —
-    'foo-bar' must NOT match 'foobar'. The hierarchical slug stored in the
-    section ID (e.g. ``installation/prerequisites``) is canonical; anchors
-    typically reference only the leaf, so we accept either the full path or
-    the trailing path segment. ``gh_anchors`` (#50) adds the GitHub-rendered
-    anchor namespace for the document so valid rendered anchors aren't flagged.
+    Matching is case-insensitive and preserves hyphens and underscores —
+    'foo-bar' must NOT match 'foobar'. jdocmunch's private section slugs are
+    deliberately NOT consulted (#64): the private slug (underscore flattening,
+    hyphen-run collapse, hierarchical leaf, parse-time slugify) is an internal
+    index artifact no Markdown renderer emits, so accepting it only ever hid
+    genuinely broken links. ``rendered_anchors`` is the per-document set built
+    by ``_build_rendered_anchors``.
     """
-    target = anchor.strip().lower()
-    if not target:
+    if not rendered_anchors:
         return False
-    if gh_anchors and target in gh_anchors:
-        return True
-    for sec in sections:
-        if sec.get("doc_path") != doc_path:
-            continue
-        # Section ID format: repo::doc_path::slug#level
-        raw_id = sec.get("id", "")
-        slug_part = raw_id.split("::")[-1].split("#")[0] if "::" in raw_id else ""
-        slug_lower = slug_part.lower()
-        if slug_lower == target:
-            return True
-        # Hierarchical slugs encode ancestor chain ('install/prereqs'); accept the leaf.
-        leaf = slug_lower.rsplit("/", 1)[-1]
-        if leaf == target:
-            return True
-        # Also accept the title rendered through the same slugify rules used at parse time.
-        from ..parser.sections import slugify
-        if slugify(sec.get("title", "")) == target:
-            return True
-    return False
+    return anchor.strip().lower() in rendered_anchors
 
 
 def get_broken_links(
@@ -169,7 +244,20 @@ def get_broken_links(
     doc_path_set = set(index.doc_paths)
     sections = index.sections
     src_root = getattr(index, "source_root", "") or ""
-    gh_by_doc = _build_github_anchors(sections)  # #50
+
+    # Raw source per doc, from the on-disk content cache (populated for local and
+    # GitHub indexes alike). Section bodies aren't persisted — only byte ranges —
+    # so this is how the HTML-anchor namespace (#64) is recovered.
+    raw_by_doc: dict = {}
+    content_dir = store._content_dir(owner, name)
+    for doc in doc_path_set:
+        cached = store._safe_content_path(content_dir, doc)
+        if cached and cached.exists():
+            try:
+                raw_by_doc[doc] = cached.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+    rendered_by_doc = _build_rendered_anchors(sections, raw_by_doc)  # #50, #64
     broken: list = []
 
     for sec in sections:
@@ -198,8 +286,7 @@ def get_broken_links(
 
             # Anchor-only link (e.g. #installation): relative to the current document
             if not file_part and anchor:
-                if not _anchor_matches_section(anchor, source_doc, sections,
-                                               gh_by_doc.get(source_doc)):
+                if not _anchor_matches_section(anchor, rendered_by_doc.get(source_doc)):
                     broken.append({
                         "source_file": source_doc,
                         "source_section": sec_title,
@@ -250,8 +337,7 @@ def get_broken_links(
                 continue
 
             # File exists; now check anchor if present
-            if anchor and not _anchor_matches_section(anchor, resolved, sections,
-                                                      gh_by_doc.get(resolved)):
+            if anchor and not _anchor_matches_section(anchor, rendered_by_doc.get(resolved)):
                 broken.append({
                     "source_file": source_doc,
                     "source_section": sec_title,

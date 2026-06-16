@@ -1,6 +1,36 @@
 # jdocmunch-mcp
 
-**Version:** 1.83.0 | **Tests:** `pytest tests/ -q` (1418 passed)
+**Version:** 1.84.0 | **Tests:** `pytest tests/ -q` (1430 passed)
+
+## v1.84.0 - get_broken_links: rendered-anchor namespace, no private slugs (#64)
+New report from @mmashwani. `get_broken_links` validated `#anchor` links by
+accepting jdocmunch's PRIVATE section slug (underscore flattening, hyphen-run
+collapse, hierarchical leaf, parse-time `slugify`) alongside the GitHub-rendered
+namespace added in v1.77.0 (#50). That private namespace is an internal index
+artifact no Markdown renderer ever emits, so a link dead on the rendered page
+passed validation whenever it matched the private slug (`#my-function-reference`
+for a `## my_function reference` heading GitHub renders as
+`my_function-reference`) — a false negative in a link checker. v1.77.0 kept the
+private forms deliberately, to avoid false positives from an incomplete rendered
+model; the real fix is to COMPLETE the rendered model, then drop the private
+crutch. **Two parts.** (1) `_build_rendered_anchors` (was `_build_github_anchors`)
+now derives the full namespace a renderer emits: generated github-slugger
+heading anchors with the explicit-id marker stripped (so `## H {#id}` yields `id`
+and the text slug, never the polluted `h-id`), explicit `{#custom-id}` heading
+ids (Kramdown / Python-Markdown / SSG; unsafe ids like `{#1-invalid}` fall back
+to the text slug), raw HTML `<a id>` / `<a name>` / `<h* id>` anchors read from
+the cached source (section bodies aren't persisted, only byte ranges — the
+content cache is the source, populated for local + GitHub indexes), and GitHub
+`user-content-` aliases. Fenced/inline code + HTML comments are scrubbed so
+example anchors don't count. (2) `_anchor_matches_section` now consults ONLY that
+set — the private slug is never trusted. Clean-room (not the reporter's
+12-renderer-profile prototype); non-GitHub slug dialects (GitLab hyphen-collapse,
+Bitbucket `markdown-header-` prefix, Obsidian wikilinks) are out of scope by
+design — modeling them only widens acceptance and re-hides broken links.
+Consumer-layer, **no reindex** (titles + cached source already carry the inputs).
+Tests: `tests/test_v1_84_0.py` (12). Additive, 1.x-compatible (a link checker
+reporting previously-missed broken links is a correctness improvement, not a wire
+or tool change).
 
 ## v1.83.0 - vectorized query-time semantic scoring (#63)
 Companion to #62 from @mmashwani, on the query path he flagged as the separate
