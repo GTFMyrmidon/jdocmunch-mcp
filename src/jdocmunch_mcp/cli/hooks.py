@@ -133,12 +133,14 @@ def run_precompact() -> int:
     Returns exit code (always 0 -- errors are swallowed to avoid blocking).
     """
     try:
-        json.load(sys.stdin)  # Validate stdin is valid JSON
+        data = json.load(sys.stdin)  # Validate stdin is valid JSON
     except (json.JSONDecodeError, ValueError):
         return 0
 
+    cwd = data.get("cwd") if isinstance(data, dict) else None
+
     try:
-        snapshot = _build_snapshot()
+        snapshot = _build_snapshot(cwd=cwd)
     except Exception:
         return 0
 
@@ -150,8 +152,34 @@ def run_precompact() -> int:
     return 0
 
 
-def _build_snapshot() -> str:
-    """Build a compact session snapshot from indexed doc repos."""
+def _hook_include_source_roots() -> bool:
+    return os.environ.get("JDOCMUNCH_HOOK_INCLUDE_SOURCE_ROOTS", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _repo_matches_cwd(source_root: str, cwd: str) -> bool:
+    """True when cwd and the repo's source_root are on the same path branch."""
+    if not source_root or not cwd:
+        return False
+    try:
+        c = os.path.normcase(os.path.abspath(cwd))
+        s = os.path.normcase(os.path.abspath(source_root))
+    except Exception:
+        return False
+    return c == s or c.startswith(s + os.sep) or s.startswith(c + os.sep)
+
+
+def _build_snapshot(cwd: "str | None" = None) -> str:
+    """Build a compact, path-safe session snapshot from indexed doc repos.
+
+    A compaction hook is injected into agent context at a high-pressure moment,
+    so it should preserve the most relevant orientation with the least unrelated
+    corpus and path exposure (jdoc#66). When a `cwd` hint is available, repos on
+    the same path branch are surfaced first and the rest are summarized as
+    omitted. Absolute source roots are hidden by default; set
+    `JDOCMUNCH_HOOK_INCLUDE_SOURCE_ROOTS=1` to restore them for local-only use.
+    """
     from ..tools.list_repos import list_repos
 
     repos_result = list_repos()
@@ -160,14 +188,34 @@ def _build_snapshot() -> str:
     if not repos:
         return ""
 
+    relevant = [
+        r for r in repos
+        if cwd and _repo_matches_cwd(r.get("source_root", r.get("source", "")), cwd)
+    ]
+    cap = 3
+    shown = (relevant or repos)[:cap]
+    omitted = len(repos) - len(shown)
+    include_roots = _hook_include_source_roots()
+
     lines = ["## jDocMunch Session Snapshot", ""]
-    lines.append(f"Indexed doc repos: {len(repos)}")
-    for r in repos:
+    lines.append("Current workspace doc indexes:" if relevant else "Indexed doc repos:")
+    for r in shown:
         name = r.get("repo_at_sha", r.get("name", r.get("repo", "?")))
         sections = r.get("section_count", r.get("sections", "?"))
         docs = r.get("doc_count", r.get("documents", "?"))
-        source = r.get("source_root", r.get("source", ""))
-        lines.append(f"- **{name}**: {docs} docs, {sections} sections ({source})")
+        line = f"- **{name}**: {docs} docs, {sections} sections"
+        if include_roots:
+            source = r.get("source_root", r.get("source", ""))
+            if source:
+                line += f" ({source})"
+        lines.append(line)
+
+    if omitted > 0:
+        lines.append("")
+        lines.append(
+            f"Other indexed doc repos: {omitted} omitted. "
+            "Use `doc_list_repos` if needed."
+        )
 
     lines.append("")
     lines.append(

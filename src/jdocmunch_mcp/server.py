@@ -2342,13 +2342,22 @@ def main(argv: Optional[list] = None):
         sys.exit(run_claude_md(install=args.install))
 
     if args.command == "index-file":
+        import contextlib
         from .tools.index_file import index_file_cli
-        result = index_file_cli(args.file, name=getattr(args, "name", None))
+        # Reserve stdout for the final JSON body only: embedding-provider
+        # initialization (e.g. sentence-transformers lazy model load) can write
+        # progress/warning chatter to stdout during computation, which would
+        # corrupt the machine-readable result. Redirect it to stderr while we
+        # compute, then print JSON after leaving the redirect (jdoc#65, same
+        # guard the serve path uses for jdoc#19).
+        with contextlib.redirect_stdout(sys.stderr):
+            result = index_file_cli(args.file, name=getattr(args, "name", None))
         print(json.dumps(result, indent=2))
         sys.exit(0 if result.get("success") else 1)
         return
 
     if args.command == "index-local":
+        import contextlib
         from .tools.index_local import index_local
         paths_from = getattr(args, "paths_from", None)
         if paths_from:
@@ -2358,7 +2367,10 @@ def main(argv: Optional[list] = None):
                 sys.exit(1)
         else:
             paths_arg = None
-        result = index_local(path=args.path, name=args.name, paths=paths_arg)
+        # Guard stdout against provider/library chatter during computation; the
+        # final JSON is the only thing that should reach stdout (jdoc#65).
+        with contextlib.redirect_stdout(sys.stderr):
+            result = index_local(path=args.path, name=args.name, paths=paths_arg)
         print(json.dumps(result, indent=2))
         return
 

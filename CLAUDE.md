@@ -1,6 +1,36 @@
 # jdocmunch-mcp
 
-**Version:** 1.84.0 | **Tests:** `pytest tests/ -q` (1430 passed)
+**Version:** 1.85.0 | **Tests:** `pytest tests/ -q` (1439 passed)
+
+## v1.85.0 - CLI stdout guard + focused, path-safe PreCompact snapshot (#65, #66)
+Two reports from @mmashwani. **#65 (CLI stdout contract):** the JSON-producing
+CLI commands `index-file` and `index-local` computed their result — including
+embedding-provider initialization — and only printed JSON afterward, with no
+guard. The `serve` path already warms providers under
+`contextlib.redirect_stdout(sys.stderr)` (jdoc#19) so sentence-transformers
+download/progress chatter can't corrupt JSON-RPC framing; the CLI JSON paths had
+no equivalent, so if a provider (or a future dependency) wrote to stdout during
+computation the result would no longer parse. Fix: both CLI branches in
+`server.py` now run the result-producing call inside
+`contextlib.redirect_stdout(sys.stderr)`, then print the JSON after leaving the
+redirect — stdout is reserved for the final JSON body only, legitimate stderr is
+untouched. **#66 (focused, path-safe PreCompact snapshot):** `hook-precompact`
+listed *every* indexed doc repo and printed each repo's absolute `source_root`,
+and ignored the `cwd` hook field — so a compaction at a high-pressure moment
+could inject unrelated corpora and leak local machine paths into agent context.
+`run_precompact` now reads `cwd` from the hook JSON and threads it to
+`_build_snapshot(cwd=)`, which: surfaces repos on the same path branch as `cwd`
+first (`_repo_matches_cwd`), caps the listing to the top 3 and summarizes the
+rest as "N omitted. Use `doc_list_repos` if needed", and **hides absolute source
+roots by default** (opt back in with `JDOCMUNCH_HOOK_INCLUDE_SOURCE_ROOTS=1`).
+Header switches to "Current workspace doc indexes:" when a cwd match exists, else
+the compact inventory "Indexed doc repos:". The hook-output systemMessage is
+advisory context-injection text, not a tool JSON response, and the change is what
+the reporter requested (path-safety), so it is 1.x-compatible; the escape hatch
+preserves the old source-root behavior for local-only workflows. Deferred (his
+longer-term point 6): a docs session journal so the hook can include recently
+searched/read sections rather than repo inventory — that is the larger
+jcm-#334-style build, out of scope here. Tests: `tests/test_v1_85_0.py` (9).
 
 ## v1.84.0 - get_broken_links: rendered-anchor namespace, no private slugs (#64)
 New report from @mmashwani. `get_broken_links` validated `#anchor` links by
