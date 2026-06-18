@@ -157,7 +157,7 @@ class TestUndocumentedSymbols:
         import jdocmunch_mcp.tools.get_undocumented_symbols as mod
 
         self._index(tmp_path)
-        monkeypatch.setattr(mod, "_try_import_jcodemunch", lambda: None)
+        monkeypatch.setattr(mod, "import_search_symbols", lambda: None)
 
         out = get_undocumented_symbols(repo="cov", code_repo="x/y", storage_path=str(tmp_path))
         assert out["_meta"]["bridge_available"] is False
@@ -180,7 +180,7 @@ class TestUndocumentedSymbols:
                     {"id": "c#1", "name": "auth_helper", "kind": "function", "qualified_name": "pkg.auth.auth_helper"},
                 ]}
             return {"results": []}
-        monkeypatch.setattr(mod, "_try_import_jcodemunch", lambda: _fake_search)
+        monkeypatch.setattr(mod, "import_search_symbols", lambda: _fake_search)
 
         out = get_undocumented_symbols(repo="cov", code_repo="x/y", storage_path=str(tmp_path))
         assert out["_meta"]["bridge_available"] is True

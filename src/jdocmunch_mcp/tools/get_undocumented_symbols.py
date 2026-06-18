@@ -26,14 +26,11 @@ import time
 from typing import Optional
 
 from ..storage import DocStore
-
-
-def _try_import_jcodemunch():
-    try:
-        from jcodemunch_mcp.tools.search_symbols import search_symbols  # type: ignore
-        return search_symbols
-    except Exception:
-        return None
+from ._bridge import (
+    import_search_symbols,
+    probe_code_repo,
+    code_repo_not_found_result,
+)
 
 
 def _enumerate_symbols(search_symbols, code_repo: str, max_symbols: int) -> list[dict]:
@@ -79,7 +76,7 @@ def get_undocumented_symbols(
     if not index:
         return {"error": f"Repo not found: {repo}"}
 
-    search_symbols = _try_import_jcodemunch()
+    search_symbols = import_search_symbols()
     bridge_available = search_symbols is not None
 
     if not bridge_available:
@@ -99,6 +96,17 @@ def get_undocumented_symbols(
                 "hint": "Install jcodemunch-mcp in this environment to enable inverse coverage.",
             },
         }
+
+    # jdoc#68: validate code_repo before enumeration. A docs handle reused as
+    # code_repo previously enumerated zero symbols and reported coverage_pct
+    # null — indistinguishable from a documented-but-empty repo. Only fires on
+    # an unresolvable handle.
+    code_repo_error = probe_code_repo(search_symbols, code_repo)
+    if code_repo_error is not None:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        return code_repo_not_found_result(
+            f"{owner}/{name}", code_repo, latency_ms, code_repo_error
+        )
 
     symbols = _enumerate_symbols(search_symbols, code_repo, max_symbols)
 

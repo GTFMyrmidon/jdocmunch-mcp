@@ -267,7 +267,7 @@ class TestLinkCodeToSymbols:
 
         # Force the import to fail.
         import jdocmunch_mcp.tools.link_code_to_symbols as lcs
-        monkeypatch.setattr(lcs, "_try_import_jcodemunch", lambda: (None, None))
+        monkeypatch.setattr(lcs, "import_search_symbols", lambda: None)
 
         out = link_code_to_symbols(repo="local/r", code_repo="x/y", storage_path=str(tmp_path))
         assert out["_meta"]["bridge_available"] is False
@@ -284,7 +284,7 @@ class TestLinkCodeToSymbols:
             return {"results": [{"id": f"sym::{query}#1"}]}
 
         import jdocmunch_mcp.tools.link_code_to_symbols as lcs
-        monkeypatch.setattr(lcs, "_try_import_jcodemunch", lambda: (_stub, None))
+        monkeypatch.setattr(lcs, "import_search_symbols", lambda: _stub)
 
         out = link_code_to_symbols(repo="local/r", code_repo="code/y", storage_path=str(tmp_path))
         assert out["_meta"]["bridge_available"] is True
@@ -318,7 +318,7 @@ class TestLinkCodeToSymbols:
             return {"results": [{"id": f"sym::{query}"}]}
 
         import jdocmunch_mcp.tools.link_code_to_symbols as lcs
-        monkeypatch.setattr(lcs, "_try_import_jcodemunch", lambda: (_stub, None))
+        monkeypatch.setattr(lcs, "import_search_symbols", lambda: _stub)
 
         out = link_code_to_symbols(
             repo="local/r", code_repo="x/y", max_examples=2, storage_path=str(tmp_path)

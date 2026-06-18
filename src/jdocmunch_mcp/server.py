@@ -74,6 +74,7 @@ from .tools.get_session_stats import get_session_stats
 from .tools.check_embedding_drift import check_embedding_drift
 from .tools.find_code_examples import find_code_examples
 from .tools.link_code_to_symbols import link_code_to_symbols
+from .tools.resolve_related_code_repos import resolve_related_code_repos
 from .tools.openapi_tools import (
     find_endpoint,
     list_endpoints_by_tag,
@@ -137,7 +138,7 @@ _TOOL_TIER_STANDARD: frozenset[str] = _TOOL_TIER_CORE | frozenset({
     "get_section_blast_radius", "check_section_delete_safe",
     # Code linking
     "find_code_examples", "link_code_to_symbols",
-    "get_undocumented_symbols",
+    "get_undocumented_symbols", "resolve_related_code_repos",
     # Health & metrics
     "get_doc_coverage", "get_stale_pages", "get_wiki_stats",
     "get_recent_changes", "get_doc_health",
@@ -1116,6 +1117,25 @@ def _all_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="resolve_related_code_repos",
+            description=(
+                "Map a jdocmunch docs repo to candidate jCodeMunch code repo handles by "
+                "source_root. The two suites use independent repo-identity models, so a docs "
+                "handle (e.g. 'local/foo-docs') is NOT a valid jCodeMunch code_repo. Given a "
+                "docs repo, returns candidates[{repo, confidence, reason, source_root}] "
+                "(exact source_root match = high; containment = medium/low), an 'ambiguous' "
+                "flag, and _meta.bridge_available. Use it to pick the right code_repo for the "
+                "link_code_to_symbols / get_undocumented_symbols bridge tools."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "jdocmunch docs repo identifier"}
+                },
+                "required": ["repo"]
+            }
+        ),
+        Tool(
             name="find_endpoint",
             description=(
                 "Find OpenAPI operations by path glob, method, and/or tag. All filters AND'd. "
@@ -1607,7 +1627,7 @@ def _generate_doc_md_snippet() -> str:
                                      "find_operations_using_schema", "get_schema_graph"]),
         ("Glossary / terms", ["lookup_term"]),
         ("Code linking", ["find_code_examples", "link_code_to_symbols",
-                          "get_undocumented_symbols"]),
+                          "get_undocumented_symbols", "resolve_related_code_repos"]),
         ("Health & metrics", ["get_doc_coverage", "get_stale_pages", "get_wiki_stats",
                                "get_recent_changes", "get_doc_health", "doc_health_radar",
                                "diff_doc_health_radar", "get_doc_pr_risk_profile"]),
@@ -1966,6 +1986,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 code_repo=arguments["code_repo"],
                 max_examples=arguments.get("max_examples", 200),
                 max_symbols_per_block=arguments.get("max_symbols_per_block", 5),
+                storage_path=storage_path,
+            )
+        elif name == "resolve_related_code_repos":
+            result = resolve_related_code_repos(
+                repo=arguments["repo"],
                 storage_path=storage_path,
             )
         elif name == "find_endpoint":

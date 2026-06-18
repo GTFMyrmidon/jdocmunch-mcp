@@ -36,17 +36,11 @@ from typing import Optional
 
 from ..storage import DocStore
 from ..retrieval.tokenize import tokenize
-
-
-def _try_import_jcodemunch():
-    """Return ``search_symbols`` and ``resolve_repo`` if jcodemunch is
-    installed in the current environment, otherwise (None, None)."""
-    try:
-        from jcodemunch_mcp.tools.search_symbols import search_symbols  # type: ignore
-        from jcodemunch_mcp.tools.resolve_repo import resolve_repo  # type: ignore
-        return search_symbols, resolve_repo
-    except Exception:
-        return None, None
+from ._bridge import (
+    import_search_symbols,
+    probe_code_repo,
+    code_repo_not_found_result,
+)
 
 
 def _extract_identifiers(code: str) -> list[str]:
@@ -99,8 +93,22 @@ def link_code_to_symbols(
     if not index:
         return {"error": f"Repo not found: {repo}"}
 
-    search_symbols, _resolve = _try_import_jcodemunch()
+    search_symbols = import_search_symbols()
     bridge_available = search_symbols is not None
+
+    # jdoc#68: validate code_repo once up front. A jdocmunch docs handle reused
+    # as code_repo is syntactically valid but does not resolve to a jCodeMunch
+    # index — previously the per-identifier search loop swallowed that error and
+    # returned empty mappings indistinguishable from a genuine zero-match. Only
+    # fires on an unresolvable handle; a resolved-but-no-links repo still
+    # returns empty mappings as before.
+    if bridge_available:
+        code_repo_error = probe_code_repo(search_symbols, code_repo)
+        if code_repo_error is not None:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            return code_repo_not_found_result(
+                f"{owner}/{name}", code_repo, latency_ms, code_repo_error
+            )
 
     by_block: dict[str, list[str]] = {}
     by_symbol: dict[str, list[str]] = {}

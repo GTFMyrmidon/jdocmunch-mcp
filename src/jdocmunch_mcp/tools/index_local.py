@@ -25,6 +25,32 @@ from ._git import local_git_head, local_git_paths_dirty, local_git_paths_tracked
 from ._constants import SKIP_PATTERNS
 
 
+def normalize_local_index_name(name: Optional[str], folder_name: str) -> str:
+    """Resolve the caller-supplied ``name`` to a bare local storage component.
+
+    Local doc indexes are stored under owner ``local`` and surfaced by
+    ``doc_list_repos`` as the durable handle ``local/<name>``. An agent that
+    discovers a repo and reuses that handle as the refresh ``name`` previously
+    hit ``Invalid name: 'local/<name>'`` because ``name`` is validated as a
+    single storage component (jdoc#67). Accept and normalize the ``local/``
+    round-trip while still rejecting other owner prefixes, nested slashes, and
+    empty local names (the downstream ``_safe_repo_component`` check catches
+    ``.``/``..``/illegal chars on the returned value).
+    """
+    if not name:
+        return folder_name
+    if name.startswith("local/"):
+        _owner, _, local_name = name.partition("/")
+        # Empty or further-nested local names are not a valid round trip
+        # (e.g. "local/" or "local/a/b"); reject here for a clean error.
+        if not local_name or "/" in local_name or "\\" in local_name:
+            raise ValueError(f"Invalid name: {name!r}")
+        return local_name
+    if "/" in name or "\\" in name:
+        raise ValueError(f"Invalid name: {name!r}")
+    return name
+
+
 def _load_gitignore(folder_path: Path) -> Optional[pathspec.PathSpec]:
     gitignore_path = folder_path / ".gitignore"
     if gitignore_path.is_file():
@@ -325,6 +351,17 @@ def index_local(
     use_embeddings = should_embed(use_embeddings)
     warnings = []
 
+    # jdoc#67: normalize a discovered `local/<name>` handle back to its bare
+    # storage component so the doc_list_repos -> index_local refresh round trip
+    # works. Done before the broad try below so an invalid name returns a clean
+    # error rather than the "Indexing failed: ..." wrapper.
+    try:
+        repo_name = normalize_local_index_name(name, folder_path.name)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    owner = "local"
+    repo_id = f"{owner}/{repo_name}"
+
     try:
         requested_rels: list = []
         if paths:
@@ -345,9 +382,6 @@ def index_local(
             )
         warnings.extend(discover_warnings)
 
-        repo_name = name if name else folder_path.name
-        owner = "local"
-        repo_id = f"{owner}/{repo_name}"
         initial_git_state = (local_git_head(folder_path), False)
         store = DocStore(base_path=storage_path)
         existing_index = store.load_index(owner, repo_name)

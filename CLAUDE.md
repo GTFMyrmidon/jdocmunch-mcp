@@ -1,6 +1,41 @@
 # jdocmunch-mcp
 
-**Version:** 1.85.0 | **Tests:** `pytest tests/ -q` (1439 passed)
+**Version:** 1.86.0 | **Tests:** `pytest tests/ -q` (1473 passed)
+
+## v1.86.0 - cross-suite repo identity: local/ name round-trip + bridge handle clarity (#67, #68)
+Two reports from @mmashwani, the only two friction points he had left in heavy
+dual-suite (jCodeMunch + jDocMunch) autonomous use. **#67 (local/ refresh round
+trip):** `doc_list_repos` returns local handles as `local/<name>`, but
+`index_local(name=...)` validated `name` as a single storage component, so
+reusing a discovered handle as the refresh name raised
+`Invalid name: 'local/example-docs'` even though the target index exists and the
+intent is unambiguous. New `normalize_local_index_name(name, folder_name)` in
+`tools/index_local.py` strips a `local/` prefix back to the bare storage name
+and is called before the broad indexing try (so an invalid name returns a clean
+error, not the `Indexing failed:` wrapper); other owner prefixes, empty local
+names, and nested slashes are still rejected. `doc_list_repos` rows also gain
+typed identity fields - `repo_kind` (`"doc_index"`), `owner`, and the bare
+`name` - so a consumer can tell the durable lookup handle (`repo`) from the
+refresh `name` without parsing, and a doc handle from a code handle.
+**#68 (cross-suite handle mismatch):** the two suites keep independent
+repo-identity models on purpose, so a jDocMunch docs handle is not a valid
+jCodeMunch `code_repo`. Reusing one previously produced *empty* bridge results
+with `bridge_available: true` (indistinguishable from "no matches"). Two parts.
+(1) `link_code_to_symbols` and `get_undocumented_symbols` now validate
+`code_repo` once up front (shared `tools/_bridge.py::probe_code_repo`, which
+reads jCodeMunch's own `search_symbols` error envelope) and return an explicit
+`{"error": "code_repo_not_found", _meta:{code_repo_resolved: false, hint}}`
+diagnostic instead of silent emptiness - fires ONLY on an unresolvable handle, so
+a resolved-but-no-links repo keeps its exact prior shape. (2) New
+`resolve_related_code_repos(repo)` tool maps a docs repo to candidate jCodeMunch
+code handles by `source_root` (exact match = high; `source_root_contains_docs_root`
+= medium; `docs_root_contains_source_root` = low), with an `ambiguous` flag and
+honest `bridge_available: false` when jCodeMunch isn't importable. Read-only,
+best-effort; the suites' identity models stay independent. Tool count 60 -> 61.
+Tests: `tests/test_v1_86_0.py` (27); updated `test_v1_17_0`/`test_v1_22_0` for the
+shared `_bridge` import and the tool-count/name assertions. Additive,
+1.x-compatible (the new error return replaces a previously-empty result only for
+the wrong-handle input the reporter flagged).
 
 ## v1.85.0 - CLI stdout guard + focused, path-safe PreCompact snapshot (#65, #66)
 Two reports from @mmashwani. **#65 (CLI stdout contract):** the JSON-producing

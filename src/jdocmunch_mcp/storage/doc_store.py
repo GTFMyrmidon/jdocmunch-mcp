@@ -935,8 +935,17 @@ class DocStore:
             try:
                 with open(index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                # jdoc#67 / #68: expose typed identity fields so a consumer can
+                # distinguish the durable lookup handle (`repo`, e.g.
+                # `local/foo-docs`) from the bare refresh/index `name`
+                # (`foo-docs`) without parsing, and tell a doc handle from a
+                # jCodeMunch code handle (`repo_kind`).
+                _owner, _, _bare = str(data["repo"]).partition("/")
                 row = {
                     "repo": data["repo"],
+                    "repo_kind": "doc_index",
+                    "owner": _owner or "",
+                    "name": _bare or str(data["repo"]),
                     "indexed_at": data["indexed_at"],
                     "section_count": len(data["sections"]),
                     "doc_count": len(data["doc_paths"]),
