@@ -37,6 +37,8 @@ def find_code_examples(
     repo: str,
     query: str,
     lang: Optional[str] = None,
+    doc_path: Optional[str] = None,
+    path_glob: Optional[str] = None,
     max_results: int = 10,
     storage_path: Optional[str] = None,
 ) -> dict:
@@ -46,6 +48,13 @@ def find_code_examples(
         repo: Repository identifier (owner/repo or bare name).
         query: Free-form query; tokens scored against the code body.
         lang: Optional case-insensitive filter (e.g. "python", "bash").
+        doc_path: Optional exact-document scope. Only blocks in the section
+            whose ``doc_path`` equals this value are considered.
+        path_glob: Optional fnmatch glob (e.g. ``"docs/api/**"``). Only blocks
+            in sections whose ``doc_path`` matches are considered. Both scope
+            filters are applied BEFORE scoring (filter-before-score, the same
+            contract as ``search_sections``), so a single-document scope can't
+            be starved by a corpus-wide top-k cut.
         max_results: Cap on returned blocks (default 10).
         storage_path: Override DOC_INDEX_PATH for testing.
     """
@@ -66,6 +75,9 @@ def find_code_examples(
                 "latency_ms": int((time.perf_counter() - t0) * 1000),
                 "result_count": 0,
                 "reason": "empty_query_after_tokenization",
+                "lang_filter": lang,
+                "doc_path": doc_path,
+                "path_glob": path_glob,
             },
         }
 
@@ -76,6 +88,11 @@ def find_code_examples(
     block_records: list = []
     avg_dl = 0.0
     for sec in index.sections:
+        # Scope filter BEFORE scoring (jdoc#73), reusing the shared
+        # doc_path/path_glob contract from search_sections (jdoc#32) so the
+        # returned evidence is guaranteed to satisfy the requested scope.
+        if index._path_excluded(sec, doc_path, path_glob):
+            continue
         for blk in sec.get("code_blocks", []) or []:
             blk_lang = (blk.get("lang") or "").strip().lower()
             if lang and blk_lang != lang.strip().lower():
@@ -103,6 +120,8 @@ def find_code_examples(
                 "result_count": 0,
                 "reason": "no_code_blocks_for_filter",
                 "lang_filter": lang,
+                "doc_path": doc_path,
+                "path_glob": path_glob,
             },
         }
     avg_dl /= n if n else 1
@@ -152,6 +171,8 @@ def find_code_examples(
             "latency_ms": int((time.perf_counter() - t0) * 1000),
             "result_count": len(results),
             "lang_filter": lang,
+            "doc_path": doc_path,
+            "path_glob": path_glob,
             "blocks_scanned": n,
         },
     }

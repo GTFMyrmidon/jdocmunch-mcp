@@ -1084,7 +1084,9 @@ def _all_tools() -> list[Tool]:
                 "Search fenced code blocks across the indexed docs by BM25 over the block "
                 "content. Returns one row per block with {block_id, section_id, doc_path, "
                 "title, lang, byte_start, byte_end, snippet, _score}. Optional lang filter "
-                "(e.g. 'python', 'bash'). Use after index_local; requires INDEX_VERSION>=3."
+                "(e.g. 'python', 'bash') and doc_path/path_glob scope filters (applied "
+                "before scoring, same contract as search_sections). Use after index_local; "
+                "requires INDEX_VERSION>=3."
             ),
             inputSchema={
                 "type": "object",
@@ -1092,6 +1094,8 @@ def _all_tools() -> list[Tool]:
                     "repo": {"type": "string", "description": "jdocmunch repo identifier"},
                     "query": {"type": "string", "description": "Free-form code-content query"},
                     "lang": {"type": "string", "description": "Optional case-insensitive language filter"},
+                    "doc_path": {"type": "string", "description": "Optional exact-document scope: only blocks in the section with this doc_path"},
+                    "path_glob": {"type": "string", "description": "Optional fnmatch glob (e.g. 'docs/api/**') scoping blocks to matching document paths"},
                     "max_results": {"type": "integer", "default": 10}
                 },
                 "required": ["repo", "query"]
@@ -1977,6 +1981,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 repo=arguments["repo"],
                 query=arguments["query"],
                 lang=arguments.get("lang"),
+                doc_path=arguments.get("doc_path"),
+                path_glob=arguments.get("path_glob"),
                 max_results=arguments.get("max_results", 10),
                 storage_path=storage_path,
             )

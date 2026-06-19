@@ -1,6 +1,25 @@
 # jdocmunch-mcp
 
-**Version:** 1.87.0 | **Tests:** `pytest tests/ -q` (1479 passed)
+**Version:** 1.88.0 | **Tests:** `pytest tests/ -q` (1486 passed)
+
+## v1.88.0 - find_code_examples: doc_path / path_glob scope filters (#73)
+Report from @mmashwani. `find_code_examples` searched fenced code blocks across
+the WHOLE indexed corpus with only `repo`/`query`/`lang`/`max_results`, while
+sibling docs tools (`search_sections`, `count_sections`, `get_toc`,
+`get_toc_tree`) all accept `doc_path` / `path_glob`. During a scoped audit an
+agent could believe it searched examples inside one document or folder while the
+returned evidence came from elsewhere - unscoped code-example search producing
+false evidence. Added optional `doc_path` (exact-document) and `path_glob`
+(fnmatch, e.g. `docs/api/**`) parameters. Both apply BEFORE scoring by reusing
+`DocIndex._path_excluded` - the same shared candidate pre-filter
+`search_sections` uses since the #32 path-glob fix - so a single-document scope
+can't be starved by a corpus-wide top-k cut (filter-before-score, not
+post-filter-the-top-k). `_meta` now echoes `doc_path` and `path_glob` on every
+return path (results, empty-query, no-blocks) alongside the existing
+`lang_filter` and `blocks_scanned` (which already reflects the scoped block set).
+Server schema + dispatcher updated. Additive, 1.x-compatible (new optional
+kwargs + new response keys; an omitted-scope call behaves exactly as before).
+Tests: `tests/test_v1_88_0.py` (7).
 
 ## v1.87.0 - get_doc_pr_risk_profile: backlink + tutorial signals no longer silently zero (#69)
 Report from @mmashwani. The composite doc-PR risk tool fused five signals, two
