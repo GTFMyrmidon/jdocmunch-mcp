@@ -716,7 +716,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_recent_changes",
-            description="v1.47+ — list sections whose source has drifted from index state (edited_uncommitted or stale_index buckets via the v1.16 FreshnessProbe). Pre-flight check before deciding whether to re-index. Handle-only — no content reads.",
+            description="v1.47+ — list sections that have drifted from index state (edited_uncommitted or stale_index buckets via the v1.16 FreshnessProbe). By default compares the index against the cached raw-content mirror, NOT live workspace files; pass live_source=true to read the live files under the index's source_root. _meta.drift_layer reports which layer ran. Pre-flight check before deciding whether to re-index. Handle-only — no content reads.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -733,6 +733,11 @@ def _all_tools() -> list[Tool]:
                         "type": "boolean",
                         "default": True,
                         "description": "Include sections in edited_uncommitted bucket (file changed but this section's range still matches)."
+                    },
+                    "live_source": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Read the live workspace files under the index's source_root instead of the cached mirror. Falls back to the cached mirror (drift_layer='cached_mirror', live_source_available=false) when no usable source_root is recorded."
                     }
                 },
                 "required": ["repo"]
@@ -1927,6 +1932,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 repo=arguments["repo"],
                 include_stale=arguments.get("include_stale", True),
                 include_edited=arguments.get("include_edited", True),
+                live_source=arguments.get("live_source", False),
                 storage_path=storage_path,
             )
         elif name == "delete_index":

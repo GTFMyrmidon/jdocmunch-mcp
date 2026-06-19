@@ -1,6 +1,28 @@
 # jdocmunch-mcp
 
-**Version:** 1.90.0 | **Tests:** `pytest tests/ -q` (1504 passed)
+**Version:** 1.91.0 | **Tests:** `pytest tests/ -q` (1509 passed)
+
+## v1.91.0 - get_recent_changes: cached-mirror vs live-source clarity + opt-in live mode (#71)
+Report from @mmashwani. `get_recent_changes` is documented as returning sections
+whose "source" drifted, but `FreshnessProbe` reads the cached raw-content mirror
+under the doc index, not the live workspace files. An empty result therefore
+proves "stored mirror and index agree", NOT "unrefreshed workspace files match
+the index" - an agent could read an empty result as proof live docs are current.
+Two parts, both additive. (1) **Layer disclosure:** the tool description now
+states it is a cached-mirror/index check by default, and the response carries
+`_meta.drift_layer` (`"cached_mirror"` | `"live_source"`), `live_source_requested`,
+`live_source_available`, and `source_root`, plus a docstring note on the separate
+Git-head certification boundary (`head_sha`/`source_dirty`/`sha_certified` can lag
+content freshness; the refresh-then-commit no-op-refresh workflow). (2) **Opt-in
+live-source mode:** new `live_source=True` reads the LIVE files under the index's
+`source_root` instead of the mirror, falling back to the mirror (with
+`live_source_available=false`) when no usable root is recorded. Implemented by an
+optional `source_root` arg on `FreshnessProbe` that swaps the file resolver
+(`_resolve_path`, with path-traversal containment); the default `None` keeps the
+cached-mirror behavior every other consumer (`get_doc_health`, search freshness)
+relies on byte-identical. Server schema + dispatcher updated. Additive,
+1.x-compatible (new optional kwarg + new `_meta` keys; default behavior and
+`by_bucket` shape unchanged). Tests: `tests/test_v1_91_0.py` (5).
 
 ## v1.90.0 - get_section(verify=true): source-integrity hash, not transformed-response hash (#70)
 Report from @mmashwani. `get_section` / `get_sections` applied the response-only

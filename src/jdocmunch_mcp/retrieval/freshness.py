@@ -28,25 +28,47 @@ from typing import Optional
 class FreshnessProbe:
     """Per-section freshness check, scoped to one search call."""
 
-    __slots__ = ("_store", "_owner", "_name", "_index", "_file_state")
+    __slots__ = ("_store", "_owner", "_name", "_index", "_file_state", "_source_root")
 
-    def __init__(self, store, owner: str, name: str, index) -> None:
+    def __init__(
+        self, store, owner: str, name: str, index, source_root: Optional[str] = None
+    ) -> None:
         self._store = store
         self._owner = owner
         self._name = name
         self._index = index
+        # jdoc#71: when set, the probe reads the LIVE workspace files under
+        # source_root instead of the cached raw-content mirror under the doc
+        # index. Default (None) preserves the historical cached-mirror behavior
+        # that every other consumer (get_doc_health, search freshness) relies on.
+        self._source_root = source_root
         # Per-file cache of (full_file_hash, exists). Built lazily.
         self._file_state: dict[str, tuple[Optional[str], bool]] = {}
+
+    def _resolve_path(self, doc_path: str):
+        """Resolve doc_path to the file to read: live source root or cached mirror."""
+        if self._source_root:
+            # Live-source mode: read the workspace file under source_root,
+            # guarding against a doc_path that would escape the root.
+            try:
+                base = Path(self._source_root).resolve()
+                candidate = (base / doc_path).resolve()
+                if candidate != base and base not in candidate.parents:
+                    return None
+                return candidate
+            except Exception:
+                return None
+        try:
+            content_dir = self._store._content_dir(self._owner, self._name)
+            return self._store._safe_content_path(content_dir, doc_path)
+        except Exception:
+            return None
 
     def _file_hash(self, doc_path: str) -> tuple[Optional[str], bool]:
         cached = self._file_state.get(doc_path)
         if cached is not None:
             return cached
-        try:
-            content_dir = self._store._content_dir(self._owner, self._name)
-            file_path = self._store._safe_content_path(content_dir, doc_path)
-        except Exception:
-            file_path = None
+        file_path = self._resolve_path(doc_path)
         if not file_path or not file_path.exists():
             self._file_state[doc_path] = (None, False)
             return self._file_state[doc_path]
@@ -99,11 +121,7 @@ class FreshnessProbe:
     def _byte_range_hash(self, doc_path: str, byte_start: int, byte_end: int) -> str:
         if byte_end <= byte_start:
             return ""
-        try:
-            content_dir = self._store._content_dir(self._owner, self._name)
-            file_path = self._store._safe_content_path(content_dir, doc_path)
-        except Exception:
-            return ""
+        file_path = self._resolve_path(doc_path)
         if not file_path or not file_path.exists():
             return ""
         try:
