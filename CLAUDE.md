@@ -1,6 +1,26 @@
 # jdocmunch-mcp
 
-**Version:** 1.88.0 | **Tests:** `pytest tests/ -q` (1486 passed)
+**Version:** 1.89.0 | **Tests:** `pytest tests/ -q` (1499 passed)
+
+## v1.89.0 - index_local: zero-config safe default name from spaced folders (#72)
+Report from @mmashwani. `index_local(path=...)` with `name` omitted returned the
+raw folder basename as the storage name, so a folder whose basename contained a
+character invalid for jDocMunch storage (`[A-Za-z0-9._-]` only) failed downstream
+with a generic `Invalid name: '<folder label>'`. The tool description says `name`
+is optional and defaults to the folder name, so agents hit this on ordinary
+local refreshes of, e.g., a folder with a space in its name. The omitted-name
+path now derives a deterministic, storage-safe handle: a valid basename is
+preserved exactly (backward compatible), otherwise it is slugified to the allowed
+charset and suffixed with a short SHA-1 of the folder's ABSOLUTE path, so
+`"My Docs"` becomes `"my-docs-<hash>"` and two same-named folders in different
+locations don't silently collide. New `_default_local_name(folder_name,
+folder_path)`; `normalize_local_index_name` gains an optional `folder_path` arg
+(explicit-name + `local/` round-trip behavior unchanged; #67 preserved). When a
+name is derived, the response carries `original_folder_label` + `derived_local_name`
+and a warning that an explicit `name=` overrides it. Additive, 1.x-compatible
+(new optional kwarg + new response keys; a valid-basename or explicit-name call
+behaves exactly as before; an omitted-name call that previously *failed* now
+succeeds). Tests: `tests/test_v1_89_0.py` (13).
 
 ## v1.88.0 - find_code_examples: doc_path / path_glob scope filters (#73)
 Report from @mmashwani. `find_code_examples` searched fenced code blocks across

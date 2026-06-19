@@ -1,6 +1,8 @@
 """Index local folder tool — walk, parse, summarize, save."""
 
+import hashlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -25,7 +27,31 @@ from ._git import local_git_head, local_git_paths_dirty, local_git_paths_tracked
 from ._constants import SKIP_PATTERNS
 
 
-def normalize_local_index_name(name: Optional[str], folder_name: str) -> str:
+def _default_local_name(folder_name: str, folder_path: Optional[str] = None) -> str:
+    """Derive a storage-safe local index name from a folder basename (jdoc#72).
+
+    Zero-config rule: if the basename is already a valid storage component,
+    preserve it exactly (backward compatible). Otherwise slugify it to the
+    allowed ``[A-Za-z0-9._-]`` charset and append a short hash of the folder's
+    absolute path, so a label like ``"My Docs"`` becomes ``"my-docs-<hash>"``
+    instead of failing storage validation downstream, and two
+    differently-located folders that slugify to the same base don't silently
+    collide.
+    """
+    if folder_name not in {".", ".."} and re.fullmatch(r"[A-Za-z0-9._-]+", folder_name):
+        return folder_name
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", folder_name)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-.").lower()
+    if not slug:
+        slug = "local-docs"
+    seed = folder_path if folder_path is not None else folder_name
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}"
+
+
+def normalize_local_index_name(
+    name: Optional[str], folder_name: str, folder_path: Optional[str] = None
+) -> str:
     """Resolve the caller-supplied ``name`` to a bare local storage component.
 
     Local doc indexes are stored under owner ``local`` and surfaced by
@@ -36,9 +62,14 @@ def normalize_local_index_name(name: Optional[str], folder_name: str) -> str:
     round-trip while still rejecting other owner prefixes, nested slashes, and
     empty local names (the downstream ``_safe_repo_component`` check catches
     ``.``/``..``/illegal chars on the returned value).
+
+    When ``name`` is omitted the default is derived from the folder basename
+    via :func:`_default_local_name`, so a basename that isn't a valid storage
+    component (e.g. one containing spaces) yields a deterministic safe handle
+    instead of failing storage validation downstream (jdoc#72).
     """
     if not name:
-        return folder_name
+        return _default_local_name(folder_name, folder_path)
     if name.startswith("local/"):
         _owner, _, local_name = name.partition("/")
         # Empty or further-nested local names are not a valid round trip
@@ -356,11 +387,27 @@ def index_local(
     # works. Done before the broad try below so an invalid name returns a clean
     # error rather than the "Indexing failed: ..." wrapper.
     try:
-        repo_name = normalize_local_index_name(name, folder_path.name)
+        repo_name = normalize_local_index_name(name, folder_path.name, str(folder_path))
     except ValueError as e:
         return {"success": False, "error": str(e)}
     owner = "local"
     repo_id = f"{owner}/{repo_name}"
+
+    # jdoc#72: when name was omitted and the folder basename wasn't a valid
+    # storage component, a safe local name was derived. Surface both labels so
+    # the caller can record the durable handle, and warn that an explicit
+    # name= overrides it.
+    derivation_fields: dict = {}
+    if not name and repo_name != folder_path.name:
+        derivation_fields = {
+            "original_folder_label": folder_path.name,
+            "derived_local_name": repo_name,
+        }
+        warnings.append(
+            f"Folder label {folder_path.name!r} is not a valid storage name; "
+            f"indexed under the derived handle local/{repo_name}. Pass "
+            f'name="<your-name>" to choose your own.'
+        )
 
     try:
         requested_rels: list = []
@@ -481,6 +528,7 @@ def index_local(
                     "changed": 0, "new": 0, "deleted": 0,
                     "_meta": {"latency_ms": latency_ms},
                 }
+                nochange_result.update(derivation_fields)
                 _add_commit_fields(nochange_result, updated)
                 # jdoc#15: report truncation even when nothing changed,
                 # since the visible-corpus boundary is unchanged.
@@ -539,6 +587,7 @@ def index_local(
                 "semantic_search": use_embeddings and get_provider_name() is not None,
                 "_meta": {"latency_ms": latency_ms},
             }
+            result.update(derivation_fields)
             _add_commit_fields(result, updated)
             # jdoc#15: surface truncation on the incremental path too.
             if discovered_count > max_files:
@@ -657,6 +706,7 @@ def index_local(
             "semantic_search": use_embeddings and get_provider_name() is not None,
             "_meta": {"latency_ms": latency_ms},
         }
+        result.update(derivation_fields)
         _add_commit_fields(result, saved)
         if autotune_result is not None:
             result["autotune"] = autotune_result
