@@ -1,6 +1,31 @@
 # jdocmunch-mcp
 
-**Version:** 1.86.0 | **Tests:** `pytest tests/ -q` (1473 passed)
+**Version:** 1.87.0 | **Tests:** `pytest tests/ -q` (1479 passed)
+
+## v1.87.0 - get_doc_pr_risk_profile: backlink + tutorial signals no longer silently zero (#69)
+Report from @mmashwani. The composite doc-PR risk tool fused five signals, two
+of which were dead on every call and swallowed by broad `except Exception`
+paths, so the aggregate *understated* risk - a high-severity false-assurance
+class (same shape as jcm#338). **Bug 1 (backlink_burden):** Signal 3 called
+`get_backlinks(repo=..., section_id=sid)`, but `get_backlinks`'s signature is
+`(repo, doc_path, storage_path)` - the unexpected-kwarg TypeError was caught and
+the section skipped, so `backlink_burden` scored 0 even with real inbound links.
+`get_backlinks` is document-level, so the fix resolves each changed section to
+its `doc_path` via the already-built `section_lookup`, queries once per unique
+document (cached in `backlink_doc_cache`), and counts each unique document once
+toward the aggregate so several changed sections in one doc don't inflate the
+burden (per-section counts are still kept for blocker surfacing). **Bug 2
+(tutorial_disruption):** Signal 4 guarded on `tp["result"]["chain"]`, but
+`get_tutorial_path` returns `chain` at the TOP level (no `result` wrapper) - the
+guard never matched, so the signal scored 0 even on a real ordered/Next-Prev
+chain. Now reads `tp.get("chain")` and treats an `error` envelope as a recorded
+failure. **Diagnostics:** all three delegating signals (blast_radius too) now
+record unresolvable sections / raised delegates / unexpected shapes in
+`result.diagnostics.signal_failures` (+ `_meta.signal_failure_count`) instead of
+being indistinguishable from a true zero-risk verdict. Additive, 1.x-compatible
+(new response keys only; a previously-always-zero signal now reflecting real
+inbound/tutorial structure is a correctness fix, not a wire change). Tests:
+`tests/test_v1_87_0.py` (6).
 
 ## v1.86.0 - cross-suite repo identity: local/ name round-trip + bridge handle clarity (#67, #68)
 Two reports from @mmashwani, the only two friction points he had left in heavy

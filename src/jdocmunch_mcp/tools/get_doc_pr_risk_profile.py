@@ -131,6 +131,13 @@ def get_doc_pr_risk_profile(
     section_lookup = {s["id"]: s for s in index.sections}
     total_sections = len(index.sections) or 1
 
+    # Direct-signal failures are surfaced in result.diagnostics instead of
+    # being silently scored as zero-risk. A signal that cannot be computed
+    # (section not found, downstream tool raised, or returned an unexpected
+    # shape) is recorded here so an aggregate "low risk" can be told apart
+    # from "we never actually measured it".
+    signal_failures: list[dict] = []
+
     # ── Signal 1: volume ─────────────────────────────────────────────
     volume_raw = len(changes)
     volume_pct = volume_raw / total_sections
@@ -148,11 +155,22 @@ def get_doc_pr_risk_profile(
             br = get_section_blast_radius(
                 repo=repo_full, section_id=sid, storage_path=storage_path
             )
-        except Exception:
+        except Exception as exc:
+            signal_failures.append({
+                "signal": "blast_radius",
+                "section_id": sid,
+                "reason": f"get_section_blast_radius_raised: {type(exc).__name__}",
+            })
             continue
         if isinstance(br, dict) and "result" in br:
             bs = float(br["result"].get("blast_score") or 0.0)
             blast_scores.append((sid, bs))
+        else:
+            signal_failures.append({
+                "signal": "blast_radius",
+                "section_id": sid,
+                "reason": "unexpected_blast_shape",
+            })
     if blast_scores:
         blast_score = sum(s for _, s in blast_scores) / len(blast_scores)
     else:
@@ -160,21 +178,59 @@ def get_doc_pr_risk_profile(
     blast_score = _clamp01(blast_score)
 
     # ── Signal 3: backlink_burden ────────────────────────────────────
+    # get_backlinks is document-level: given a target doc_path it returns
+    # every inbound link to the whole document. We therefore resolve each
+    # changed section to its doc_path (get_backlinks takes doc_path, NOT
+    # section_id) and query once per unique document, caching the result so
+    # several changed sections in the same doc don't re-query. The per-section
+    # count is kept for blocker surfacing, but the aggregate burden counts
+    # each unique document once so co-located changes don't inflate it.
     backlink_totals: list[tuple[str, int]] = []
+    backlink_doc_cache: dict[str, int] = {}
+    counted_docs: set[str] = set()
+    total_backlinks = 0
     for c in changes:
         sid = c["section_id"]
         if c["kind"] == "added":
             continue  # newly added sections cannot have inbound refs yet
-        try:
-            bl = get_backlinks(
-                repo=repo_full, section_id=sid, storage_path=storage_path
-            )
-        except Exception:
+        sec = section_lookup.get(sid)
+        doc_path = (sec or {}).get("doc_path") or ""
+        if not doc_path:
+            signal_failures.append({
+                "signal": "backlink_burden",
+                "section_id": sid,
+                "reason": "section_not_found" if sec is None else "no_doc_path",
+            })
             continue
-        if isinstance(bl, dict) and "result" in bl:
+        if doc_path in backlink_doc_cache:
+            cnt = backlink_doc_cache[doc_path]
+        else:
+            try:
+                bl = get_backlinks(
+                    repo=repo_full, doc_path=doc_path, storage_path=storage_path
+                )
+            except Exception as exc:
+                signal_failures.append({
+                    "signal": "backlink_burden",
+                    "section_id": sid,
+                    "doc_path": doc_path,
+                    "reason": f"get_backlinks_raised: {type(exc).__name__}",
+                })
+                continue
+            if not (isinstance(bl, dict) and "result" in bl):
+                signal_failures.append({
+                    "signal": "backlink_burden",
+                    "section_id": sid,
+                    "doc_path": doc_path,
+                    "reason": "unexpected_backlinks_shape",
+                })
+                continue
             cnt = int(bl["result"].get("backlink_count") or 0)
-            backlink_totals.append((sid, cnt))
-    total_backlinks = sum(c for _, c in backlink_totals)
+            backlink_doc_cache[doc_path] = cnt
+        backlink_totals.append((sid, cnt))
+        if doc_path not in counted_docs:
+            counted_docs.add(doc_path)
+            total_backlinks += cnt
     # 0 backlinks -> 0; >=5 per changed section average -> 1.0
     avg_backlinks = total_backlinks / max(1, len(changes))
     backlink_score = _clamp01(avg_backlinks / 5.0)
@@ -187,12 +243,33 @@ def get_doc_pr_risk_profile(
             tp = get_tutorial_path(
                 repo=repo_full, section_id=sid, storage_path=storage_path
             )
-        except Exception:
+        except Exception as exc:
+            signal_failures.append({
+                "signal": "tutorial_disruption",
+                "section_id": sid,
+                "reason": f"get_tutorial_path_raised: {type(exc).__name__}",
+            })
             continue
-        if isinstance(tp, dict) and "result" in tp:
-            chain = tp["result"].get("chain") or []
-            if len(chain) > 1:
-                tutorial_hits.append(sid)
+        if not isinstance(tp, dict):
+            signal_failures.append({
+                "signal": "tutorial_disruption",
+                "section_id": sid,
+                "reason": "unexpected_tutorial_shape",
+            })
+            continue
+        if "error" in tp:
+            signal_failures.append({
+                "signal": "tutorial_disruption",
+                "section_id": sid,
+                "reason": f"get_tutorial_path_error: {tp.get('error')}",
+            })
+            continue
+        # get_tutorial_path returns `chain` at the TOP level (not under a
+        # "result" wrapper). The prior `tp["result"]["chain"]` guard never
+        # matched, so this signal silently scored zero on every call.
+        chain = tp.get("chain") or []
+        if len(chain) > 1:
+            tutorial_hits.append(sid)
     tutorial_score = _clamp01(len(tutorial_hits) / max(1, len(changes)))
 
     # ── Signal 5: role_weight ────────────────────────────────────────
@@ -299,8 +376,12 @@ def get_doc_pr_risk_profile(
             },
             "top_blockers": blockers,
             "recommended_action": action,
+            "diagnostics": {
+                "signal_failures": signal_failures,
+            },
         },
         "_meta": {
             "latency_ms": int((time.perf_counter() - t0) * 1000),
+            "signal_failure_count": len(signal_failures),
         },
     }
