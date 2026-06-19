@@ -1,6 +1,27 @@
 # jdocmunch-mcp
 
-**Version:** 1.89.0 | **Tests:** `pytest tests/ -q` (1499 passed)
+**Version:** 1.90.0 | **Tests:** `pytest tests/ -q` (1504 passed)
+
+## v1.90.0 - get_section(verify=true): source-integrity hash, not transformed-response hash (#70)
+Report from @mmashwani. `get_section` / `get_sections` applied the response-only
+transforms `compress_code` / `strip_boilerplate` to `content` BEFORE computing
+`hash_verified`, so a transformed read could report `hash_verified: false` even
+though the indexed raw section still matched the stored `content_hash`. That
+overloaded one flag to mean both "the cached/indexed section is stale" and "the
+response was transformed" - a verification-contract ambiguity (sibling of the
+#35/#55 byte-range invariant work and the #52/#46 certify-the-right-bytes
+lessons). Fix: capture the raw indexed bytes before any transform and verify
+against THOSE. `hash_verified` (plus the explicit alias `source_hash_verified`)
+is now a source-integrity check and is never flipped false by a response
+transform. When a transform actually changed the returned bytes, the section
+carries `response_transformed: true` + `transformations: [...]` (disclosure,
+present even without `verify`), and `verify=true` additionally reports
+`response_hash_matches_content_hash` so returned-byte identity is a separate,
+explicitly-named signal rather than an overload of `hash_verified`. Both tools
+fixed identically. Additive, 1.x-compatible (new response keys; `hash_verified`
+on an untransformed read is unchanged, and a transformed read that previously
+reported a confusing `false` now reports the true source verdict - a correctness
+fix). Tests: `tests/test_v1_90_0.py` (5).
 
 ## v1.89.0 - index_local: zero-config safe default name from spaced folders (#72)
 Report from @mmashwani. `index_local(path=...)` with `name` omitted returned the
