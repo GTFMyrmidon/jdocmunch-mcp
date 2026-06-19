@@ -1,6 +1,31 @@
 # jdocmunch-mcp
 
-**Version:** 1.91.0 | **Tests:** `pytest tests/ -q` (1509 passed)
+**Version:** 1.92.0 | **Tests:** `pytest tests/ -q` (1514 passed)
+
+## v1.92.0 - live-source freshness compares in the indexed (preprocessed) domain (#74)
+Report from @mmashwani — a regression in v1.91.0's #71 live-source mode. The
+index stores `file_hashes`, section `content_hash`, and byte offsets over
+*preprocessed* content (transformed formats — `.json`/`.jsonc`/`.svg`/`.xml`/
+`.html`/`.mdx`/`.ipynb`/`.tscn`/`.tres` — are converted by `preprocess_content`
+before storage; the cached "raw files" mirror is really the preprocessed
+representation). But `FreshnessProbe`'s live path read the RAW workspace bytes
+and hashed/sliced those with the preprocessed-domain offsets, so a clean index of
+any transformed format false-flagged every section as `stale_index` under
+`live_source=True` (mmashwani saw 489 false positives on a `.json`/`.jsonc`/`.svg`
+corpus while cached-mirror freshness and `verify_index` were clean), and a
+reindex never cleared it. Fix: live mode now reproduces `index_local`'s pipeline
+exactly — read with `encoding="utf-8", errors="replace", newline=""` then
+`preprocess_content(raw_text, doc_path)`, and hash/slice `result.encode("utf-8")`
+(new `FreshnessProbe._preprocessed_bytes`, cached per file so every section in a
+file reuses one read + one convert). Cached-mirror mode (the default every other
+consumer uses) is byte-identical — unchanged seek/read path. Result: unchanged
+transformed files are `fresh`; a structural edit that changes the preprocessed
+output still drifts; a value/comment-only edit that preprocessing normalizes away
+correctly does not (the indexed representation is genuinely unchanged). Also
+corrected the misleading doc_store "raw files" mirror comment. Additive,
+1.x-compatible (corrects a false-positive only on the v1.91.0 opt-in path;
+default behavior, buckets, and wire shape unchanged). Tests:
+`tests/test_v1_92_0.py` (5).
 
 ## v1.91.0 - get_recent_changes: cached-mirror vs live-source clarity + opt-in live mode (#71)
 Report from @mmashwani. `get_recent_changes` is documented as returning sections

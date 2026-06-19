@@ -28,7 +28,10 @@ from typing import Optional
 class FreshnessProbe:
     """Per-section freshness check, scoped to one search call."""
 
-    __slots__ = ("_store", "_owner", "_name", "_index", "_file_state", "_source_root")
+    __slots__ = (
+        "_store", "_owner", "_name", "_index", "_file_state", "_source_root",
+        "_live_bytes",
+    )
 
     def __init__(
         self, store, owner: str, name: str, index, source_root: Optional[str] = None
@@ -44,6 +47,10 @@ class FreshnessProbe:
         self._source_root = source_root
         # Per-file cache of (full_file_hash, exists). Built lazily.
         self._file_state: dict[str, tuple[Optional[str], bool]] = {}
+        # jdoc#74: live-source mode caches the per-file *preprocessed* bytes
+        # (indexed representation domain) so every section in a file reuses one
+        # read + one preprocess_content call. None = file missing/unreadable.
+        self._live_bytes: dict[str, Optional[bytes]] = {}
 
     def _resolve_path(self, doc_path: str):
         """Resolve doc_path to the file to read: live source root or cached mirror."""
@@ -64,10 +71,44 @@ class FreshnessProbe:
         except Exception:
             return None
 
+    def _preprocessed_bytes(self, doc_path: str) -> Optional[bytes]:
+        """Live-source mode: live file read + preprocess_content, in the indexed domain.
+
+        jdoc#74: the index stores hashes and byte offsets over *preprocessed*
+        content (``.json`` / ``.jsonc`` / ``.svg`` / ``.xml`` / ``.html`` /
+        ``.mdx`` / ``.ipynb`` / ``.tscn`` / ``.tres`` are converted by
+        ``preprocess_content`` before storage). Comparing those against raw
+        workspace bytes false-flags transformed files as ``stale_index``. So in
+        live mode we reproduce exactly what ``index_local`` fed to storage: read
+        with ``encoding="utf-8", errors="replace", newline=""`` then
+        ``preprocess_content``, and hash/slice the result encoded as UTF-8.
+        """
+        if doc_path in self._live_bytes:
+            return self._live_bytes[doc_path]
+        data: Optional[bytes] = None
+        file_path = self._resolve_path(doc_path)
+        if file_path and file_path.exists():
+            try:
+                with open(file_path, encoding="utf-8", errors="replace", newline="") as fh:
+                    raw_text = fh.read()
+                from ..parser import preprocess_content
+                data = preprocess_content(raw_text, doc_path).encode("utf-8")
+            except OSError:
+                data = None
+        self._live_bytes[doc_path] = data
+        return data
+
     def _file_hash(self, doc_path: str) -> tuple[Optional[str], bool]:
         cached = self._file_state.get(doc_path)
         if cached is not None:
             return cached
+        if self._source_root:
+            data = self._preprocessed_bytes(doc_path)
+            if data is None:
+                self._file_state[doc_path] = (None, False)
+            else:
+                self._file_state[doc_path] = (hashlib.sha256(data).hexdigest(), True)
+            return self._file_state[doc_path]
         file_path = self._resolve_path(doc_path)
         if not file_path or not file_path.exists():
             self._file_state[doc_path] = (None, False)
@@ -121,6 +162,13 @@ class FreshnessProbe:
     def _byte_range_hash(self, doc_path: str, byte_start: int, byte_end: int) -> str:
         if byte_end <= byte_start:
             return ""
+        if self._source_root:
+            # jdoc#74: slice the preprocessed bytes (indexed domain), since the
+            # stored byte offsets were computed over preprocessed content.
+            data = self._preprocessed_bytes(doc_path)
+            if data is None:
+                return ""
+            return hashlib.sha256(data[byte_start:byte_end]).hexdigest()
         file_path = self._resolve_path(doc_path)
         if not file_path or not file_path.exists():
             return ""

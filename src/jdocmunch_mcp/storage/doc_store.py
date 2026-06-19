@@ -658,7 +658,11 @@ class DocStore:
         self._atomic_replace(tmp_path, index_path)
         _evict_index_cache(index_path)
 
-        # Cache raw files for byte-range reads
+        # Cache the indexed content mirror for byte-range reads. NB these are
+        # the *preprocessed* strings (transformed formats like .json/.jsonc/.svg
+        # are converted by preprocess_content before storage), not raw workspace
+        # bytes; byte offsets and content_hash are in this preprocessed domain
+        # (jdoc#74).
         content_dir = self._content_dir(owner, name)
         content_dir.mkdir(parents=True, exist_ok=True)
 
