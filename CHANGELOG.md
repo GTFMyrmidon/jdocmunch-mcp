@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.93.0] - 2026-07-07 - MCP readOnlyHint annotations (suite parity with jcodemunch PR #361)
+
+### Added
+
+- **Every tool advertises `ToolAnnotations(readOnlyHint=...)`.** MCP clients that
+  gate execution (Claude Code plan mode) prompted for approval on every jDoc
+  call because tools carried no annotations. Read tools are now
+  `readOnlyHint=True` (plan mode runs them silently) and the write-set is
+  `False`. Applied at the `list_tools` chokepoint via a non-mutating
+  `model_copy`. The write-set (`index_local`, `doc_index_repo`, `delete_index`,
+  `define_repo_group`, `tune_weights`, `check_embedding_drift`) is any tool that
+  can mutate persistent state under any argument — biased conservative, since
+  mislabeling a writer as read-only is the harmful direction. Suite parity with
+  jcodemunch-mcp (PR #361) and jdatamunch-mcp. Additive, 1.x-compatible (new
+  `tools/list` field only). Tests: `tests/test_v1_93_0.py` (4).
+
 ## [1.70.2] - 2026-06-12 - search/verify/event-loop fixes (#32, #33, #34)
 
 Patch release closing the remaining three issues from @mmashwani's

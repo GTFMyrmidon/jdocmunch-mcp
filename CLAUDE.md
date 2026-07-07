@@ -1,6 +1,21 @@
 # jdocmunch-mcp
 
-**Version:** 1.92.0 | **Tests:** `pytest tests/ -q` (1514 passed)
+**Version:** 1.93.0 | **Tests:** `pytest tests/ -q` (1514 passed)
+
+## v1.93.0 - MCP readOnlyHint annotations (suite parity with jcodemunch PR #361)
+Every tool now advertises `ToolAnnotations(readOnlyHint=...)` at the `list_tools`
+chokepoint (`_apply_readonly_annotations`, non-mutating `model_copy`), so MCP
+clients that gate execution (Claude Code plan mode) run jDoc's query tools
+silently while still prompting on the write-set. `_NON_READONLY_TOOLS` =
+index_local, doc_index_repo, delete_index, define_repo_group, tune_weights,
+check_embedding_drift — any tool that can mutate persistent state (a doc index,
+repo group, tuning file, or drift canary) under ANY argument; biased conservative
+since mislabeling a writer read-only is the harmful direction. `link_code_to_symbols`
+/ `verify_index` / `resolve_related_code_repos` are read (they load + return, never
+persist). Suite parity with jcodemunch-mcp (PR #361) and jdatamunch-mcp. Additive,
+1.x-compatible (new `tools/list` field only; no tool add/rename/removal). Tests:
+`tests/test_v1_93_0.py` (4). (Note: `check_embedding_drift` marked False here since
+force=true re-pins the canary; jcm marks it True — jcm is the mild outlier.)
 
 ## v1.92.0 - live-source freshness compares in the indexed (preprocessed) domain (#74)
 Report from @mmashwani — a regression in v1.91.0's #71 live-source mode. The
