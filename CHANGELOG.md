@@ -1,5 +1,61 @@
 # Changelog
 
+## [1.94.0] - 2026-07-08 - large-corpus stability: vectors out of the monolith, throttled reindex hook, cheap list_repos (#75, #76, #77)
+
+Reported by @floke75 (three linked issues, confirmed on two machines; a 16 GB
+box suffered cascading jetsam kills / swap storm / WindowServer watchdog restarts
+from the interaction of all three). Additive and 1.x-compatible: `INDEX_VERSION`
+stays 3, no forced reindex — existing on-disk indexes keep working and drop their
+inline vectors on the next save.
+
+### Changed
+
+- **#75 — embedding vectors live only in the sidecar, never inline in the index
+  monolith.** `doc_store` persisted every section's vector inline in
+  `~/.doc-index/<owner>/<name>.json`, pretty-printed at `indent=2` (~26 KB of JSON
+  per 1024-dim section). On a broadly-indexed repo the monolith reached multiple
+  GB and every `load_index` parsed the whole thing into Python lists — ~8 GB RSS
+  and ~60 s on a 175k-section corpus, and the vectors were already duplicated in
+  the `.embeddings.jsonl` cache. Fix: `_index_to_dict` strips the `embedding` key
+  non-mutatingly (in-memory sections keep their vectors for the related/
+  boilerplate/dedup sidecars built right after `save_index`), the monolith is
+  written with compact `separators=(",", ":")` instead of `indent=2`, and vectors
+  rehydrate lazily from the sidecar as `array('f')` (~4 KB per section, not ~70 KB
+  as float lists) the first time a semantic code path needs them
+  (`DocIndex._rehydrate_embeddings`, called from `_ensure_semantic_matrix`,
+  `find_similar_sections`, `get_related_sections`, and the `get_doc_health`
+  embedding count). `_has_embeddings` treats a present sidecar as "embeddings
+  exist". A save-time safety net writes the sidecar first when sections carry
+  vectors but none exists yet, so the strip is always lossless. `load_index` on a
+  corpus this size drops from ~60 s / ~8 GB to sub-second / <0.5 GB with unchanged
+  ranking (float32 shifts cosine ~1e-7, ordering unaffected outside exact ties).
+
+- **#77 — `list_repos` no longer json-parses every monolith to take two
+  `len()`s.** `DocStore.list_repos` (the documented first call of a session, also
+  hit by the PreCompact snapshot hook) loaded every index monolith just to read
+  `repo`/`indexed_at`/`doc_types` and `len(sections)`/`len(doc_paths)`. Each save
+  now writes a tiny `<name>.summary.json` sidecar (atomically, inside the same
+  per-repo write lock as the monolith), and `list_repos` reads it instead —
+  falling back to the full parse for legacy indexes that predate the sidecar, and
+  robust against a single corrupt monolith taking the whole listing down.
+  `delete_index` removes the sidecar.
+
+- **#76 — the PostToolUse auto-reindex hook is throttled.** `run_posttooluse`
+  spawned one fire-and-forget `index-file` per Edit/Write with no lock, debounce,
+  or spawn cap, so a burst of N edits fanned out into N concurrent full-index
+  loads (the memory amplifier behind the crash). Now: a per-file leading-edge
+  **debounce** (`JDOCMUNCH_HOOK_DEBOUNCE_SECONDS`, default 3 s) coalesces rapid
+  repeat edits before anything spawns; the hook spawns a new throttled
+  `hook-reindex` worker that acquires one of N cross-process **slot locks**
+  (`JDOCMUNCH_HOOK_MAX_REINDEX`, default 2) *before* it loads the index and exits
+  if the cap is saturated (the next edit reindexes — correctness holds); and an
+  opt-in **breadcrumb log** (`JDOCMUNCH_HOOK_LOG=1` → `_hooks/reindex.log`) makes
+  pile-ups/skips observable instead of silently discarded to `DEVNULL`. New
+  `hook-reindex` CLI subcommand.
+
+Tests: `tests/test_v1_94_0.py` (21); `tests/test_hooks.py` updated for the new
+`hook-reindex` spawn target + a debounce-coalesce case.
+
 ## [1.93.0] - 2026-07-07 - MCP readOnlyHint annotations (suite parity with jcodemunch PR #361)
 
 ### Added

@@ -114,6 +114,44 @@ def _evict_index_cache(index_path: Path) -> None:
         del _INDEX_CACHE[k]
 
 
+def _load_sidecar_vectors(sidecar_path: str) -> dict:
+    """Stream ``{content_hash: array('f')}`` from an embeddings sidecar (jdoc#75).
+
+    Read-only and identity-agnostic: unlike ``embeddings.cache.load`` this never
+    purges on a provider/model header mismatch -- a lazy query-time rehydration
+    must never be able to destroy gigabytes of cached vectors. Keys are bare
+    content hashes; the ``#pv<N>`` embed-text-version salt (see
+    ``provider._embed_cache_key``) is stripped so they match the ``content_hash``
+    field of serialized section dicts. Vectors land as ``array('f')`` (~4 KB per
+    1024-dim section) rather than Python float lists (~70 KB) so a 100k-section
+    corpus rehydrates in well under a gigabyte instead of the ~8 GB the inline
+    monolith cost.
+    """
+    from array import array
+    out: dict = {}
+    try:
+        with open(sidecar_path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("_header") is True:
+                    continue
+                h = entry.get("hash")
+                vec = entry.get("vector")
+                if isinstance(h, str) and isinstance(vec, list) and vec:
+                    # Strip the embed-text-version salt (``<hash>#pv1``) so the
+                    # key matches a section's bare ``content_hash``.
+                    out[h.rsplit("#", 1)[0]] = array("f", vec)
+    except OSError:
+        return {}
+    return out
+
+
 @dataclass
 class DocIndex:
     """Index for a repository's documentation."""
@@ -150,6 +188,12 @@ class DocIndex:
         self._content_loader = None  # type: ignore[var-annotated]
         # Per-search content cache: section_id -> str. Cleared between searches.
         self._content_cache: dict = {}
+        # jdoc#75: embedding vectors live ONLY in the ``<name>.embeddings.jsonl``
+        # sidecar, never inline in the monolith. DocStore.load_index injects the
+        # sidecar path here; ``_rehydrate_embeddings`` streams vectors back onto
+        # the section dicts the first time a semantic code path needs them.
+        self._embeddings_sidecar = None
+        self._embeddings_rehydrated = False
 
     @property
     def repo_at_sha(self) -> Optional[str]:
@@ -192,7 +236,48 @@ class DocIndex:
 
     def _has_embeddings(self) -> bool:
         """Return True if at least some sections have embeddings stored."""
-        return any(s.get("embedding") for s in self.sections)
+        if any(s.get("embedding") for s in self.sections):
+            return True
+        # jdoc#75: vectors may be sidecar-only (stripped from the monolith, not
+        # yet rehydrated). A present sidecar means embeddings exist.
+        sidecar = getattr(self, "_embeddings_sidecar", None)
+        return bool(sidecar) and os.path.exists(sidecar)
+
+    def _rehydrate_embeddings(self) -> None:
+        """Attach sidecar vectors to section dicts in-place, at most once (jdoc#75).
+
+        Vectors are ``array('f')`` (~4 KB per 1024-dim section) rather than
+        Python float lists (~70 KB), so a large corpus rehydrates in a fraction
+        of the RAM the old inline monolith cost. Every wire-facing consumer
+        strips the ``embedding`` key before serializing (``_strip``,
+        ``_index_to_dict``, get_section/get_sections), so the non-JSON ``array``
+        type never leaks into a response or a saved index.
+        """
+        if getattr(self, "_embeddings_rehydrated", False):
+            return
+        self._embeddings_rehydrated = True
+        sidecar = getattr(self, "_embeddings_sidecar", None)
+        if not sidecar or not os.path.exists(sidecar):
+            return
+        vectors = _load_sidecar_vectors(sidecar)
+        if not vectors:
+            return
+        for sec in self.sections:
+            if sec.get("embedding"):
+                continue
+            vec = vectors.get(sec.get("content_hash") or "")
+            if vec is not None:
+                sec["embedding"] = vec
+
+    def _embedded_section_count(self) -> int:
+        """Count sections that carry (or can rehydrate) an embedding (jdoc#75).
+
+        Rehydrates from the sidecar first so a monolith with vectors stripped
+        still reports true embedding coverage (e.g. get_doc_health's
+        embedding_coverage axis), not a false zero.
+        """
+        self._rehydrate_embeddings()
+        return sum(1 for s in self.sections if s.get("embedding"))
 
     @staticmethod
     def _path_excluded(sec: dict, doc_path: Optional[str], path_glob: Optional[str]) -> bool:
@@ -265,6 +350,9 @@ class DocIndex:
         The cache attr is set lazily (not a dataclass field), so it never
         serializes.
         """
+        # jdoc#75: vectors live in the embeddings sidecar; stream them onto the
+        # section dicts before building the matrix (no-op once rehydrated).
+        self._rehydrate_embeddings()
         cached = getattr(self, "_sem_matrix_cache", "unset")
         if cached != "unset":
             return cached
@@ -528,6 +616,85 @@ class DocStore:
         n = self._safe_repo_component(name, "name")
         return self.base_path / o / n
 
+    def _summary_path(self, owner: str, name: str) -> Path:
+        """Path to the tiny per-index list_repos summary sidecar (jdoc#77)."""
+        return self._index_path(owner, name).with_name(
+            f"{self._safe_repo_component(name, 'name')}.summary.json"
+        )
+
+    def _ensure_sidecar_from_sections(self, owner: str, name: str, sections: list) -> None:
+        """Guarantee stripped monolith vectors are recoverable (jdoc#75).
+
+        Vectors are dropped from the monolith at save time and rehydrated from
+        the ``<name>.embeddings.jsonl`` sidecar. In the normal flow ``embed_sections``
+        has already written that sidecar before ``save_index`` runs, so this is a
+        no-op. But an index whose sections carry embeddings set outside the embed
+        pipeline (e.g. an in-process build) would have no sidecar -- stripping
+        would then lose the vectors. When the sidecar is absent and sections do
+        carry embeddings, persist one here so the strip is always lossless.
+
+        The header identity is a placeholder (``_load_sidecar_vectors`` ignores
+        the header); a subsequent real embed pass sees the mismatch and simply
+        re-embeds, which is safe.
+        """
+        try:
+            have_emb = any(
+                isinstance(s, dict) and s.get("embedding") and s.get("content_hash")
+                for s in sections
+            )
+            if not have_emb:
+                return
+            from ..embeddings.cache import _cache_path as _emb_cache_path
+            if _emb_cache_path(str(self.base_path), owner, name).exists():
+                return  # embed_sections already wrote the authoritative sidecar
+            from ..embeddings.provider import _EMBED_TEXT_VERSION
+            from ..embeddings import cache as _emb_cache
+            entries = [
+                (f"{s['content_hash']}#{_EMBED_TEXT_VERSION}", list(s["embedding"]))
+                for s in sections
+                if isinstance(s, dict) and s.get("embedding") and s.get("content_hash")
+            ]
+            if entries:
+                _emb_cache.write(
+                    str(self.base_path), owner, name,
+                    provider="__inline__", model="__inline__", dim=None,
+                    entries=entries,
+                )
+        except Exception:
+            pass  # best-effort; never fail a save over the sidecar safety net
+
+    def _write_summary(self, owner: str, name: str, index: "DocIndex") -> None:
+        """Persist a tiny summary next to the monolith so list_repos never has to
+        json-parse the whole index just to take two ``len()``s (jdoc#77).
+
+        Written atomically inside the same per-repo write lock that guards the
+        monolith (both save paths are ``@_with_index_lock``), so the summary can
+        never lag its index. Best-effort: a summary write failure must never
+        fail an otherwise-successful index save (list_repos falls back to the
+        full parse when the summary is absent or unreadable).
+        """
+        try:
+            summary = {
+                "repo": index.repo,
+                "indexed_at": index.indexed_at,
+                "section_count": len(index.sections),
+                "doc_count": len(index.doc_paths),
+                "doc_types": index.doc_types,
+                "index_version": index.index_version,
+                "head_sha": index.head_sha,
+                "source_dirty": bool(index.source_dirty),
+                "sha_certified": bool(index.sha_certified),
+                "source_root": getattr(index, "source_root", "") or "",
+                "source_repo": getattr(index, "source_repo", "") or "",
+            }
+            summary_path = self._summary_path(owner, name)
+            tmp = summary_path.with_name(f"{summary_path.name}.{os.getpid()}.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(summary, f, separators=(",", ":"))
+            self._atomic_replace(tmp, summary_path)
+        except (OSError, ValueError, TypeError):
+            pass
+
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
         try:
             base = content_dir.resolve()
@@ -652,11 +819,17 @@ class DocStore:
         index_path.parent.mkdir(parents=True, exist_ok=True)
         # Per-PID temp name so concurrent writers never share (and clobber) one
         # temp file; the cross-process lock serializes the replace itself.
+        # jdoc#75: make sure the vectors we're about to strip from the monolith
+        # are recoverable from the sidecar before we overwrite it.
+        self._ensure_sidecar_from_sections(owner, name, index.sections)
         tmp_path = index_path.with_name(f"{index_path.name}.{os.getpid()}.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self._index_to_dict(index), f, indent=2)
+            # jdoc#75: compact separators -- indent=2 inflated the monolith to
+            # multiple GB on broadly-indexed corpora.
+            json.dump(self._index_to_dict(index), f, separators=(",", ":"))
         self._atomic_replace(tmp_path, index_path)
         _evict_index_cache(index_path)
+        self._write_summary(owner, name, index)  # jdoc#77
 
         # Cache the indexed content mirror for byte-range reads. NB these are
         # the *preprocessed* strings (transformed formats like .json/.jsonc/.svg
@@ -736,6 +909,23 @@ class DocStore:
                 return ""
 
         index._content_loader = _loader
+        # jdoc#75: point the index at its embeddings sidecar so vectors can
+        # rehydrate lazily on first semantic use (see _rehydrate_embeddings).
+        # Prefer the sidecar co-located with this monolith; fall back to the
+        # default-root location that embed_sections writes to when it was called
+        # with storage_path=None (its _cache_path ignores DOC_INDEX_PATH).
+        try:
+            from ..embeddings.cache import _cache_path as _emb_cache_path
+            co_located = _emb_cache_path(str(self.base_path), owner_str, name_str)
+            if co_located.exists():
+                index._embeddings_sidecar = str(co_located)
+            else:
+                default_root = _emb_cache_path(None, owner_str, name_str)
+                index._embeddings_sidecar = str(
+                    default_root if default_root.exists() else co_located
+                )
+        except Exception:
+            index._embeddings_sidecar = None
         _index_cache_put(cache_key, index)
         return index
 
@@ -877,11 +1067,15 @@ class DocStore:
 
         # Save atomically (per-PID temp + retried replace; see save_index)
         index_path = self._index_path(owner, name)
+        # jdoc#75: sidecar safety net before stripping vectors from the monolith.
+        self._ensure_sidecar_from_sections(owner, name, updated.sections)
         tmp_path = index_path.with_name(f"{index_path.name}.{os.getpid()}.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self._index_to_dict(updated), f, indent=2)
+            # jdoc#75: compact separators (see save_index).
+            json.dump(self._index_to_dict(updated), f, separators=(",", ":"))
         self._atomic_replace(tmp_path, index_path)
         _evict_index_cache(index_path)
+        self._write_summary(owner, name, updated)  # jdoc#77
 
         # Update cached raw files
         content_dir = self._content_dir(owner, name)
@@ -930,55 +1124,90 @@ class DocStore:
 
         return raw.decode("utf-8", errors="replace")
 
+    @staticmethod
+    def _summary_row(section_count: int, doc_count: int, data: dict) -> dict:
+        """Build one list_repos row from summary-shaped fields (jdoc#77).
+
+        Shared by the fast summary-sidecar path and the full-parse fallback so
+        both emit a byte-identical row. ``data`` supplies repo/identity/freshness
+        fields; the two counts are passed in because the summary carries them
+        precomputed while the full parse derives them from the section/doc lists.
+        """
+        # jdoc#67 / #68: expose typed identity fields so a consumer can
+        # distinguish the durable lookup handle (`repo`, e.g. `local/foo-docs`)
+        # from the bare refresh/index `name` (`foo-docs`) without parsing, and
+        # tell a doc handle from a jCodeMunch code handle (`repo_kind`).
+        _owner, _, _bare = str(data["repo"]).partition("/")
+        row = {
+            "repo": data["repo"],
+            "repo_kind": "doc_index",
+            "owner": _owner or "",
+            "name": _bare or str(data["repo"]),
+            "indexed_at": data["indexed_at"],
+            "section_count": section_count,
+            "doc_count": doc_count,
+            "doc_types": data["doc_types"],
+            "index_version": data.get("index_version", 1),
+        }
+        sha = normalize_commit_sha(data.get("head_sha"))
+        source_dirty = bool(data.get("source_dirty", False))
+        sha_certified = bool(data.get("sha_certified", False))
+        if sha:
+            row["head_sha"] = sha
+        row["source_dirty"] = source_dirty
+        row["sha_certified"] = sha_certified
+        repo_at_sha = format_repo_at_sha(data["repo"], sha, source_dirty, sha_certified)
+        if repo_at_sha:
+            row["repo_at_sha"] = repo_at_sha
+        if data.get("source_root"):
+            row["source_root"] = data["source_root"]
+        if data.get("source_repo"):
+            row["source_repo"] = data["source_repo"]
+            source_repo_at_sha = format_repo_at_sha(
+                data["source_repo"],
+                sha,
+                source_dirty,
+                sha_certified,
+            )
+            if source_repo_at_sha:
+                row["source_repo_at_sha"] = source_repo_at_sha
+        return row
+
     def list_repos(self) -> list:
-        """List all indexed doc sets."""
+        """List all indexed doc sets.
+
+        jdoc#77: reads the tiny ``<name>.summary.json`` sidecar when present
+        instead of json-parsing the whole monolith just to take two ``len()``s
+        (a documented first-call hot path, also hit by the PreCompact snapshot
+        hook). Falls back to the full parse for legacy indexes written before
+        the sidecar existed; a per-index parse failure only drops that one row.
+        """
         repos = []
         for index_file in self.base_path.glob("*/*.json"):
-            if index_file.name.startswith("_"):
+            if index_file.name.startswith("_") or index_file.name.endswith(".summary.json"):
                 continue
+            summary_path = index_file.with_name(f"{index_file.stem}.summary.json")
+            if summary_path.exists():
+                try:
+                    with open(summary_path, "r", encoding="utf-8") as f:
+                        s = json.load(f)
+                    if isinstance(s, dict) and "repo" in s and "section_count" in s:
+                        repos.append(self._summary_row(
+                            int(s.get("section_count", 0)),
+                            int(s.get("doc_count", 0)),
+                            s,
+                        ))
+                        continue
+                except Exception:
+                    pass  # unreadable summary -> fall through to full parse
             try:
                 with open(index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # jdoc#67 / #68: expose typed identity fields so a consumer can
-                # distinguish the durable lookup handle (`repo`, e.g.
-                # `local/foo-docs`) from the bare refresh/index `name`
-                # (`foo-docs`) without parsing, and tell a doc handle from a
-                # jCodeMunch code handle (`repo_kind`).
-                _owner, _, _bare = str(data["repo"]).partition("/")
-                row = {
-                    "repo": data["repo"],
-                    "repo_kind": "doc_index",
-                    "owner": _owner or "",
-                    "name": _bare or str(data["repo"]),
-                    "indexed_at": data["indexed_at"],
-                    "section_count": len(data["sections"]),
-                    "doc_count": len(data["doc_paths"]),
-                    "doc_types": data["doc_types"],
-                    "index_version": data.get("index_version", 1),
-                }
-                sha = normalize_commit_sha(data.get("head_sha"))
-                source_dirty = bool(data.get("source_dirty", False))
-                sha_certified = bool(data.get("sha_certified", False))
-                if sha:
-                    row["head_sha"] = sha
-                row["source_dirty"] = source_dirty
-                row["sha_certified"] = sha_certified
-                repo_at_sha = format_repo_at_sha(data["repo"], sha, source_dirty, sha_certified)
-                if repo_at_sha:
-                    row["repo_at_sha"] = repo_at_sha
-                if data.get("source_root"):
-                    row["source_root"] = data["source_root"]
-                if data.get("source_repo"):
-                    row["source_repo"] = data["source_repo"]
-                    source_repo_at_sha = format_repo_at_sha(
-                        data["source_repo"],
-                        sha,
-                        source_dirty,
-                        sha_certified,
-                    )
-                    if source_repo_at_sha:
-                        row["source_repo_at_sha"] = source_repo_at_sha
-                repos.append(row)
+                repos.append(self._summary_row(
+                    len(data["sections"]),
+                    len(data["doc_paths"]),
+                    data,
+                ))
             except Exception:
                 continue
         return repos
@@ -999,6 +1228,13 @@ class DocStore:
         if content_dir.exists():
             shutil.rmtree(content_dir)
             deleted = True
+        # jdoc#77: best-effort removal of the list_repos summary sidecar.
+        try:
+            summary_path = self._summary_path(owner, name)
+            if summary_path.exists():
+                summary_path.unlink()
+        except (OSError, ValueError):
+            pass
         # Best-effort removal of the per-repo write-lock file (_index_write_lock).
         lock_path = index_path.with_name(f"{index_path.name}.lock")
         if lock_path.exists():
@@ -1016,7 +1252,16 @@ class DocStore:
             "indexed_at": index.indexed_at,
             "doc_paths": index.doc_paths,
             "doc_types": index.doc_types,
-            "sections": index.sections,
+            # jdoc#75: embedding vectors are persisted ONLY in the
+            # ``<name>.embeddings.jsonl`` sidecar. Strip the ``embedding`` key
+            # non-mutatingly -- the in-memory Section dicts still carry vectors
+            # for post-save consumers (the related/boilerplate/dedup sidecars
+            # built right after save_index during index_local).
+            "sections": [
+                {k: v for k, v in s.items() if k != "embedding"}
+                if isinstance(s, dict) and "embedding" in s else s
+                for s in index.sections
+            ],
             "index_version": index.index_version,
             "file_hashes": index.file_hashes,
         }

@@ -7,11 +7,22 @@ PreCompact  -- emit a session snapshot so doc orientation survives context compa
 All read JSON from stdin and write JSON to stdout per the Claude Code hooks spec.
 """
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX advisory file locks (cross-process)
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None
+try:
+    import msvcrt  # Windows byte-range file locks (cross-process)
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 
 # Doc extensions that benefit from jDocMunch structured retrieval.
 # Mirrors parser.ALL_EXTENSIONS.
@@ -31,6 +42,167 @@ _DOC_EXTENSIONS: set[str] = {
 # Minimum file size (bytes) to trigger the jDocMunch suggestion.
 # Override with JDOCMUNCH_HOOK_MIN_SIZE env var.
 _MIN_SIZE_BYTES = int(os.environ.get("JDOCMUNCH_HOOK_MIN_SIZE", "2048"))
+
+
+# ---------------------------------------------------------------------------
+# PostToolUse reindex throttling (jdoc#76)
+#
+# The PostToolUse hook spawns a background reindex per Edit/Write. Without any
+# throttle, a burst of N edits fans out into N concurrent processes that each
+# load the full index -- a memory pile-up that took down a 16 GB machine in the
+# report. Three composable guards, each independently tunable:
+#   * per-file debounce  -- coalesce rapid repeated edits to one file;
+#   * global concurrency cap -- at most N reindexers loading an index at once
+#     (the spawned `hook-reindex` worker acquires one of N slot locks BEFORE it
+#     loads anything, and exits if none is free);
+#   * breadcrumb log     -- opt-in one-liner so pile-ups/skips are observable
+#     instead of silently discarded to DEVNULL.
+# ---------------------------------------------------------------------------
+
+def _hook_state_dir() -> Path:
+    """Directory holding the reindex throttle state (debounce stamps + slot
+    locks + optional log). Co-located with the doc-index storage root."""
+    base = os.environ.get("DOC_INDEX_PATH") or str(Path.home() / ".doc-index")
+    d = Path(base) / "_hooks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _debounce_seconds() -> float:
+    """Debounce window; <=0 disables debouncing. Env JDOCMUNCH_HOOK_DEBOUNCE_SECONDS."""
+    try:
+        return float(os.environ.get("JDOCMUNCH_HOOK_DEBOUNCE_SECONDS", "3.0"))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _max_reindex() -> int:
+    """Max concurrent reindex workers. Env JDOCMUNCH_HOOK_MAX_REINDEX (default 2)."""
+    try:
+        return max(1, int(os.environ.get("JDOCMUNCH_HOOK_MAX_REINDEX", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _hook_log_enabled() -> bool:
+    return os.environ.get("JDOCMUNCH_HOOK_LOG", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _breadcrumb(msg: str) -> None:
+    """Append one diagnostic line so reindex pile-ups/skips are observable.
+    No-op unless JDOCMUNCH_HOOK_LOG is set (default: silent, as before)."""
+    if not _hook_log_enabled():
+        return
+    try:
+        with open(_hook_state_dir() / "reindex.log", "a", encoding="utf-8") as f:
+            f.write(f"{int(time.time())} pid={os.getpid()} {msg}\n")
+    except OSError:
+        pass
+
+
+def _should_reindex(resolved_path: str) -> bool:
+    """Leading-edge debounce: True (and stamps the path) when no reindex was
+    spawned for this file within the debounce window; False to coalesce a rapid
+    repeat edit. Fail-open (True) on any state error -- never drop a reindex
+    because the stamp couldn't be read."""
+    window = _debounce_seconds()
+    if window <= 0:
+        return True
+    try:
+        key = hashlib.sha1(resolved_path.encode("utf-8")).hexdigest()
+        stamp_dir = _hook_state_dir() / "debounce"
+        stamp_dir.mkdir(parents=True, exist_ok=True)
+        stamp = stamp_dir / key
+        try:
+            if (time.time() - stamp.stat().st_mtime) < window:
+                return False
+        except OSError:
+            pass  # no stamp yet -> proceed
+        stamp.write_text("", encoding="utf-8")  # (re)stamp mtime
+    except OSError:
+        return True
+    return True
+
+
+def _acquire_reindex_slot():
+    """Grab one of ``_max_reindex()`` cross-process slot locks without blocking.
+
+    Returns an open, locked fd on success; ``-1`` when no lock primitive is
+    available (proceed uncapped); ``None`` when every slot is held (over the
+    concurrency cap -- caller should skip). The lock is advisory and held for
+    the worker's lifetime; the OS releases it on process exit even on a crash,
+    so a killed reindexer never wedges a slot."""
+    if fcntl is None and msvcrt is None:
+        return -1
+    state = _hook_state_dir()
+    for i in range(_max_reindex()):
+        lock_path = state / f"reindex.slot{i}.lock"
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:
+            continue
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return fd
+        except OSError:
+            os.close(fd)
+            continue
+    return None
+
+
+def _release_reindex_slot(fd) -> None:
+    if fd is None or fd == -1:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def run_hook_reindex(path: str) -> int:
+    """`hook-reindex <path>` worker spawned by the PostToolUse hook (jdoc#76).
+
+    Acquires a concurrency slot BEFORE loading the index; if the cap is already
+    saturated it records a breadcrumb and exits without loading anything (the
+    next edit reindexes -- correctness holds). Otherwise it reindexes the single
+    file and releases the slot. Always exits 0: a background reindex failure
+    must never surface as a hook error."""
+    try:
+        resolved = str(Path(path).resolve())
+    except (OSError, ValueError):
+        return 0
+    _, ext = os.path.splitext(resolved)
+    if ext.lower() not in _DOC_EXTENSIONS:
+        return 0
+
+    fd = _acquire_reindex_slot()
+    if fd is None:
+        _breadcrumb(f"skip over-cap {resolved}")
+        return 0
+    try:
+        _breadcrumb(f"reindex start {resolved}")
+        from ..tools.index_file import index_file_cli
+        index_file_cli(resolved)
+        _breadcrumb(f"reindex done {resolved}")
+    except Exception as exc:  # noqa: BLE001 - background best-effort
+        _breadcrumb(f"reindex error {resolved}: {exc}")
+    finally:
+        _release_reindex_slot(fd)
+    return 0
 
 
 def run_pretooluse() -> int:
@@ -105,8 +277,17 @@ def run_posttooluse() -> int:
     if ext.lower() not in _DOC_EXTENSIONS:
         return 0
 
-    # Fire-and-forget: spawn index-file for the single edited file.
     resolved = str(Path(file_path).resolve())
+
+    # jdoc#76: coalesce rapid repeat edits to the same file before spawning
+    # anything, so a fast agent doesn't fan out a reindex per keystroke-batch.
+    if not _should_reindex(resolved):
+        _breadcrumb(f"skip debounce {resolved}")
+        return 0
+
+    # Fire-and-forget: spawn the throttled `hook-reindex` worker (not `index-file`
+    # directly) so the concurrency cap is enforced BEFORE the worker loads the
+    # index -- N edits no longer become N simultaneous full-index loads.
     try:
         kwargs: dict = dict(
             stdout=subprocess.DEVNULL,
@@ -115,7 +296,7 @@ def run_posttooluse() -> int:
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
         subprocess.Popen(
-            ["jdocmunch-mcp", "index-file", resolved],
+            ["jdocmunch-mcp", "hook-reindex", resolved],
             **kwargs,
         )
     except (OSError, FileNotFoundError):

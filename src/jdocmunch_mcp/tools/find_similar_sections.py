@@ -206,9 +206,14 @@ def find_similar_sections(
     if not index:
         return {"error": f"Repo not found: {repo}"}
 
+    has_embeddings = bool(index._has_embeddings()) if hasattr(index, "_has_embeddings") else False
+    # jdoc#75: embedding vectors live in the sidecar; stream them onto the
+    # section dicts before the per-section reads below.
+    if has_embeddings and hasattr(index, "_rehydrate_embeddings"):
+        index._rehydrate_embeddings()
+
     all_sections = list(index.sections)
     examined = all_sections[:max_sections]
-    has_embeddings = bool(index._has_embeddings()) if hasattr(index, "_has_embeddings") else False
 
     # Precompute token sets + embeddings + identity tuples.
     cache: list[dict] = []

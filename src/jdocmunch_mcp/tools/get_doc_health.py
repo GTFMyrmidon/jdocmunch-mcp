@@ -132,7 +132,13 @@ def get_doc_health(
     }
 
     has_emb = index._has_embeddings()
-    embedding_count = sum(1 for s in index.sections if s.get("embedding"))
+    # jdoc#75: vectors live in the sidecar; count via the rehydrating helper so
+    # the embedding_coverage axis reflects true coverage, not a false zero.
+    embedding_count = (
+        index._embedded_section_count()
+        if hasattr(index, "_embedded_section_count")
+        else sum(1 for s in index.sections if s.get("embedding"))
+    )
 
     structural = _structural_signals(index.sections)
 

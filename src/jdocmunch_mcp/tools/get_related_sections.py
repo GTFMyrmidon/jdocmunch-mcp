@@ -53,6 +53,11 @@ def get_related_sections(
         out["semantic"] = [n for n in out["semantic"] if (n.get("score") or 0) >= min_score][:top_n]
         persisted_used = True
     else:
+        # jdoc#75: on-demand semantic neighbors read per-section vectors, which
+        # now live in the sidecar; materialize them first (no-op when absent or
+        # for structural-only mode).
+        if mode in ("semantic", "both") and hasattr(index, "_rehydrate_embeddings"):
+            index._rehydrate_embeddings()
         out = get_related(
             index.sections,
             section_id,

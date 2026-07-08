@@ -2394,6 +2394,13 @@ def main(argv: Optional[list] = None):
         help="PreCompact hook: session snapshot before context compaction (reads stdin)",
     )
 
+    # --- hook-reindex ---
+    hook_reindex_parser = subparsers.add_parser(
+        "hook-reindex",
+        help="Throttled background reindex worker spawned by the PostToolUse hook (jdoc#76)",
+    )
+    hook_reindex_parser.add_argument("file", help="Path to the edited doc file to reindex")
+
     args = parser.parse_args(argv)
 
     # Default to serve when no subcommand given
@@ -2475,6 +2482,10 @@ def main(argv: Optional[list] = None):
     if args.command == "hook-precompact":
         from .cli.hooks import run_precompact
         sys.exit(run_precompact())
+
+    if args.command == "hook-reindex":
+        from .cli.hooks import run_hook_reindex
+        sys.exit(run_hook_reindex(args.file))
 
 
 if __name__ == "__main__":

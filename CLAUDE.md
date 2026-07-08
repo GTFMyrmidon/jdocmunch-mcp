@@ -1,6 +1,36 @@
 # jdocmunch-mcp
 
-**Version:** 1.93.0 | **Tests:** `pytest tests/ -q` (1514 passed)
+**Version:** 1.94.0 | **Tests:** `pytest tests/ -q`
+
+## v1.94.0 - large-corpus stability: vectors out of the monolith, throttled reindex hook, cheap list_repos (#75, #76, #77)
+Three linked reports from @floke75, confirmed on two machines (a 16 GB box hit
+cascading jetsam kills + swap storm + WindowServer watchdog restarts from all
+three interacting). Additive, 1.x-compatible: `INDEX_VERSION` stays 3, no forced
+reindex — existing indexes keep working and shed their inline vectors on the next
+save. **#75 (the amplifier):** embedding vectors were persisted inline in the
+`<name>.json` monolith, pretty-printed at `indent=2` (~26 KB/section), so a
+broadly-indexed corpus made the monolith multi-GB and every `load_index` cost
+~8 GB RSS / ~60 s (vectors were already duplicated in `.embeddings.jsonl`).
+`_index_to_dict` now strips `embedding` non-mutatingly (in-memory sections keep
+vectors for the post-save related/boilerplate/dedup sidecars), the monolith uses
+compact `separators=(",", ":")`, and vectors rehydrate lazily from the sidecar as
+`array('f')` on first semantic use (`DocIndex._rehydrate_embeddings` — called from
+`_ensure_semantic_matrix`, `find_similar_sections`, `get_related_sections`,
+`get_doc_health` count). `_has_embeddings` counts a present sidecar; a save-time
+safety net writes the sidecar first if sections carry vectors but none exists, so
+the strip is always lossless. Result: sub-second / <0.5 GB `load_index`, ranking
+unchanged (float32 shifts cosine ~1e-7). **#77:** `list_repos` (documented first
+call, also on the PreCompact hook path) parsed every monolith for two `len()`s;
+each save now writes a tiny `<name>.summary.json` (atomic, same write lock) and
+`list_repos` reads it, falling back to full parse for legacy indexes and surviving
+a single corrupt monolith. `delete_index` removes it. **#76:** the PostToolUse
+reindex spawned an unthrottled `index-file` per edit; now a per-file leading-edge
+debounce (`JDOCMUNCH_HOOK_DEBOUNCE_SECONDS`, default 3 s) coalesces bursts, a new
+`hook-reindex` worker acquires one of N cross-process slot locks
+(`JDOCMUNCH_HOOK_MAX_REINDEX`, default 2) before loading the index and exits if
+over cap, and an opt-in breadcrumb (`JDOCMUNCH_HOOK_LOG=1` → `_hooks/reindex.log`)
+makes pile-ups observable. Tests: `tests/test_v1_94_0.py` (21) + updated
+`test_hooks.py`.
 
 ## v1.93.0 - MCP readOnlyHint annotations (suite parity with jcodemunch PR #361)
 Every tool now advertises `ToolAnnotations(readOnlyHint=...)` at the `list_tools`

@@ -79,10 +79,14 @@ class TestPreToolUse:
 class TestPostToolUse:
     """Tests for hook-posttooluse handler."""
 
-    def _run(self, payload: dict) -> int:
+    def _run(self, payload: dict, tmp_path=None) -> int:
         from jdocmunch_mcp.cli.hooks import run_posttooluse
-        with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))):
-            return run_posttooluse()
+        # jdoc#76: isolate the reindex throttle state dir so debounce stamps
+        # don't touch the real ~/.doc-index during tests.
+        env = {"DOC_INDEX_PATH": str(tmp_path)} if tmp_path else {}
+        with mock.patch.dict(os.environ, env):
+            with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))):
+                return run_posttooluse()
 
     def test_skips_non_doc_file(self):
         with mock.patch("subprocess.Popen") as mock_popen:
@@ -93,24 +97,36 @@ class TestPostToolUse:
         p = tmp_path / "README.md"
         p.write_text("hello")
         with mock.patch("subprocess.Popen") as mock_popen:
-            assert self._run({"tool_input": {"file_path": str(p)}}) == 0
+            assert self._run({"tool_input": {"file_path": str(p)}}, tmp_path) == 0
             mock_popen.assert_called_once()
             cmd = mock_popen.call_args[0][0]
             assert cmd[0] == "jdocmunch-mcp"
-            assert cmd[1] == "index-file"
+            # jdoc#76: spawns the throttled worker, not index-file directly.
+            assert cmd[1] == "hook-reindex"
 
     def test_spawns_reindex_for_rst(self, tmp_path):
         p = tmp_path / "doc.rst"
         p.write_text("hello")
         with mock.patch("subprocess.Popen") as mock_popen:
-            assert self._run({"tool_input": {"file_path": str(p)}}) == 0
+            assert self._run({"tool_input": {"file_path": str(p)}}, tmp_path) == 0
             mock_popen.assert_called_once()
 
     def test_spawns_reindex_for_txt(self, tmp_path):
         p = tmp_path / "notes.txt"
         p.write_text("hello")
         with mock.patch("subprocess.Popen") as mock_popen:
-            assert self._run({"tool_input": {"file_path": str(p)}}) == 0
+            assert self._run({"tool_input": {"file_path": str(p)}}, tmp_path) == 0
+            mock_popen.assert_called_once()
+
+    def test_debounce_coalesces_rapid_repeat_edits(self, tmp_path):
+        # jdoc#76: a second edit to the same file within the debounce window is
+        # coalesced -- only the first spawns a reindex worker.
+        p = tmp_path / "README.md"
+        p.write_text("hello")
+        payload = {"tool_input": {"file_path": str(p)}}
+        with mock.patch("subprocess.Popen") as mock_popen:
+            assert self._run(payload, tmp_path) == 0
+            assert self._run(payload, tmp_path) == 0
             mock_popen.assert_called_once()
 
     def test_handles_invalid_json(self):
