@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.95.0] - 2026-07-10 - suite-parity retrieval verdict (`_meta.verdict` on search_sections + find_endpoint)
+
+### Added
+
+- **`search_sections` and `find_endpoint` now emit `_meta.verdict`** — the same
+  agent-facing honesty contract the sibling code MCP ships on its search tools. An
+  empty or weak result is positive, token-saving evidence: the index can attest
+  "this topic is not documented here" instead of leaving the agent to reformulate
+  a query for something that provably isn't present. Taxonomy: `ok` /
+  `low_confidence` / `absent` / `degraded`.
+- **`degraded`** fires when a caller requests semantic search on an index with no
+  embeddings — results are lexical-only, so absence is not proven (re-index with
+  embeddings for semantic recall). It takes precedence over `absent`.
+- **`low_confidence`** keys off the existing retrieval confidence score (the
+  documented < 0.4 ambiguity floor), so a returned-but-shaky top hit is flagged.
+- **`absent`** carries a `did_you_mean` list of documents whose path or title
+  contains a query term, so a miss redirects the agent instead of repeating.
+  `find_endpoint` suggests existing endpoint paths that share a segment with a
+  missed glob.
+
+Clean-room jDoc implementation (new `retrieval/verdict.py`); only the wire shape
+is shared with the sibling MCPs — no cross-suite import. Additive and
+1.x-compatible: `_meta.verdict` is a new key, every existing response field is
+unchanged, no `INDEX_VERSION` bump, inline compute (no new background or network
+behavior). Tests: `tests/test_v1_95_0.py` (13).
+
 ## [1.94.0] - 2026-07-08 - large-corpus stability: vectors out of the monolith, throttled reindex hook, cheap list_repos (#75, #76, #77)
 
 Reported by @floke75 (three linked issues, confirmed on two machines; a 16 GB

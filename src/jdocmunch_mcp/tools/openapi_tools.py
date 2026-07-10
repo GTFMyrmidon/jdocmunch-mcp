@@ -65,7 +65,9 @@ def find_endpoint(
 
     method_norm = (method or "").upper().strip() or None
     results = []
+    all_paths: list = []
     for sec, op in _iter_op_sections(index):
+        all_paths.append(op.get("path") or "")
         if method_norm and (op.get("method") or "").upper() != method_norm:
             continue
         if path and not fnmatch.fnmatchcase(op.get("path") or "", path):
@@ -74,6 +76,9 @@ def find_endpoint(
             continue
         results.append(_op_summary(sec, op))
 
+    from ..retrieval.verdict import filter_verdict, suggest_endpoints
+    did_you_mean = suggest_endpoints(path, all_paths) if (not results and path) else None
+
     return {
         "repo": f"{owner}/{name}",
         "filters": {"path": path, "method": method_norm, "tag": tag},
@@ -81,6 +86,7 @@ def find_endpoint(
         "_meta": {
             "latency_ms": int((time.perf_counter() - t0) * 1000),
             "result_count": len(results),
+            "verdict": filter_verdict(len(results), did_you_mean),
         },
     }
 

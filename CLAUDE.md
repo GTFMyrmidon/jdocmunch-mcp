@@ -1,6 +1,21 @@
 # jdocmunch-mcp
 
-**Version:** 1.94.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.95.0 | **Tests:** `pytest tests/ -q`
+
+## v1.95.0 - suite-parity retrieval verdict (`_meta.verdict` on search_sections + find_endpoint)
+Phase 3 of the suite-wide retrieval-verdict work (jcm v1.108.116/.117 shipped it
+for code). `search_sections` and `find_endpoint` now carry `_meta.verdict` — the
+same agent-facing honesty contract: an empty/weak section search is positive,
+token-saving evidence. States: `ok` / `low_confidence` / `absent` / `degraded`.
+`degraded` = semantic requested on an index with no embeddings (lexical-only, so
+absence isn't proven; precedence over `absent`); `low_confidence` keys off the
+existing confidence score's documented < 0.4 ambiguity floor; `absent` carries a
+`did_you_mean` list (documents whose path/title contains a query term, or, for
+`find_endpoint`, existing endpoint paths sharing a segment with a missed glob).
+Clean-room jDoc implementation in new `retrieval/verdict.py` (`build_verdict` /
+`filter_verdict` / `suggest_docs` / `suggest_endpoints`); only the wire shape is
+shared with the siblings — no cross-suite import. Additive, 1.x-compatible, no
+`INDEX_VERSION` bump, inline compute. Tests: `tests/test_v1_95_0.py` (13).
 
 ## v1.94.0 - large-corpus stability: vectors out of the monolith, throttled reindex hook, cheap list_repos (#75, #76, #77)
 Three linked reports from @floke75, confirmed on two machines (a 16 GB box hit

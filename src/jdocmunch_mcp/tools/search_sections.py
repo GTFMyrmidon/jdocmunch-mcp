@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..storage import DocStore
 from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
+from ..retrieval.verdict import build_verdict, suggest_docs
 
 
 def search_sections(
@@ -133,6 +134,10 @@ def search_sections(
                 "latency_ms": int((time.perf_counter() - t0) * 1000),
                 "fusion": "rrf_k60",
                 "lexical_engine": lexical_engine,
+                "verdict": build_verdict(
+                    result_count=len(merged),
+                    semantic_requested=bool(semantic is True or semantic_only),
+                ),
             },
         }
 
@@ -465,6 +470,19 @@ def search_sections(
         pass
     if not has_emb and mode == "lexical":
         meta["tip"] = "Re-index with use_embeddings=True for semantic search (better recall on paraphrased queries)"
+
+    # Suite-parity honesty verdict. degraded = caller asked for semantic on an
+    # index with no embeddings; absent = zero matches; low_confidence keys off
+    # the confidence attach_confidence just computed.
+    meta["verdict"] = build_verdict(
+        result_count=len(results),
+        confidence=meta.get("confidence"),
+        semantic_requested=bool(semantic is True or semantic_only),
+        semantic_available=has_emb,
+        lexical_used=(mode != "semantic_only"),
+        index_stale=bool(index.source_dirty),
+        did_you_mean=suggest_docs(query, index.sections) if not results else None,
+    )
 
     payload = {
         "repo": f"{owner}/{name}",
