@@ -1,6 +1,23 @@
 # jdocmunch-mcp
 
-**Version:** 1.95.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.96.0 | **Tests:** `pytest tests/ -q`
+
+## v1.96.0 - never auto-bill a paid cloud provider from a bare env key (money-safety; suite parity with jcm v1.108.128)
+A bare cloud API key in the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+etc.) silently enabled AI summarization — `get_provider_name` auto-selected the
+first provider whose key was present, billing per doc section on every index.
+Every provider jDoc auto-detects is remote-cloud (its openai target is
+`api.openai.com`), so auto-detect now suppresses ALL of them unless the user
+explicitly opts in: name the provider (`JDOCMUNCH_SUMMARIZER_PROVIDER=<name>`,
+unchanged) or set the new `JDOCMUNCH_ALLOW_PAID_SUMMARIES=1`. A one-time warning
+names the exact setting; indexing continues with signature/heuristic summaries.
+New `_PAID_CLOUD_PROVIDERS` + `_paid_summaries_allowed()`; guarded auto-detect
+loop in `summarizer/batch_summarize.py`. Additive, 1.x-compatible (a previously
+auto-billing bare key now needs opt-in — the safe direction; explicit-provider
+and no-key paths unchanged). Tests: `tests/test_v1_96_0.py` (12) + 5 existing
+auto-detect tests set the opt-in flag. Sibling note: jData's summarizer is
+heuristic-only (no LLM client) and its embeddings are gated on an explicit
+`*_EMBED_MODEL` — no bare-key billing path, no change needed.
 
 ## v1.95.0 - suite-parity retrieval verdict (`_meta.verdict` on search_sections + find_endpoint)
 Phase 3 of the suite-wide retrieval-verdict work (jcm v1.108.116/.117 shipped it

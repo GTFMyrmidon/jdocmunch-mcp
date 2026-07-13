@@ -181,20 +181,56 @@ _AUTO_DETECT_ORDER = [
 
 _VALID_PROVIDERS = {"anthropic", "gemini", "openai", "minimax", "glm", "none"}
 
+# Providers that bill a remote cloud account per call. A bare env key for any of
+# these must NEVER auto-enable summarization — that silently spends real money
+# during indexing (a stray ANTHROPIC_API_KEY / OPENAI_API_KEY in the environment
+# was doing exactly this). Every provider jDoc auto-detects is remote-cloud
+# (its openai target is api.openai.com), so paid auto-select requires explicit
+# opt-in. Naming the provider (JDOCMUNCH_SUMMARIZER_PROVIDER) is always honored.
+_PAID_CLOUD_PROVIDERS = frozenset({"anthropic", "gemini", "openai", "minimax", "glm"})
+_WARNED_SUPPRESSED_PAID: set = set()
+
+
+def _paid_summaries_allowed() -> bool:
+    """Whether the user explicitly opted in to paid-cloud auto-summaries.
+
+    Off by default: an ambient cloud API key never bills on its own. Turn on with
+    JDOCMUNCH_ALLOW_PAID_SUMMARIES=1. Naming a provider explicitly
+    (JDOCMUNCH_SUMMARIZER_PROVIDER) is always honored and does not need this.
+    """
+    return os.environ.get("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def get_provider_name() -> Optional[str]:
     """Return the active summarizer provider name, or None if disabled.
 
     Priority: explicit JDOCMUNCH_SUMMARIZER_PROVIDER env var > auto-detect by API key.
     Auto-detect order: Anthropic > Gemini > OpenAI > MiniMax > GLM-5.
+
+    Auto-detect NEVER selects a paid cloud provider from a bare env key unless
+    JDOCMUNCH_ALLOW_PAID_SUMMARIES is set — a stray cloud key must not silently
+    bill during indexing. Naming the provider explicitly bypasses this.
     """
     explicit = os.environ.get("JDOCMUNCH_SUMMARIZER_PROVIDER", "").lower().strip()
     if explicit in _VALID_PROVIDERS:
         return None if explicit == "none" else explicit
 
+    allow_paid = _paid_summaries_allowed()
     for env_var, name in _AUTO_DETECT_ORDER:
-        if os.environ.get(env_var):
-            return name
+        if not os.environ.get(env_var):
+            continue
+        if not allow_paid and name in _PAID_CLOUD_PROVIDERS:
+            if name not in _WARNED_SUPPRESSED_PAID:
+                _WARNED_SUPPRESSED_PAID.add(name)
+                logger.warning(
+                    "%s is set but paid-cloud AI summaries are opt-in — NOT billing "
+                    "%s automatically. To enable, set JDOCMUNCH_SUMMARIZER_PROVIDER=%s "
+                    "(or JDOCMUNCH_ALLOW_PAID_SUMMARIES=1). Indexing continues with "
+                    "signature/heuristic summaries.",
+                    env_var, name, name,
+                )
+            continue
+        return name
     return None
 
 
