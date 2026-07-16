@@ -1,6 +1,9 @@
 # jdocmunch-mcp
 
-**Version:** 1.97.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.97.1 | **Tests:** `pytest tests/ -q`
+
+## v1.97.1 - docs only
+Documentation wording only; no code, wire, or behavior change from 1.97.0.
 
 ## v1.97.0 - update model price constants to current Anthropic pricing
 Anthropic has reduced input pricing across the Opus line since these models
