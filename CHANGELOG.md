@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.98.0] - 2026-07-16 - `watch` daemon: keep doc indexes fresh on any on-disk change (#78)
+
+Reported by @oderwat. jDocMunch's index freshness rode entirely on the
+PostToolUse hook, which only fires when the *agent* edits a doc file. Docs
+changed outside the agent (a git pull, an editor, a build step, a teammate) went
+stale until the agent happened to touch that file again. jCodeMunch has had a
+`watch-all` daemon for this; jDocMunch now gets the equivalent, scoped to
+documentation file types.
+
+New foreground daemon `jdocmunch-mcp watch`: auto-discovers every locally-indexed
+doc repo (registry-driven, via `list_repos`), watches each `source_root` with
+`watchfiles`, filters to documentation extensions (`.md`/`.rst`/`.txt`/`.adoc`/
+`.ipynb`/`.html`/... — the same `_DOC_EXTENSIONS` set the reindex hook uses), and
+on any change re-indexes the owning index **incrementally** through the existing
+`index_local(paths=[...])` subset path (jdoc#31 semantics: adds/updates listed
+files, deletes a listed-but-missing file, never prunes unlisted docs). Repos
+indexed while it runs are picked up on the next discovery pass; GitHub-sourced
+indexes (no local source_root) are skipped. Clean SIGINT/SIGTERM shutdown; WSL
+polling awareness (`JDOCMUNCH_WATCH_POLL_DELAY_MS`, mirrors jcm #356).
+
+Background login service, same as jCodeMunch's: `jdocmunch-mcp watch-install`
+registers the daemon as a per-user systemd unit / launchd LaunchAgent / Task
+Scheduler task (`jdocmunch-watch`); `watch-uninstall` removes it; `watch-status`
+prints service state + per-repo watch coverage. The daemon launches via
+`sys.executable -m jdocmunch_mcp watch`, so a `__main__.py` entry point was added.
+
+New agent-facing MCP tool `get_watch_status` (standard tier, read-only): reports
+whether the login service is active and, per local doc repo, whether its
+source_root still exists on disk (watchable). Tool count 61 -> 62.
+
+New dependency `watchfiles>=0.21.0` (the only new runtime dep; the daemon fails
+with a clear message if it's somehow absent).
+
+**Disclosure:** README gains a "Background behavior, fully disclosed" section
+(the file watcher, the opt-in login service, the existing hooks, telemetry, and
+the local store) and drops "real-time file watching" from "Not intended for."
+Additive, 1.x-compatible: no tool rename/removal, no `INDEX_VERSION` bump, no
+wire change to existing tools. Tests: `tests/test_v1_98_0.py` (15) +
+`tests/test_server.py` count/name updates.
+
+### Added
+- `jdocmunch-mcp watch` foreground daemon (`src/jdocmunch_mcp/watch.py`).
+- `jdocmunch-mcp watch-install` / `watch-uninstall` / `watch-status` login-service
+  commands (`src/jdocmunch_mcp/service_installer.py`).
+- `get_watch_status` MCP tool (`src/jdocmunch_mcp/tools/get_watch_status.py`).
+- `src/jdocmunch_mcp/__main__.py` so `python -m jdocmunch_mcp` works.
+- `watchfiles>=0.21.0` runtime dependency; `JDOCMUNCH_WATCH_POLL_DELAY_MS` env var.
+
 ## [1.97.1] - 2026-07-16 - docs only
 
 Documentation wording only. No code, wire-format, or behavior change from 1.97.0.

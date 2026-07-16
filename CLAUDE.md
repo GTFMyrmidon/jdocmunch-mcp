@@ -1,6 +1,29 @@
 # jdocmunch-mcp
 
-**Version:** 1.97.1 | **Tests:** `pytest tests/ -q`
+**Version:** 1.98.0 | **Tests:** `pytest tests/ -q`
+
+## v1.98.0 - `watch` daemon: keep doc indexes fresh on any on-disk change (#78)
+Reported by @oderwat. Freshness previously rode only the PostToolUse hook (fires
+only when the agent edits a doc). Docs changed outside the agent (git pull,
+editor, build, teammate) went stale until re-touched. jCodeMunch has `watch-all`;
+jDocMunch now has the doc-scoped equivalent. New foreground daemon `watch`
+(`watch.py`): `discover_local_doc_repos` reads `list_repos` (registry-driven),
+watches each `source_root` via `watchfiles`, filters to `_DOC_EXTENSIONS` (reused
+from `cli/hooks.py`), and re-indexes the owning index **incrementally** through
+`index_local(name=<repo>, paths=[changed])` — jdoc#31 subset semantics
+(add/update/delete-on-missing, never prune unlisted). Rediscovers on an interval
+(restarts `awatch` when the root set changes); GitHub indexes (no source_root)
+skipped; clean SIGINT/SIGTERM; WSL polling awareness
+(`JDOCMUNCH_WATCH_POLL_DELAY_MS`). Login service (ported `service_installer.py`,
+`jdocmunch-watch`): `watch-install`/`watch-uninstall`/`watch-status` for
+systemd/launchd/Task Scheduler; launches via `sys.executable -m jdocmunch_mcp
+watch` so a new `__main__.py` was added. New read-only MCP tool `get_watch_status`
+(standard tier; service state + per-repo watchable coverage) → tool count 61→62.
+New dep `watchfiles>=0.21.0`. README: added "Background behavior, fully disclosed"
+section (compliance surface); dropped "real-time file watching" from "Not intended
+for." Additive/1.x-compatible; no INDEX_VERSION bump. Tests:
+`tests/test_v1_98_0.py` (15) + `test_server.py` count/name/no-repo-required
+updates. Smoke-verified end-to-end (edit → incremental reindex, section_count 2→3).
 
 ## v1.97.1 - docs only
 Documentation wording only; no code, wire, or behavior change from 1.97.0.
@@ -892,7 +915,9 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 - `storage/doc_store.py` — DocIndex, DocStore, detect_changes, incremental_save
 - `parser/` — one file per format (markdown, rst, asciidoc, notebook, html, text, openapi, json, xml)
 - `tools/` — index_local, index_repo, index_file, get_toc, get_toc_tree, search_sections, get_section, get_sections, list_repos, delete_index, get_broken_links, get_doc_coverage, get_backlinks, get_stale_pages, get_wiki_stats, check_section_delete_safe, get_section_blast_radius, find_similar_sections
-- `cli/hooks.py` — PreToolUse (Read interceptor) + PostToolUse (auto-reindex) + PreCompact (session snapshot) hook handlers for Claude Code
+- `cli/hooks.py` — PreToolUse (Read interceptor) + PostToolUse (auto-reindex) + PreCompact (session snapshot) hook handlers for Claude Code; owns `_DOC_EXTENSIONS`
+- `watch.py` — (#78) `watch` daemon: `discover_local_doc_repos` + `watch_docs` (watchfiles-based, incremental `index_local` refresh, rediscover loop)
+- `service_installer.py` — (#78) cross-platform login-service installer for `watch` (`jdocmunch-watch`; systemd/launchd/Task Scheduler)
 - `cli/init.py` — `jdocmunch-mcp init` full onboarding: client detection, config patching, CLAUDE.md policy, Cursor/Windsurf rules, hooks, index; `claude-md` subcommand
 - `embeddings/` — provider.py (Gemini + OpenAI), cosine_similarity, embed_sections, embed_query
 
@@ -907,6 +932,9 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 | `hook-pretooluse` | PreToolUse hook: intercept Read on large doc files (reads stdin) |
 | `hook-posttooluse` | PostToolUse hook: auto-reindex doc files after Edit/Write (reads stdin) |
 | `hook-precompact` | PreCompact hook: session snapshot before context compaction (reads stdin) |
+| `watch` | (#78) Foreground daemon: auto-reindex every locally-indexed doc repo on any on-disk doc change. `--no-ai-summaries`, `--quiet` |
+| `watch-install` / `watch-uninstall` | (#78) Install/remove the doc watcher as a login service (systemd/launchd/Task Scheduler; `jdocmunch-watch`) |
+| `watch-status` | (#78) Print doc-watcher service state + per-repo watch coverage (also the `get_watch_status` MCP tool) |
 
 ## 1.x compatibility contract (license-binding)
 

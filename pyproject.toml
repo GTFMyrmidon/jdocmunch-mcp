@@ -1,6 +1,6 @@
 [project]
 name = "jdocmunch-mcp"
-version = "1.97.1"
+version = "1.98.0"
 description = "Token-efficient MCP server for structured documentation retrieval via section-level indexing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.27.0",
     "pathspec>=0.12.0",
     "pyyaml>=6.0",
+    "watchfiles>=0.21.0",
 ]
 
 [project.urls]

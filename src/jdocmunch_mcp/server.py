@@ -69,6 +69,7 @@ from .tools.get_doc_coverage import get_doc_coverage
 from .tools.get_backlinks import get_backlinks
 from .tools.get_stale_pages import get_stale_pages
 from .tools.get_wiki_stats import get_wiki_stats
+from .tools.get_watch_status import get_watch_status
 from .tools.analyze_perf import analyze_perf
 from .tools.get_session_stats import get_session_stats
 from .tools.check_embedding_drift import check_embedding_drift
@@ -143,7 +144,7 @@ _TOOL_TIER_STANDARD: frozenset[str] = _TOOL_TIER_CORE | frozenset({
     "get_doc_coverage", "get_stale_pages", "get_wiki_stats",
     "get_recent_changes", "get_doc_health",
     "doc_health_radar", "diff_doc_health_radar",
-    "get_doc_pr_risk_profile",
+    "get_doc_pr_risk_profile", "get_watch_status",
     # Utilities
     "verify_index", "delete_index",
 })
@@ -1125,6 +1126,21 @@ def _all_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="get_watch_status",
+            description=(
+                "Doc-watcher coverage + login-service state. Reports whether the "
+                "`jdocmunch-watch` background service is active and, per locally-indexed "
+                "doc repo, whether its source_root still exists on disk (watchable). "
+                "Returns {service, watchable_repo_count, local_repo_count, repos[], hint}. "
+                "Run `jdocmunch-mcp watch` (foreground) or `watch-install` (login service) "
+                "to keep indexes fresh on any on-disk doc change."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
             name="find_code_examples",
             description=(
                 "Search fenced code blocks across the indexed docs by BM25 over the block "
@@ -1680,7 +1696,8 @@ def _generate_doc_md_snippet() -> str:
                           "get_undocumented_symbols", "resolve_related_code_repos"]),
         ("Health & metrics", ["get_doc_coverage", "get_stale_pages", "get_wiki_stats",
                                "get_recent_changes", "get_doc_health", "doc_health_radar",
-                               "diff_doc_health_radar", "get_doc_pr_risk_profile"]),
+                               "diff_doc_health_radar", "get_doc_pr_risk_profile",
+                               "get_watch_status"]),
         ("Utilities", ["analyze_perf", "get_session_stats", "tune_weights",
                         "check_embedding_drift"]),
         ("Self-Guide", ["jdocmunch_guide"]),
@@ -2009,6 +2026,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 repo=arguments["repo"],
                 storage_path=storage_path,
             )
+        elif name == "get_watch_status":
+            result = get_watch_status(storage_path=storage_path)
         elif name == "analyze_perf":
             result = analyze_perf(
                 window=arguments.get("window", "session"),
@@ -2401,6 +2420,33 @@ def main(argv: Optional[list] = None):
     )
     hook_reindex_parser.add_argument("file", help="Path to the edited doc file to reindex")
 
+    # --- watch (jdoc#78) ---
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="Auto-reindex every locally-indexed doc repo on any on-disk doc change (foreground daemon)",
+    )
+    watch_parser.add_argument(
+        "--no-ai-summaries", action="store_true",
+        help="Skip AI section summaries on re-index (faster, no summarizer calls)",
+    )
+    watch_parser.add_argument(
+        "--quiet", action="store_true",
+        help="Suppress per-change stderr log lines",
+    )
+
+    subparsers.add_parser(
+        "watch-install",
+        help="Install the doc watcher as a login service (systemd/launchd/Task Scheduler)",
+    )
+    subparsers.add_parser(
+        "watch-uninstall",
+        help="Remove the installed doc-watcher login service",
+    )
+    subparsers.add_parser(
+        "watch-status",
+        help="Print doc-watcher service state + per-repo watch coverage",
+    )
+
     args = parser.parse_args(argv)
 
     # Default to serve when no subcommand given
@@ -2486,6 +2532,42 @@ def main(argv: Optional[list] = None):
     if args.command == "hook-reindex":
         from .cli.hooks import run_hook_reindex
         sys.exit(run_hook_reindex(args.file))
+
+    if args.command == "watch":
+        from .watch import watch_docs
+        try:
+            asyncio.run(watch_docs(
+                use_ai_summaries=not args.no_ai_summaries,
+                quiet=args.quiet,
+            ))
+        except KeyboardInterrupt:
+            pass
+        return
+
+    if args.command in ("watch-install", "watch-uninstall", "watch-status"):
+        from . import service_installer
+        if args.command == "watch-install":
+            try:
+                result = service_installer.install_service()
+                print(json.dumps(result, indent=2))
+                print(
+                    "\nInstalled. The doc watcher runs in the background and keeps "
+                    "every locally-indexed doc repo fresh. Remove it with "
+                    "`jdocmunch-mcp watch-uninstall`.",
+                    file=sys.stderr,
+                )
+            except service_installer.InstallerError as exc:
+                print(json.dumps({"error": str(exc)}, indent=2))
+                sys.exit(1)
+        elif args.command == "watch-uninstall":
+            result = service_installer.uninstall_service()
+            print(json.dumps(result, indent=2))
+        else:  # watch-status
+            from .tools.get_watch_status import get_watch_status
+            print(json.dumps(get_watch_status(
+                storage_path=os.environ.get("DOC_INDEX_PATH"),
+            ), indent=2))
+        return
 
 
 if __name__ == "__main__":

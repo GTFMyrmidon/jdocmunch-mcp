@@ -540,7 +540,6 @@ See `SECURITY.md` for details.
 ## Not intended for
 
 * source code symbol indexing (use [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp) for that)
-* real-time file watching
 * cross-repository global search
 * semantic/vector similarity search as a standalone product (hybrid BM25 + semantic fusion is supported when embeddings are enabled — defaults to `"auto"`, on whenever a provider is configured — but the core workflow remains structure-first)
 
@@ -562,6 +561,61 @@ See `SECURITY.md` for details.
 | `JDOCMUNCH_ST_MODEL`              | sentence-transformers model (default: `all-MiniLM-L6-v2`)        | No       |
 | `DOC_INDEX_PATH`                  | Custom cache path                                                 | No       |
 | `JDOCMUNCH_SHARE_SAVINGS`         | Set to `0` to disable anonymous community token savings reporting | No       |
+| `JDOCMUNCH_WATCH_POLL_DELAY_MS`   | Poll interval (ms) used only when the watcher falls back to polling (e.g. under WSL); default `1000` | No |
+
+---
+
+## Keeping indexes fresh (the `watch` daemon)
+
+By default jDocMunch's index freshness rides the PostToolUse hook, which only
+fires when the agent itself edits a doc file. Docs changed outside the agent (a
+git pull, an editor, a build step, a teammate) go stale until the agent happens
+to touch that file again.
+
+The `watch` daemon closes that gap. It auto-discovers every locally-indexed doc
+repo and re-indexes the owning index incrementally whenever a documentation file
+(`.md`, `.rst`, `.txt`, `.adoc`, `.ipynb`, `.html`, and the other supported
+formats) changes on disk.
+
+```bash
+# Foreground — stays running, Ctrl+C to stop:
+jdocmunch-mcp watch
+
+# Or install it as a background login service (systemd / launchd / Task Scheduler):
+jdocmunch-mcp watch-install
+jdocmunch-mcp watch-status      # is it active? which repos are covered?
+jdocmunch-mcp watch-uninstall   # remove it
+```
+
+Repos indexed while the watcher runs are picked up on the next discovery pass.
+GitHub-sourced indexes (no local source_root) are skipped — there's nothing
+on-disk to watch. Coverage is also queryable from an agent via the
+`get_watch_status` tool.
+
+---
+
+## Background behavior, fully disclosed
+
+jDocMunch does nothing over the network or in the background that isn't listed
+here. Keep this section current whenever any new background, persistent, or
+network behavior ships.
+
+* **File watching (opt-in):** `jdocmunch-mcp watch` runs a foreground daemon
+  that watches your locally-indexed doc folders and re-indexes changed files.
+  It runs only while you run it; nothing is watched unless you start it.
+* **Watch login service (explicit opt-in):** `jdocmunch-mcp watch-install`
+  registers the `watch` daemon as a per-user login service (systemd user unit /
+  launchd LaunchAgent / Task Scheduler task) so it starts at login.
+  `jdocmunch-mcp watch-uninstall` removes it. Never installed unless you run
+  `watch-install`.
+* **PostToolUse / PreToolUse / PreCompact hooks (opt-in):** installed only if
+  you run `jdocmunch-mcp init --hooks`. The PostToolUse hook spawns a throttled
+  single-file re-index after an Edit/Write to a doc file.
+* **Anonymous savings telemetry (opt-out):** a tokens-saved delta + a random
+  anonymous install ID are POSTed to a live counter (see "Community savings
+  meter" below). Disable with `JDOCMUNCH_SHARE_SAVINGS=0`.
+* **Local index store:** indexes live under `~/.doc-index/` (override with
+  `DOC_INDEX_PATH`). No index content leaves your machine.
 
 ---
 
