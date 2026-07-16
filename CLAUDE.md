@@ -1,6 +1,20 @@
 # jdocmunch-mcp
 
-**Version:** 1.96.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.97.0 | **Tests:** `pytest tests/ -q`
+
+## v1.97.0 - cost_avoided corrected to current Opus pricing (was overstating 3x)
+`storage/token_tracker.PRICING` carried a stale $15/MTok Opus rate (the retired
+Opus 4.0/4.1 price). `PRICING` feeds `cost_avoided()`, emitted in `_meta` on
+nearly every tool response, so every response's Opus dollar estimate was ~3x too
+high. Current Opus (4.8/4.7/4.6) is $5/MTok. Fixed `claude_opus` $15 -> $5;
+additively added `claude_sonnet` ($3) + `claude_haiku` ($1) so
+`cost_avoided`/`total_cost_avoided` show the full current model set (parity with
+jcm's price table). The `claude_opus` + `gpt5_latest` keys are unchanged in name,
+so the wire stays 1.x-compatible (additive keys plus a value correction).
+Present-value estimator (this call at current pricing); does not touch the public
+token counter (tokens stored, valued at display time). No INDEX_VERSION bump, no
+tool add/rename. Tests: `tests/test_storage.py` green (30). Suite parity: jcm
+v1.108.130 (receipt table) + jdata v1.19.0 (same token_tracker fix).
 
 ## v1.96.0 - never auto-bill a paid cloud provider from a bare env key (money-safety; suite parity with jcm v1.108.128)
 A bare cloud API key in the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
