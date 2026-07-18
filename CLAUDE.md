@@ -2,6 +2,18 @@
 
 **Version:** 1.100.0 | **Tests:** `pytest tests/ -q`
 
+## CHANGELOG maintenance warning (2026-07-18 incident)
+CHANGELOG.md's established format is `## [X.Y.Z] - date - title` with curated
+prose. Do NOT run `scripts/generate_changelog.py` against it: the script emits
+a different heading format and rewrites all historical entries, which changes
+every CHANGELOG section id — and the replay self-fixture's goldens for
+'hybrid search' / 'broken links' / 'openai compatible embeddings' point at
+CHANGELOG section ids, so regeneration turned Tests+Replay red on an otherwise
+docs-only commit (recall 1.0 -> 0.7, exactly the 3 CHANGELOG goldens).
+Maintain CHANGELOG by hand-appending entries in the established format, and
+keep new entry wording clear of fixture query phrases
+([[feedback_fixture_query_corpus_pollution]] class).
+
 ## v1.100.0 - corpus identity: index_local won't duplicate an equivalent source (#81)
 Reported by @rknighton (Item A of the #80 identity meta-issue; complements
 #79's read-time detection with index-time prevention). `index_local` used to
