@@ -217,6 +217,7 @@ index_repo: { "url": "owner/repo", "incremental": false }
 | `index_local`           | Index local documentation folder                 | `path`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental` |
 | `index_repo`            | Index GitHub repository docs                     | `url`, `use_ai_summaries`, `incremental`                         |
 | `list_repos`            | List all indexed documentation sets              | —                                                                |
+| `doc_resolve_repo`      | Resolve a path to its doc-index handle (O(1)-sized) | `path`                                                        |
 | `get_toc`               | Flat section list in document order              | `repo`                                                           |
 | `get_toc_tree`          | Nested section tree per document                 | `repo`                                                           |
 | `get_document_outline`  | Section hierarchy for one document               | `repo`, `doc_path`                                               |

@@ -76,6 +76,7 @@ from .tools.check_embedding_drift import check_embedding_drift
 from .tools.find_code_examples import find_code_examples
 from .tools.link_code_to_symbols import link_code_to_symbols
 from .tools.resolve_related_code_repos import resolve_related_code_repos
+from .tools.resolve_repo import doc_resolve_repo
 from .tools.openapi_tools import (
     find_endpoint,
     list_endpoints_by_tag,
@@ -112,7 +113,7 @@ _TOOL_TIER_CORE: frozenset[str] = frozenset({
     # Indexing
     "index_local", "doc_index_repo",
     # Discovery
-    "doc_list_repos", "list_docs", "get_index_overview",
+    "doc_list_repos", "doc_resolve_repo", "list_docs", "get_index_overview",
     # Document navigation
     "get_doc", "get_toc", "get_toc_tree",
     # Section retrieval
@@ -1202,6 +1203,30 @@ def _all_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="doc_resolve_repo",
+            description=(
+                "Resolve a filesystem path (index root, subfolder, or file) to its indexed "
+                "documentation repo handle via stored source_root metadata — O(1)-sized "
+                "response, use instead of doc_list_repos when the path is known. Exact root "
+                "match wins, then the most specific containing root; equally-specific "
+                "duplicates return ambiguous:true with a bounded candidates list (max 5) "
+                "plus total_matches. GitHub-indexed corpora (no source_root) never match. "
+                "Read-only: never creates, refreshes, or deletes an index. Prefer absolute "
+                "paths; relative paths resolve against the server CWD (echoed as "
+                "_meta.resolved_path)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Filesystem path — index root, subfolder, or file (absolute preferred)"
+                    }
+                },
+                "required": ["path"]
+            }
+        ),
+        Tool(
             name="find_endpoint",
             description=(
                 "Find OpenAPI operations by path glob, method, and/or tag. All filters AND'd. "
@@ -1675,7 +1700,7 @@ def _generate_doc_md_snippet() -> str:
     """
     categories = [
         ("Indexing", ["index_local", "doc_index_repo", "delete_index", "verify_index"]),
-        ("Discovery", ["doc_list_repos", "list_docs", "list_terms", "get_all_roles", "get_all_tags",
+        ("Discovery", ["doc_list_repos", "doc_resolve_repo", "list_docs", "list_terms", "get_all_roles", "get_all_tags",
                        "get_index_overview", "list_repo_groups", "define_repo_group"]),
         ("Document navigation", ["get_doc", "get_toc", "get_toc_tree", "get_document_outline",
                                   "get_tutorial_path"]),
@@ -2063,6 +2088,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "resolve_related_code_repos":
             result = resolve_related_code_repos(
                 repo=arguments["repo"],
+                storage_path=storage_path,
+            )
+        elif name == "doc_resolve_repo":
+            result = doc_resolve_repo(
+                path=arguments["path"],
                 storage_path=storage_path,
             )
         elif name == "find_endpoint":

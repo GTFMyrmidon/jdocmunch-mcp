@@ -10,16 +10,16 @@ from jdocmunch_mcp.server import list_tools, call_tool
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_62_tools(self):
+    async def test_returns_63_tools(self):
         tools = await list_tools()
-        assert len(tools) == 62
+        assert len(tools) == 63
 
     @pytest.mark.asyncio
     async def test_tool_names(self):
         tools = await list_tools()
         names = {t.name for t in tools}
         expected = {
-            "index_local", "doc_index_repo", "doc_list_repos", "list_docs",
+            "index_local", "doc_index_repo", "doc_list_repos", "doc_resolve_repo", "list_docs",
             "get_doc", "get_index_overview",
             "get_toc", "get_toc_tree", "get_document_outline",
             "search_sections", "search_titles", "count_sections",
@@ -69,6 +69,7 @@ class TestListTools:
         # an alternative to repo). define_repo_group requires name+repos.
         no_repo_required = {
             "index_local", "doc_index_repo", "doc_list_repos",
+            "doc_resolve_repo",
             "analyze_perf", "get_session_stats", "check_embedding_drift",
             "tune_weights",
             "list_repo_groups", "define_repo_group",

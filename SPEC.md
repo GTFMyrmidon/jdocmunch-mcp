@@ -73,6 +73,16 @@ Deletes both the index JSON and the raw content cache directory.
 
 No input required. Returns all indexed repositories with section counts, document counts, document type breakdown, and commit metadata when available. Clean Git-backed indexes include `repo_at_sha`, an immutable handle in the form `owner/repo@40hexsha`.
 
+#### `doc_resolve_repo` — Resolve a filesystem path to its doc-index handle
+
+```json
+{
+  "path": "C:\\projects\\project-docs\\guides\\intro.md"
+}
+```
+
+Given an index root, subfolder, or file path, returns the matching documentation repo handle via stored `source_root` metadata — a response whose size is independent of how many indexes exist. Prefer this over `list_repos` when the path is known. Exact root match wins, then the most specific containing root; equally-specific duplicates return `ambiguous: true` with a bounded `candidates` list (max 5) plus `total_matches`. A path outside every index returns a compact not-found result. GitHub-indexed corpora (no `source_root`) never match. Read-only: never creates, refreshes, or deletes an index. Absolute paths are recommended; relative paths resolve against the server's working directory, echoed back as `_meta.resolved_path`.
+
 #### `get_toc` — Flat table of contents
 
 ```json

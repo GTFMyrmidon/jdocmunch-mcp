@@ -1,6 +1,26 @@
 # jdocmunch-mcp
 
-**Version:** 1.98.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.99.0 | **Tests:** `pytest tests/ -q`
+
+## v1.99.0 - `doc_resolve_repo`: path → doc-index handle lookup (#79)
+Reported by @rknighton. The only general path→index lookup was `doc_list_repos`,
+whose response grows with every indexed corpus on the machine — an agent that
+knows the project folder had to pull the full listing to find one handle. New
+read-only `doc_resolve_repo(path)` (`tools/resolve_repo.py`) answers via stored
+`source_root` metadata in an O(1)-sized response: exact root match wins, then
+most-specific containing root (file or nested subfolder resolves to its owning
+index); equally-specific duplicates return `ambiguous: true` + bounded
+`candidates` (max 5) + `total_matches` instead of guessing; outside-every-index
+returns a compact not-found; GitHub corpora (no `source_root`) never match.
+Comparison is `os.path.normcase` over `Path.resolve()` so Windows casing /
+separator variants and symlinked aliases resolve; relative paths resolve against
+server CWD, echoed as `_meta.resolved_path`. Suite parity with jcm's
+`resolve_repo` (jcm#296 contract-parity principle); `doc_` prefix keeps the two
+servers collision-free, matching `doc_list_repos`/`doc_index_repo`. Core tier;
+readOnlyHint true. Tool count 62→63. Docs: SPEC Discovery Tools, README +
+USER_GUIDE tables, live guide category. Additive/1.x-compatible; no
+INDEX_VERSION bump. Tests: `tests/test_v1_99_0.py` (15) + `test_server.py`
+count/name/no-repo updates.
 
 ## v1.98.0 - `watch` daemon: keep doc indexes fresh on any on-disk change (#78)
 Reported by @oderwat. Freshness previously rode only the PostToolUse hook (fires

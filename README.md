@@ -458,6 +458,7 @@ get_section:          { "repo": "owner/repo", "section_id": "owner/repo::docs/co
 | `index_local`           | Index a local documentation folder                    |
 | `index_repo`            | Index a GitHub repository’s docs                      |
 | `list_repos`            | List indexed documentation sets                       |
+| `doc_resolve_repo`      | Resolve a filesystem path to its doc-index handle     |
 | `get_toc`               | Flat section list in document order                   |
 | `get_toc_tree`          | Nested section tree per document                      |
 | `get_document_outline`  | Section hierarchy for one document                    |
