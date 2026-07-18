@@ -1,6 +1,37 @@
 # jdocmunch-mcp
 
-**Version:** 1.99.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.100.0 | **Tests:** `pytest tests/ -q`
+
+## v1.100.0 - corpus identity: index_local won't duplicate an equivalent source (#81)
+Reported by @rknighton (Item A of the #80 identity meta-issue; complements
+#79's read-time detection with index-time prevention). `index_local` used to
+let the requested/derived NAME become physical identity, so one local corpus
+could be indexed repeatedly under different names. Now a structured corpus
+identity is resolved BEFORE storage is chosen: normalized root (same
+resolve+normcase comparison as `doc_resolve_repo`) + durable selection
+(`"full"` or `subset:<sha>:<count>`; `paths=["."]` = full). Behavior:
+established handle reused on omitted-name calls (response carries
+`reused_established_handle`/`requested_handle`/`established_handle`); explicit
+conflicting name → `corpus_already_indexed` error (established handle + safe
+next action, NO write); multiple equivalent legacy indexes + no selection →
+`ambiguous_corpus_identity` (bounded candidates ≤5, NO write); explicitly
+selected existing handle stays refreshable; a subset `paths` refresh NEVER
+redefines durable selection (a `full` index covers any subset refresh from its
+root; intentionally different durable subsets are never merged); parent vs
+nested roots stay distinct (containment ≠ identity). Concurrent-create race
+closed by atomic O_CREAT|O_EXCL claims (`storage/corpus_claims.py`,
+`local/.corpus_claims/`; loser routes to winner's handle; 24h abandoned-claim
+steal; released on failed create; `delete_index` cleans matching claims).
+Persistence: new `DocIndex.corpus_selection` (additive omit-when-empty,
+INDEX_VERSION stays 3; legacy ""=presumed full, participates in reuse when
+root is unambiguous), carried through save_index/incremental_save (_UNSET
+carry-forward), summary sidecar + list_repos rows. Repository lineage /
+repo-relative location deliberately NOT in the equivalence check — reserved
+as separate concepts for Item B per #80. Tests: `tests/test_v1_100_0.py` (23);
+`test_v1_99_0.py` ambiguity setups now plant legacy dupes via direct
+save_index (the guard correctly blocks the old index_local route).
+1.x-additive: no tool/schema change; new error returns fire only for inputs
+that previously created silent duplicates.
 
 ## v1.99.0 - `doc_resolve_repo`: path → doc-index handle lookup (#79)
 Reported by @rknighton. The only general path→index lookup was `doc_list_repos`,

@@ -177,6 +177,11 @@ class DocIndex:
     source_root: str = ""
     # Original upstream repository for GitHub indexes. Empty for legacy/local indexes.
     source_repo: str = ""
+    # jdoc#81: durable documentation-selection descriptor ("full" or
+    # "subset:<sha>:<count>") that, together with the normalized source_root,
+    # forms the corpus identity index_local uses to prevent duplicate indexes.
+    # Empty for legacy/GitHub indexes — legacy is presumed full-corpus.
+    corpus_selection: str = ""
 
     def __post_init__(self) -> None:
         # Build O(1) lookup dict once at load time
@@ -686,6 +691,7 @@ class DocStore:
                 "sha_certified": bool(index.sha_certified),
                 "source_root": getattr(index, "source_root", "") or "",
                 "source_repo": getattr(index, "source_repo", "") or "",
+                "corpus_selection": getattr(index, "corpus_selection", "") or "",
             }
             summary_path = self._summary_path(owner, name)
             tmp = summary_path.with_name(f"{summary_path.name}.{os.getpid()}.tmp")
@@ -785,6 +791,7 @@ class DocStore:
         sha_certified: bool = False,
         source_root: str = "",
         source_repo: str = "",
+        corpus_selection: str = "",
     ) -> "DocIndex":
         """Save index and raw files to storage atomically."""
         if file_hashes is None:
@@ -813,6 +820,7 @@ class DocStore:
             bm25_stats=bm25_stats,
             source_root=source_root or "",
             source_repo=source_repo or "",
+            corpus_selection=corpus_selection or "",
         )
 
         index_path = self._index_path(owner, name)
@@ -888,6 +896,7 @@ class DocStore:
             bm25_stats=data.get("bm25_stats", {}),
             source_root=data.get("source_root", ""),
             source_repo=data.get("source_repo", ""),
+            corpus_selection=data.get("corpus_selection", ""),
         )
 
         # Inject lazy content loader so search can score on body text (B1).
@@ -974,6 +983,7 @@ class DocStore:
         sha_certified=_UNSET,
         source_root=_UNSET,
         source_repo=_UNSET,
+        corpus_selection=_UNSET,
     ) -> Optional["DocIndex"]:
         """Incrementally update an existing index.
 
@@ -1063,6 +1073,11 @@ class DocStore:
             bm25_stats=bm25_stats,
             source_root=index.source_root if source_root is _UNSET else (source_root or ""),
             source_repo=index.source_repo if source_repo is _UNSET else (source_repo or ""),
+            corpus_selection=(
+                getattr(index, "corpus_selection", "")
+                if corpus_selection is _UNSET
+                else (corpus_selection or "")
+            ),
         )
 
         # Save atomically (per-PID temp + retried replace; see save_index)
@@ -1161,6 +1176,8 @@ class DocStore:
             row["repo_at_sha"] = repo_at_sha
         if data.get("source_root"):
             row["source_root"] = data["source_root"]
+        if data.get("corpus_selection"):
+            row["corpus_selection"] = data["corpus_selection"]
         if data.get("source_repo"):
             row["source_repo"] = data["source_repo"]
             source_repo_at_sha = format_repo_at_sha(
@@ -1242,6 +1259,14 @@ class DocStore:
                 lock_path.unlink()
             except OSError:
                 pass
+        # jdoc#81: remove any corpus-creation claim naming this repo so a
+        # deleted corpus can be re-created under a fresh name without a
+        # phantom conflict.
+        try:
+            from .corpus_claims import cleanup_claims_for_repo
+            cleanup_claims_for_repo(self.base_path, f"{owner}/{name}")
+        except Exception:
+            pass
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:
@@ -1277,6 +1302,8 @@ class DocStore:
             d["source_root"] = index.source_root
         if getattr(index, "source_repo", ""):
             d["source_repo"] = index.source_repo
+        if getattr(index, "corpus_selection", ""):
+            d["corpus_selection"] = index.corpus_selection
         return d
 
     def _split_repo_at_sha(self, repo: str) -> tuple[str, Optional[str]]:

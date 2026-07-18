@@ -409,6 +409,12 @@ def index_local(
             f'name="<your-name>" to choose your own.'
         )
 
+    # jdoc#81: creation-claim state, initialized outside the broad try so the
+    # exception path can release an acquired claim (a failed create must not
+    # leave a claim that blocks the retry).
+    claim_token: Optional[str] = None
+    claim_store = None
+
     try:
         requested_rels: list = []
         if paths:
@@ -433,6 +439,90 @@ def index_local(
         store = DocStore(base_path=storage_path)
         existing_index = store.load_index(owner, repo_name)
 
+        # --- jdoc#81: corpus-identity resolution BEFORE any persistent write.
+        # An equivalent local source (same normalized root + a covering durable
+        # selection) must not gain a second physical index just because a
+        # different name was supplied. Explicitly selecting an existing handle
+        # stays refreshable; an explicit *conflicting* name returns a conflict;
+        # several equivalent legacy indexes return bounded ambiguity — never a
+        # guess, never another copy.
+        from ._corpus_identity import (
+            candidate_rows,
+            corpus_norm_root,
+            find_equivalent_indexes,
+            selection_descriptor,
+        )
+        from ..storage.corpus_claims import claim_key, release_claim, try_claim
+
+        explicit_name = bool(name and str(name).strip())
+        call_selection = selection_descriptor(requested_rels if paths else None)
+        root_key = corpus_norm_root(folder_path)
+        equivalents = find_equivalent_indexes(
+            store, root_key, call_selection, exclude_repo=repo_id
+        )
+        reuse_fields: dict = {}
+
+        if existing_index is None and equivalents:
+            if explicit_name:
+                est = equivalents[0]
+                return {
+                    "success": False,
+                    "error": "corpus_already_indexed",
+                    "requested_handle": repo_id,
+                    "established_handle": est.get("repo", ""),
+                    "candidates": candidate_rows(equivalents),
+                    "total_matches": len(equivalents),
+                    "hint": (
+                        f"This documentation source is already indexed as "
+                        f"'{est.get('repo', '')}'. Refresh it with "
+                        f"index_local(path=..., name='{est.get('name') or est.get('repo', '')}'), "
+                        f"or delete_index it first if you intend to re-home the "
+                        f"corpus. No new index was created."
+                    ),
+                }
+            if len(equivalents) == 1:
+                est = equivalents[0]
+                reuse_fields = {
+                    "reused_established_handle": True,
+                    "requested_handle": repo_id,
+                    "established_handle": est.get("repo", ""),
+                }
+                repo_name = est.get("name") or est.get("repo", "").partition("/")[2]
+                repo_id = f"{owner}/{repo_name}"
+                existing_index = store.load_index(owner, repo_name)
+            else:
+                return {
+                    "success": False,
+                    "error": "ambiguous_corpus_identity",
+                    "candidates": candidate_rows(equivalents),
+                    "total_matches": len(equivalents),
+                    "hint": (
+                        "Multiple existing indexes cover this source equally "
+                        "well. Pass name= selecting one of the candidates to "
+                        "refresh it. No new index was created."
+                    ),
+                }
+        elif existing_index is not None and not explicit_name and equivalents:
+            # The derived handle exists AND other equivalent indexes exist —
+            # the caller hasn't selected one, so guessing is not allowed.
+            all_candidates = [{
+                "repo": repo_id,
+                "source_root": str(folder_path),
+                "indexed_at": existing_index.indexed_at,
+            }] + candidate_rows(equivalents)
+            return {
+                "success": False,
+                "error": "ambiguous_corpus_identity",
+                "candidates": all_candidates[:5],
+                "total_matches": 1 + len(equivalents),
+                "hint": (
+                    "Multiple existing indexes cover this source equally well. "
+                    "Pass name= selecting one of the candidates to refresh it. "
+                    "No index was created or modified."
+                ),
+            }
+
+
         # jdoc#31: when explicit `paths` target an existing incremental index,
         # an empty resolution is not a dead end — every listed file may have
         # been deleted from disk, and the subset-scoped diff below must still
@@ -445,6 +535,44 @@ def index_local(
             if warnings:
                 err["warnings"] = warnings
             return err
+
+        # jdoc#81: about to create a brand-new index — close the concurrent-
+        # create race with an atomic claim. The loser of the race routes to the
+        # winner's handle instead of creating a duplicate physical index.
+        if existing_index is None:
+            key = claim_key(root_key, call_selection)
+            acquired, existing_claim = try_claim(
+                store.base_path, key, repo_id, root_key, call_selection,
+                index_exists=lambda r: store.load_index(
+                    r.partition("/")[0], r.partition("/")[2]
+                ) is not None,
+            )
+            if acquired:
+                claim_token = key
+                claim_store = store
+            elif existing_claim and existing_claim.get("repo") not in ("", repo_id):
+                claimed_repo = existing_claim["repo"]
+                if explicit_name:
+                    return {
+                        "success": False,
+                        "error": "corpus_already_indexed",
+                        "requested_handle": repo_id,
+                        "established_handle": claimed_repo,
+                        "hint": (
+                            f"This documentation source is already established "
+                            f"(or being created) as '{claimed_repo}'. Refresh it "
+                            f"through that handle, or delete_index it first. "
+                            f"No new index was created."
+                        ),
+                    }
+                reuse_fields = {
+                    "reused_established_handle": True,
+                    "requested_handle": repo_id,
+                    "established_handle": claimed_repo,
+                }
+                repo_name = claimed_repo.partition("/")[2] or repo_name
+                repo_id = f"{owner}/{repo_name}"
+                existing_index = store.load_index(owner, repo_name)
 
         # Read all discovered files
         current_files: dict = {}
@@ -501,6 +629,9 @@ def index_local(
                     }
                 deleted = sorted(covered - set(current_files))
 
+            # jdoc#81: a full-corpus refresh (re)asserts the durable selection;
+            # a subset-scoped `paths` refresh never redefines it.
+            selection_kwargs = {} if paths else {"corpus_selection": call_selection}
             if not changed and not new and not deleted:
                 updated = existing_index
                 if (
@@ -508,6 +639,7 @@ def index_local(
                     or bool(existing_index.source_dirty) != bool(source_dirty)
                     or bool(existing_index.sha_certified) != bool(sha_certified)
                     or getattr(existing_index, "source_root", "") != str(folder_path)
+                    or (not paths and getattr(existing_index, "corpus_selection", "") != call_selection)
                 ):
                     updated = store.incremental_save(
                         owner=owner, name=repo_name,
@@ -517,6 +649,7 @@ def index_local(
                         source_dirty=source_dirty,
                         sha_certified=sha_certified,
                         source_root=str(folder_path),
+                        **selection_kwargs,
                     ) or existing_index
                 latency_ms = int((time.perf_counter() - t0) * 1000)
                 nochange_result: dict = {
@@ -529,6 +662,7 @@ def index_local(
                     "_meta": {"latency_ms": latency_ms},
                 }
                 nochange_result.update(derivation_fields)
+                nochange_result.update(reuse_fields)
                 _add_commit_fields(nochange_result, updated)
                 # jdoc#15: report truncation even when nothing changed,
                 # since the visible-corpus boundary is unchanged.
@@ -573,6 +707,7 @@ def index_local(
                 source_dirty=source_dirty,
                 sha_certified=sha_certified,
                 source_root=str(folder_path),
+                **selection_kwargs,
             )
 
             latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -588,6 +723,7 @@ def index_local(
                 "_meta": {"latency_ms": latency_ms},
             }
             result.update(derivation_fields)
+            result.update(reuse_fields)
             _add_commit_fields(result, updated)
             # jdoc#15: surface truncation on the incremental path too.
             if discovered_count > max_files:
@@ -624,6 +760,8 @@ def index_local(
                 warnings.append(f"Failed to parse {rel_path}: {e}")
 
         if not all_sections:
+            if claim_token and claim_store is not None:
+                release_claim(claim_store.base_path, claim_token)
             return {"success": False, "error": "No sections extracted from files"}
 
         all_sections = summarize_sections(all_sections, use_ai=use_ai_summaries)
@@ -648,6 +786,7 @@ def index_local(
             source_dirty=source_dirty,
             sha_certified=sha_certified,
             source_root=str(folder_path),
+            corpus_selection=call_selection,
         )
 
         # v1.19.0: glossary sidecar built from final section content.
@@ -707,6 +846,7 @@ def index_local(
             "_meta": {"latency_ms": latency_ms},
         }
         result.update(derivation_fields)
+        result.update(reuse_fields)
         _add_commit_fields(result, saved)
         if autotune_result is not None:
             result["autotune"] = autotune_result
@@ -738,4 +878,10 @@ def index_local(
         return result
 
     except Exception as e:
+        if claim_token and claim_store is not None:
+            try:
+                from ..storage.corpus_claims import release_claim as _release
+                _release(claim_store.base_path, claim_token)
+            except Exception:
+                pass
         return {"success": False, "error": f"Indexing failed: {str(e)}"}

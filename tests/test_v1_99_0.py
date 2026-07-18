@@ -25,6 +25,19 @@ def _index(corpus, store, name, files=("README.md",)):
     return res
 
 
+def _duplicate_index(store, corpus, name):
+    """Plant a duplicate physical index over the same root, bypassing the
+    jdoc#81 index-time guard — models a legacy pre-#81 duplicate so the
+    read-time ambiguity contract (jdoc#79) stays covered."""
+    from jdocmunch_mcp.storage.doc_store import DocStore
+    ds = DocStore(base_path=str(store))
+    ds.save_index(
+        owner="local", name=name,
+        sections=[], raw_files={}, doc_types={},
+        source_root=str(corpus.resolve()),
+    )
+
+
 class TestExactMatch:
     def test_exact_root_resolves(self, tmp_path):
         store = tmp_path / "store"
@@ -129,7 +142,7 @@ class TestAmbiguity:
         store = tmp_path / "store"
         corpus = tmp_path / "proj-docs"
         _index(corpus, store, "copy-a")
-        _index(corpus, store, "copy-b")
+        _duplicate_index(store, corpus, "copy-b")  # jdoc#81 blocks index_local dupes
         res = doc_resolve_repo(str(corpus), storage_path=str(store))
         assert res["found"] is True
         assert res["ambiguous"] is True
@@ -140,8 +153,9 @@ class TestAmbiguity:
     def test_candidates_capped_at_five(self, tmp_path):
         store = tmp_path / "store"
         corpus = tmp_path / "proj-docs"
-        for i in range(7):
-            _index(corpus, store, f"copy-{i}")
+        _index(corpus, store, "copy-0")
+        for i in range(1, 7):
+            _duplicate_index(store, corpus, f"copy-{i}")  # jdoc#81 blocks index_local dupes
         res = doc_resolve_repo(str(corpus), storage_path=str(store))
         assert res["ambiguous"] is True
         assert res["total_matches"] == 7

@@ -214,7 +214,7 @@ index_repo: { "url": "owner/repo", "incremental": false }
 
 | Tool                    | Purpose                                          | Key Parameters                                                   |
 | ----------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
-| `index_local`           | Index local documentation folder                 | `path`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental` |
+| `index_local`           | Index local documentation folder. An already-indexed source reuses its established handle; an explicit conflicting `name` returns a conflict instead of creating a duplicate index; several equivalent legacy indexes return bounded ambiguity | `path`, `name`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental`, `paths` |
 | `index_repo`            | Index GitHub repository docs                     | `url`, `use_ai_summaries`, `incremental`                         |
 | `list_repos`            | List all indexed documentation sets              | —                                                                |
 | `doc_resolve_repo`      | Resolve a path to its doc-index handle (O(1)-sized) | `path`                                                        |
