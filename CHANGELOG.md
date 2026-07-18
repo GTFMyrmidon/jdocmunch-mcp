@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.101.0] - 2026-07-18 - Item A hardening: single winner, true ambiguity, order-independent identity (#82)
+
+Adversarial QA by @rknighton reproduced four gaps in the 1.100.0 corpus
+identity guarantees; all four are closed, verified by his supplied harness
+(4/4). Creation claims now publish their ownership payload atomically (a
+private temp file hardlinked into place), and a claim that exists without a
+readable payload blocks creation with a new corpus_creation_in_progress
+error instead of racing to a second physical index. Several equivalent
+matches now always return bounded ambiguity with no established handle;
+registry order never promotes a winner. Durable-selection identity is a
+symmetric relation independent of creation order: an intentional named
+subset and a full index are distinct corpora in either order, while a
+temporary paths refresh remains a directional refresh rule only. Corpus-
+shaping inputs (extra_ignore_patterns, follow_symlinks) are folded into the
+durable-selection descriptor, and a refresh that changes coverage updates
+identity and discloses it via corpus_selection_changed rather than
+retargeting silently. Additive, 1.x-compatible.
+
 ## [1.100.0] - 2026-07-18 - corpus identity: index_local won't duplicate an equivalent source (#81)
 
 Item A of the #80 identity meta-issue, spec by @rknighton. index_local now

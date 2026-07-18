@@ -223,12 +223,16 @@ class TestLegacyIndexes:
         r = _index(src, storage, name="docs-b")
         assert r["success"], r
 
-    def test_explicit_new_name_over_legacy_duplicates_conflicts(self, corpus):
+    def test_explicit_new_name_over_legacy_duplicates_is_ambiguous(self, corpus):
+        # jdoc#82 invariant 2: several matches are never ordered into a
+        # winner — the pre-hardening behavior promoted equivalents[0] as
+        # established_handle, which registry order must not decide.
         src, storage = corpus
         self._make_legacy_duplicates(src, storage, ["docs-a", "docs-b"])
         r = _index(src, storage, name="docs-c")
         assert r["success"] is False
-        assert r["error"] == "corpus_already_indexed"
+        assert r["error"] == "ambiguous_corpus_identity"
+        assert "established_handle" not in r
         assert DocStore(base_path=storage).load_index("local", "docs-c") is None
 
 

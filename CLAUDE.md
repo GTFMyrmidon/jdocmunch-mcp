@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.100.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.101.0 | **Tests:** `pytest tests/ -q`
 
 ## CHANGELOG maintenance warning (2026-07-18 incident)
 CHANGELOG.md's established format is `## [X.Y.Z] - date - title` with curated
@@ -13,6 +13,29 @@ docs-only commit (recall 1.0 -> 0.7, exactly the 3 CHANGELOG goldens).
 Maintain CHANGELOG by hand-appending entries in the established format, and
 keep new entry wording clear of fixture query phrases
 ([[feedback_fixture_query_corpus_pollution]] class).
+
+## v1.101.0 - Item A hardening: four adversarial-QA gaps closed (#82)
+@rknighton's harness reproduced four failures in v1.100.0's identity
+guarantees; all fixed, his harness passes 4/4 run verbatim (PYTHONPATH=src +
+metadata shim only). (1) Single winner: claims publish payload ATOMICALLY
+(temp file + os.link; O_EXCL fallback keeps reader-retry), and
+claim-present-but-unreadable now returns `corpus_creation_in_progress`
+no-write instead of falling through to create (the v1.100.0 race: loser saw
+empty claim -> created anyway). (2) True ambiguity: explicit new name over
+MULTIPLE identity matches -> `ambiguous_corpus_identity` with NO
+established_handle (was: conflict promoting equivalents[0] by registry
+order). (3) Symmetric identity: split `selection_identical` (conflict/
+ambiguity basis; reflexive/symmetric/order-independent) from
+`selection_covers` (directional refresh routing for omitted-name calls
+ONLY) — full-then-named-subset and subset-then-full now both yield 2
+indexes; full-covers-subset remains a refresh rule, never identity. (4) No
+silent retargeting: `extra_ignore_patterns` + `follow_symlinks` fold into
+the descriptor as `+shape:<sha12>`; a refresh that changes coverage updates
+corpus_selection AND discloses `corpus_selection_changed: {from,to}` on all
+refresh paths (incremental, no-change, full-replace). Tests:
+`tests/test_v1_101_0.py` (8 regressions mirroring the harness) +
+`test_v1_100_0.py` legacy-conflict test updated to expect ambiguity. Suite
+1614 green. Additive/1.x: new error code + response key only.
 
 ## v1.100.0 - corpus identity: index_local won't duplicate an equivalent source (#81)
 Reported by @rknighton (Item A of the #80 identity meta-issue; complements

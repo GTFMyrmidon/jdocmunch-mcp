@@ -73,19 +73,56 @@ def try_claim(
         "selection": selection,
         "created_at": time.time(),
     }
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     for _ in range(2):  # second pass only after stealing a stale claim
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            # jdoc#82 (single-winner invariant): publish the claim with its
+            # payload already complete. The payload is written to a private
+            # per-PID temp file first, then os.link makes it appear at the
+            # claim path atomically — a competitor can never observe a claim
+            # file whose ownership payload isn't readable yet. os.link is
+            # atomic-fail-if-exists on POSIX and NTFS alike.
+            tmp = path.parent / f".{key}.{os.getpid()}.tmp"
+            fd = os.open(str(tmp), os.O_CREAT | os.O_TRUNC | os.O_WRONLY)
             try:
-                os.write(fd, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+                os.write(fd, encoded)
             finally:
                 os.close(fd)
-            return True, None
+            try:
+                os.link(str(tmp), str(path))
+                return True, None
+            except FileExistsError:
+                raise
+            except OSError:
+                # Filesystem without hardlink support: fall back to an
+                # exclusive create of the final path. This reopens a tiny
+                # payload-visibility window, which the reader retry below
+                # (and the caller's contested handling) covers.
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                try:
+                    os.write(fd, encoded)
+                finally:
+                    os.close(fd)
+                return True, None
+            finally:
+                try:
+                    os.unlink(str(tmp))
+                except OSError:
+                    pass
         except FileExistsError:
-            existing = read_claim(base_path, key)
+            # jdoc#82: brief retry for the fallback path's payload window —
+            # a claim that exists but isn't readable yet is a winner mid-write.
+            existing = None
+            for _attempt in range(5):
+                existing = read_claim(base_path, key)
+                if existing is not None:
+                    break
+                time.sleep(0.04)
             if existing is None:
-                # Unreadable claim file: treat as held by an unknown winner.
+                # Still unreadable: a winner holds the claim but its identity
+                # is unknown. The caller must NOT create — returning
+                # (False, None) signals a contested claim.
                 return False, None
             age = time.time() - float(existing.get("created_at") or 0)
             claimed_repo = existing.get("repo") or ""

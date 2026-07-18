@@ -455,15 +455,43 @@ def index_local(
         from ..storage.corpus_claims import claim_key, release_claim, try_claim
 
         explicit_name = bool(name and str(name).strip())
-        call_selection = selection_descriptor(requested_rels if paths else None)
+        call_selection = selection_descriptor(
+            requested_rels if paths else None,
+            extra_ignore_patterns=extra_ignore_patterns,
+            follow_symlinks=follow_symlinks,
+        )
         root_key = corpus_norm_root(folder_path)
-        equivalents = find_equivalent_indexes(
-            store, root_key, call_selection, exclude_repo=repo_id
+        # jdoc#82: two relations, deliberately distinct. Identity (symmetric,
+        # order-independent) drives conflict and ambiguity; refresh coverage
+        # (directional — a full index also absorbs a temporary subset call)
+        # drives only omitted-name routing to an established handle.
+        identity_matches = find_equivalent_indexes(
+            store, root_key, call_selection, exclude_repo=repo_id, mode="identity"
+        )
+        equivalents = identity_matches if explicit_name else find_equivalent_indexes(
+            store, root_key, call_selection, exclude_repo=repo_id, mode="refresh"
         )
         reuse_fields: dict = {}
 
         if existing_index is None and equivalents:
             if explicit_name:
+                # jdoc#82 invariant 2: several identity matches are NEVER
+                # ordered into a winner — registry order must not promote an
+                # established handle. Only a single match names one.
+                if len(equivalents) > 1:
+                    return {
+                        "success": False,
+                        "error": "ambiguous_corpus_identity",
+                        "requested_handle": repo_id,
+                        "candidates": candidate_rows(equivalents),
+                        "total_matches": len(equivalents),
+                        "hint": (
+                            "Multiple existing indexes cover this source "
+                            "equally well. Pass name= selecting one of the "
+                            "candidates to refresh it, or delete_index the "
+                            "duplicates. No new index was created."
+                        ),
+                    }
                 est = equivalents[0]
                 return {
                     "success": False,
@@ -550,7 +578,23 @@ def index_local(
             if acquired:
                 claim_token = key
                 claim_store = store
-            elif existing_claim and existing_claim.get("repo") not in ("", repo_id):
+            elif existing_claim is None:
+                # jdoc#82 invariant 1: a claim exists but its ownership payload
+                # is not readable — a winner is mid-creation and its identity is
+                # unknown. Creating anyway is exactly the two-physical-indexes
+                # race; refuse with no persistent write.
+                return {
+                    "success": False,
+                    "error": "corpus_creation_in_progress",
+                    "requested_handle": repo_id,
+                    "hint": (
+                        "Another process is currently creating an index for "
+                        "this documentation source. Retry shortly, or call "
+                        "doc_resolve_repo to find the established handle once "
+                        "creation completes. No new index was created."
+                    ),
+                }
+            elif existing_claim.get("repo") not in ("", repo_id):
                 claimed_repo = existing_claim["repo"]
                 if explicit_name:
                     return {
@@ -632,6 +676,20 @@ def index_local(
             # jdoc#81: a full-corpus refresh (re)asserts the durable selection;
             # a subset-scoped `paths` refresh never redefines it.
             selection_kwargs = {} if paths else {"corpus_selection": call_selection}
+            # jdoc#82 invariant 4: when a corpus-shaping input changed the
+            # durable selection, the identity change is reconciled and
+            # DISCLOSED — stored coverage never shifts under an unchanged
+            # identity. (Legacy "" normalizes to "full": backfill is silent.)
+            selection_changed_fields: dict = {}
+            if not paths:
+                stored_sel = getattr(existing_index, "corpus_selection", "") or "full"
+                if stored_sel != call_selection:
+                    selection_changed_fields = {
+                        "corpus_selection_changed": {
+                            "from": stored_sel,
+                            "to": call_selection,
+                        }
+                    }
             if not changed and not new and not deleted:
                 updated = existing_index
                 if (
@@ -663,6 +721,7 @@ def index_local(
                 }
                 nochange_result.update(derivation_fields)
                 nochange_result.update(reuse_fields)
+                nochange_result.update(selection_changed_fields)
                 _add_commit_fields(nochange_result, updated)
                 # jdoc#15: report truncation even when nothing changed,
                 # since the visible-corpus boundary is unchanged.
@@ -724,6 +783,7 @@ def index_local(
             }
             result.update(derivation_fields)
             result.update(reuse_fields)
+            result.update(selection_changed_fields)
             _add_commit_fields(result, updated)
             # jdoc#15: surface truncation on the incremental path too.
             if discovered_count > max_files:
@@ -847,6 +907,14 @@ def index_local(
         }
         result.update(derivation_fields)
         result.update(reuse_fields)
+        # jdoc#82 invariant 4 disclosure on the full-replace path too.
+        if existing_index is not None:
+            _stored_sel = getattr(existing_index, "corpus_selection", "") or "full"
+            if _stored_sel != call_selection:
+                result["corpus_selection_changed"] = {
+                    "from": _stored_sel,
+                    "to": call_selection,
+                }
         _add_commit_fields(result, saved)
         if autotune_result is not None:
             result["autotune"] = autotune_result
