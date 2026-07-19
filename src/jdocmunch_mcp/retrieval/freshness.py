@@ -87,13 +87,52 @@ class FreshnessProbe:
             return self._live_bytes[doc_path]
         data: Optional[bytes] = None
         file_path = self._resolve_path(doc_path)
+        from ..parser.office import (
+            OFFICE_EXTENSIONS,
+            office_available,
+            convert_office,
+            office_cache_dir,
+        )
+        ext = os.path.splitext(doc_path)[1].lower()
         if file_path and file_path.exists():
             try:
-                with open(file_path, encoding="utf-8", errors="replace", newline="") as fh:
-                    raw_text = fh.read()
-                from ..parser import preprocess_content
-                data = preprocess_content(raw_text, doc_path).encode("utf-8")
+                if ext in OFFICE_EXTENSIONS:
+                    # Office files are binary; the indexed domain is the
+                    # markitdown conversion output (cache makes an unchanged
+                    # file a hash lookup, not a reconversion). Without the
+                    # extra, fall back to the cached mirror below.
+                    if office_available():
+                        data = convert_office(
+                            file_path,
+                            cache_dir=office_cache_dir(self._store.base_path),
+                        ).encode("utf-8")
+                else:
+                    with open(file_path, encoding="utf-8", errors="replace", newline="") as fh:
+                        raw_text = fh.read()
+                    from ..parser import preprocess_content
+                    data = preprocess_content(raw_text, doc_path).encode("utf-8")
             except OSError:
+                data = None
+            except Exception:
+                # Conversion failure on an office file — mirror fallback below.
+                if ext not in OFFICE_EXTENSIONS:
+                    raise
+                data = None
+        if (
+            data is None
+            and ext in OFFICE_EXTENSIONS
+            and file_path
+            and file_path.exists()
+        ):
+            # Office file with the extra unavailable (or conversion failure):
+            # use the cached mirror so a present-but-unconvertible file isn't
+            # misreported as deleted. Mirror == indexed domain for office docs.
+            try:
+                content_dir = self._store._content_dir(self._owner, self._name)
+                mirror = self._store._safe_content_path(content_dir, doc_path)
+                if mirror and mirror.exists():
+                    data = mirror.read_bytes()
+            except Exception:
                 data = None
         self._live_bytes[doc_path] = data
         return data

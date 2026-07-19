@@ -11,6 +11,7 @@ from .json_parser import convert_json
 from .xml_parser import convert_xml
 from .text_parser import parse_text
 from .godot_parser import convert_godot
+from .office import OFFICE_EXTENSIONS
 from .hierarchy import wire_hierarchy
 
 
@@ -106,7 +107,12 @@ def parse_file(content: str, doc_path: str, repo: str) -> list:
     ext = ext.lower()
     doc_type = ALL_EXTENSIONS.get(ext, "text")
 
-    if doc_type == "markdown":
+    if ext in OFFICE_EXTENSIONS:
+        # Binary office formats (.pdf/.docx/.pptx/.epub) are converted to
+        # Markdown at read time (parser/office.py) — the content arriving
+        # here is already Markdown text.
+        sections = parse_markdown(content, doc_path, repo)
+    elif doc_type == "markdown":
         # .mdx already stripped by preprocess_content(); parse directly
         sections = parse_markdown(content, doc_path, repo)
     elif doc_type == "rst":

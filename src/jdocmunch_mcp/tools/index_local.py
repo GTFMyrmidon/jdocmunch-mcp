@@ -10,6 +10,13 @@ from typing import Optional
 import pathspec
 
 from ..parser import parse_file, preprocess_content, ALL_EXTENSIONS
+from ..parser.office import (
+    OFFICE_EXTENSIONS,
+    OFFICE_MAX_FILE_SIZE,
+    office_available,
+    convert_office,
+    office_cache_dir,
+)
 from ..retrieval.roles import annotate_sections as _annotate_roles
 from ..retrieval.glossary import extract_glossary, write_terms
 from ..security import (
@@ -220,13 +227,21 @@ def discover_doc_files(
                 continue
 
             ext = file_path.suffix.lower()
-            if ext not in ALL_EXTENSIONS:
+            if ext in OFFICE_EXTENSIONS:
+                if not office_available():
+                    # pdf/docx/pptx/epub need the optional markitdown extra
+                    # (pip install jdocmunch-mcp[office]); distinct skip
+                    # reason so coverage reporting names the actual cause.
+                    _count_skip(skip_counts, "office_extra_not_installed")
+                    continue
+            elif ext not in ALL_EXTENSIONS:
                 _count_skip(skip_counts, "unsupported_extension")
                 continue
 
             try:
                 st = file_path.stat()
-                if st.st_size > max_size:
+                size_cap = OFFICE_MAX_FILE_SIZE if ext in OFFICE_EXTENSIONS else max_size
+                if st.st_size > size_cap:
                     _count_skip(skip_counts, "oversize")
                     continue
                 mtime = st.st_mtime
@@ -326,7 +341,14 @@ def _resolve_explicit_paths(
                 warnings.append(f"Skipped path traversal: {raw!r}")
                 continue
             ext = p.suffix.lower()
-            if ext not in ALL_EXTENSIONS:
+            if ext in OFFICE_EXTENSIONS:
+                if not office_available():
+                    warnings.append(
+                        f"Skipped office document (install "
+                        f"jdocmunch-mcp[office]): {raw!r}"
+                    )
+                    continue
+            elif ext not in ALL_EXTENSIONS:
                 warnings.append(f"Skipped unsupported extension: {raw!r}")
                 continue
             pr = p.resolve()
@@ -775,12 +797,22 @@ def index_local(
             except ValueError:
                 continue
             try:
-                # newline="" preserves CRLF/CR so byte offsets and hashes
-                # address the real on-disk bytes, matching the GitHub leg and
-                # the disk file (#52). Path.read_text lacks newline before 3.13,
-                # so use open(). errors="replace" stays for invalid UTF-8.
-                with open(file_path, encoding="utf-8", errors="replace", newline="") as fh:
-                    content = fh.read()
+                if file_path.suffix.lower() in OFFICE_EXTENSIONS:
+                    # Binary office document: convert to Markdown locally
+                    # (parser/office.py); the converted text becomes the
+                    # stored/indexed representation, same as other
+                    # transformed formats (.ipynb/.html/...).
+                    content = convert_office(
+                        file_path, cache_dir=office_cache_dir(store.base_path)
+                    )
+                else:
+                    # newline="" preserves CRLF/CR so byte offsets and hashes
+                    # address the real on-disk bytes, matching the GitHub leg
+                    # and the disk file (#52). Path.read_text lacks newline
+                    # before 3.13, so use open(). errors="replace" stays for
+                    # invalid UTF-8.
+                    with open(file_path, encoding="utf-8", errors="replace", newline="") as fh:
+                        content = fh.read()
                 parsed_content = preprocess_content(content, rel_path)
                 current_files[rel_path] = parsed_content
             except Exception as e:

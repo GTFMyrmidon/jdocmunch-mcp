@@ -56,7 +56,13 @@ def _doc_extensions() -> set[str]:
     hook so the watcher and the hook agree on what counts as a doc file.
     """
     from .cli.hooks import _DOC_EXTENSIONS
-    return {e.lower() for e in _DOC_EXTENSIONS}
+    exts = {e.lower() for e in _DOC_EXTENSIONS}
+    # Office documents (.pdf/.docx/...) are watchable only when the optional
+    # markitdown extra is installed; without it index_local would skip them.
+    from .parser.office import OFFICE_EXTENSIONS, office_available
+    if office_available():
+        exts |= OFFICE_EXTENSIONS
+    return exts
 
 
 def discover_local_doc_repos(storage_path: Optional[str] = None) -> "list[tuple[str, str]]":

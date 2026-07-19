@@ -507,6 +507,32 @@ Every jDocMunch tool response includes a `_meta` block with `tokens_saved` (this
 | OpenAPI / Swagger  | `.yaml`, `.yml`, `.json`, `.jsonc`  | OpenAPI 3.x and Swagger 2.x; operations grouped by tag as sections             |
 | JSON / JSONC       | `.json`, `.jsonc`                   | Top-level keys as sections; JSONC comments stripped before parsing             |
 | XML / SVG / XHTML  | `.xml`, `.svg`, `.xhtml`            | Element hierarchy used for section structure                                   |
+| Office documents   | `.pdf`, `.docx`, `.pptx`, `.epub`   | Optional: `pip install jdocmunch-mcp[office]` — converted to Markdown locally via [markitdown](https://github.com/microsoft/markitdown) at index time |
+
+### Office document support (optional `[office]` extra)
+
+`pip install jdocmunch-mcp[office]` adds PDF, Word, PowerPoint, and EPUB
+ingestion for **local indexing** (`index_local` / `index-file` / the `watch`
+daemon). Files are converted to Markdown on your machine at index time and then
+sectioned, searched, and health-checked like any other doc.
+
+Disclosure, in full:
+
+* **Conversion is 100% local.** markitdown's optional cloud converters (LLM
+  image description, Azure Document Intelligence, YouTube transcription) are
+  never enabled — no network request originates from office conversion.
+* Converted Markdown is cached under the index storage root (`.office_cache/`,
+  keyed by file-content hash), so refreshes don't re-convert unchanged files.
+* Tabular formats (`.csv`, `.xlsx`) are deliberately **not** wired in — the
+  jMunch suite routes tabular data to
+  [jdatamunch-mcp](https://github.com/jgravelle/jdatamunch-mcp).
+* GitHub remote indexing (`doc_index_repo`) does not fetch office files; the
+  feature is local-only.
+* Without the extra installed, office files are skipped at discovery and the
+  coverage report names the reason (`office_extra_not_installed`).
+* PDF text extraction is best-effort: layout-heavy or scanned (image-only)
+  PDFs may yield sparse Markdown. Section quality follows heading detection in
+  the converted output.
 
 See `ARCHITECTURE.md` for parser details.
 

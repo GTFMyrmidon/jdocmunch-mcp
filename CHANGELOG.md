@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.105.0] - 2026-07-19 - office document ingestion (.pdf/.docx/.pptx/.epub)
+
+New optional extra: `pip install jdocmunch-mcp[office]` teaches local
+indexing (`index_local` / `index-file` / the `watch` daemon) to ingest
+PDF, Word, PowerPoint, and EPUB documents. Files are converted to
+Markdown on-machine at read time via Microsoft's MIT-licensed markitdown
+(local converters only — the cloud converters it offers are never
+enabled, so no network request originates from conversion), then
+sectioned, searched, and health-checked like any other doc. Converted
+output is cached under the storage root (`.office_cache/`, keyed by
+file-content hash + converter version) so refreshes never re-convert
+unchanged documents; discovery applies a 25MB office-specific size cap
+(binary sources run large while their extracted Markdown stays small).
+Without the extra, office files are skipped at discovery with a distinct
+coverage-report reason (`office_extra_not_installed`); `index-file`
+returns a clean install hint. Live-source freshness reproduces the
+conversion leg (cache hit for unchanged files) and falls back to the
+stored mirror when conversion is unavailable. Deliberate boundaries:
+tabular formats (`.csv`/`.xlsx`) stay with jdatamunch-mcp, and the
+GitHub remote leg does not fetch office files — local-only. Additive/
+1.x: base install is byte-identical, no INDEX_VERSION bump (office docs
+enter an index on the next refresh like any newly-discovered file).
+Tests: `tests/test_v1_105_0.py` (10).
+
 ## [1.104.0] - 2026-07-19 - advisory session token budget
 
 Suite parity with jcodemunch-mcp v1.108.146. Set

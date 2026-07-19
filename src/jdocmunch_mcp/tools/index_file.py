@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Optional
 
 from ..parser import parse_file, preprocess_content, ALL_EXTENSIONS
+from ..parser.office import (
+    OFFICE_EXTENSIONS,
+    office_available,
+    convert_office,
+    office_cache_dir,
+)
 from ..storage import DocStore
 from ..storage.doc_store import normalize_commit_sha
 from ..summarizer import summarize_sections
@@ -119,7 +125,13 @@ def index_file(
         return {"success": False, "error": f"Not a file: {file_path}", "exit_code": 2}
 
     ext = path.suffix.lower()
-    if ext not in ALL_EXTENSIONS:
+    if ext in OFFICE_EXTENSIONS:
+        if not office_available():
+            return {"success": False, "error": (
+                f"Office document support requires the optional markitdown "
+                f"extra (pip install jdocmunch-mcp[office]): {file_path}"
+            ), "exit_code": 2}
+    elif ext not in ALL_EXTENSIONS:
         return {"success": False, "error": f"Not a doc file ({ext}): {file_path}", "exit_code": 2}
 
     store = DocStore(base_path=storage_path)
@@ -140,10 +152,15 @@ def index_file(
 
     # Read and parse the file
     try:
-        # newline="" preserves CRLF/CR so offsets/hashes address the real
-        # on-disk bytes (#52); Path.read_text lacks newline before 3.13.
-        with open(path, encoding="utf-8", errors="replace", newline="") as fh:
-            content = fh.read()
+        if ext in OFFICE_EXTENSIONS:
+            # Binary office document: convert to Markdown locally
+            # (parser/office.py), matching index_local's read leg.
+            content = convert_office(path, cache_dir=office_cache_dir(store.base_path))
+        else:
+            # newline="" preserves CRLF/CR so offsets/hashes address the real
+            # on-disk bytes (#52); Path.read_text lacks newline before 3.13.
+            with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+                content = fh.read()
         content = preprocess_content(content, rel_path)
     except Exception as e:
         return {"success": False, "error": f"Failed to read: {e}", "exit_code": 2}

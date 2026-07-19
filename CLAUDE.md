@@ -1,6 +1,32 @@
 # jdocmunch-mcp
 
-**Version:** 1.104.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.105.0 | **Tests:** `pytest tests/ -q`
+
+## v1.105.0 - office document ingestion via optional [office] extra
+`pip install jdocmunch-mcp[office]` (= `markitdown[pdf,docx,pptx]>=0.1.6`,
+MIT/Microsoft) adds `.pdf/.docx/.pptx/.epub` to LOCAL indexing only. New
+`parser/office.py`: `OFFICE_EXTENSIONS`, `office_available()` (find_spec
+guard), `convert_office(path, cache_dir)` (MarkItDown(enable_plugins=False)
+— local converters ONLY, no llm_client/docintel/network), sha256(bytes +
+markitdown version)-keyed cache under `<storage>/.office_cache/` (per-PID
+tmp + os.replace), `OFFICE_MAX_FILE_SIZE` 25MB discovery cap (text cap
+stays 500KB). KEY DESIGN: office exts are NOT in `ALL_EXTENSIONS` — the
+remote GitHub leg, get_broken_links, and hooks mirror all assume text;
+each local leg gates explicitly instead: `discover_doc_files` +
+`_resolve_explicit_paths` (skip reason `office_extra_not_installed` /
+`[office]` warning when unavailable), index_local + index_file read legs
+branch to `convert_office` before `preprocess_content`, `parse_file`
+routes OFFICE_EXTENSIONS to parse_markdown (content arrives already
+converted), `watch._doc_extensions()` unions OFFICE_EXTENSIONS only when
+available. FreshnessProbe live-source mode (`_preprocessed_bytes`)
+reproduces the conversion leg (cache hit = cheap) and falls back to the
+stored mirror for office files when conversion is unavailable/fails —
+text-file failure semantics unchanged (OSError → missing). Boundaries:
+csv/xlsx stay jdata's lane; remote doc_index_repo does NOT fetch office
+files. Additive/1.x, NO INDEX_VERSION bump (new files enter on next
+refresh — no schema change, so no observatory cache-key bump either).
+README: formats row + full-disclosure subsection. Tests:
+`tests/test_v1_105_0.py` (10, stub converter — CI needs no markitdown).
 
 ## v1.104.0 - advisory session token budget (suite parity, jcm v1.108.146)
 `JDOCMUNCH_SESSION_TOKEN_BUDGET` (env; unset/0/garbage = off) sets an advisory
@@ -1075,7 +1101,7 @@ in `server.py` parses the file/stdin (strips blanks + `#` comments).
 Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp (which owns code symbols). Do NOT add code/docstring parsing here.
 
 ## Supported Formats
-`.md/.mdx`, `.rst`, `.adoc`, `.ipynb`, `.html`, `.txt`, `.yaml/.yml` (OpenAPI only), `.json/.jsonc`, `.xml/.svg/.xhtml`, `.tscn/.tres` (Godot scenes/resources)
+`.md/.mdx`, `.rst`, `.adoc`, `.ipynb`, `.html`, `.txt`, `.yaml/.yml` (OpenAPI only), `.json/.jsonc`, `.xml/.svg/.xhtml`, `.tscn/.tres` (Godot scenes/resources), `.pdf/.docx/.pptx/.epub` (optional `[office]` extra, local indexing only, markitdown conversion)
 
 ## Key Modules
 - `storage/doc_store.py` — DocIndex, DocStore, detect_changes, incremental_save
