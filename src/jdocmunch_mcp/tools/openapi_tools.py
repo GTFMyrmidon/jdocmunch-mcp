@@ -76,7 +76,7 @@ def find_endpoint(
             continue
         results.append(_op_summary(sec, op))
 
-    from ..retrieval.verdict import filter_verdict, suggest_endpoints
+    from ..retrieval.verdict import filter_verdict, index_coverage_meta, suggest_endpoints
     did_you_mean = suggest_endpoints(path, all_paths) if (not results and path) else None
 
     return {
@@ -86,7 +86,10 @@ def find_endpoint(
         "_meta": {
             "latency_ms": int((time.perf_counter() - t0) * 1000),
             "result_count": len(results),
-            "verdict": filter_verdict(len(results), did_you_mean),
+            # v1.103.0: an absent verdict discloses index-time coverage.
+            "verdict": filter_verdict(
+                len(results), did_you_mean, coverage=index_coverage_meta(index)
+            ),
         },
     }
 

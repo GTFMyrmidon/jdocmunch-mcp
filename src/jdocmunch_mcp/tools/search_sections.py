@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..storage import DocStore
 from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
-from ..retrieval.verdict import build_verdict, suggest_docs
+from ..retrieval.verdict import build_verdict, index_coverage_meta, suggest_docs
 
 
 def search_sections(
@@ -482,6 +482,10 @@ def search_sections(
         lexical_used=(mode != "semantic_only"),
         index_stale=bool(index.source_dirty),
         did_you_mean=suggest_docs(query, index.sections) if not results else None,
+        # v1.103.0: absence discloses what index-time discovery excluded.
+        # None for legacy indexes (coverage unknown, never fabricated);
+        # attached only on absent/degraded states.
+        coverage=index_coverage_meta(index),
     )
 
     payload = {

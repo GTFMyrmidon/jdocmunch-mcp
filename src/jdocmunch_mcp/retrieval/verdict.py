@@ -26,6 +26,12 @@ STATE_LOW_CONFIDENCE = "low_confidence"
 STATE_ABSENT = "absent"
 STATE_DEGRADED = "degraded"
 
+# v1.103.0: version pin for the confidence heuristics this verdict reports.
+# Bump whenever the scoring formula (BM25/semantic fusion, the ambiguity
+# floor) changes, so a stated confidence ties to the scorer that produced it:
+# "0.8 under scorer v1" is a measurable statement, "0.8" alone is not.
+SCORER_VERSION = 1
+
 # Below this the top hit is ambiguous or the index likely doesn't cover the
 # topic — the threshold the confidence module documents as the trust cliff.
 LOW_CONFIDENCE_THRESHOLD = 0.4
@@ -47,6 +53,49 @@ _NOTES = {
         "NOT proven. Re-index with embeddings for semantic recall."
     ),
 }
+
+
+def index_coverage_meta(index) -> Optional[dict]:
+    """Query-time coverage disclosure backing an absence claim (v1.103.0).
+
+    Pulls the coverage contract persisted at the last full discovery walk
+    (``DocIndex.coverage``) plus generation metadata off the index. Returns
+    None when the index predates coverage recording — absence of the block
+    means "coverage unknown", never "nothing was excluded". Suite parity with
+    jCodeMunch v1.108.145; clean-room jDoc shape (sections, not symbols).
+    """
+    cov = getattr(index, "coverage", None)
+    if not isinstance(cov, dict) or not cov:
+        return None
+    generation: dict = {}
+    indexed_at = getattr(index, "indexed_at", "") or ""
+    if indexed_at:
+        generation["indexed_at"] = indexed_at
+    index_version = getattr(index, "index_version", None)
+    if index_version:
+        generation["index_version"] = index_version
+    head = getattr(index, "head_sha", "") or ""
+    if head:
+        generation["git_head"] = head[:12]
+    out: dict = {"generation": generation}
+    if cov.get("files_indexed") is not None:
+        out["files_indexed"] = cov["files_indexed"]
+    skips = cov.get("skip_counts") or {}
+    if skips:
+        out["excluded"] = skips
+    if cov.get("no_sections_count"):
+        out["no_sections_files"] = cov["no_sections_count"]
+    return out
+
+
+def _attach_coverage(verdict: dict, coverage: Optional[dict]) -> None:
+    """Attach coverage disclosure to absent/degraded verdicts (in place).
+
+    Only the states where "what wasn't scanned" changes the meaning of the
+    result carry the block; ok/low_confidence stay lean.
+    """
+    if coverage and verdict.get("state") in (STATE_ABSENT, STATE_DEGRADED):
+        verdict["coverage"] = coverage
 
 
 def suggest_docs(
@@ -104,16 +153,20 @@ def suggest_endpoints(
 def filter_verdict(
     result_count: int,
     did_you_mean: Optional[Sequence[str]] = None,
+    coverage: Optional[dict] = None,
 ) -> dict:
     """Verdict for structured (non-ranked) lookups — ``ok`` / ``absent`` only.
 
     No lexical/semantic channels: a path/method/tag filter either matches or it
-    doesn't, so ``low_confidence`` and ``degraded`` do not apply.
+    doesn't, so ``low_confidence`` and ``degraded`` do not apply. No scores or
+    thresholds either, so no ``scorer`` pin. ``coverage`` (from
+    :func:`index_coverage_meta`) is attached only on ``absent``.
     """
     state = STATE_OK if result_count else STATE_ABSENT
     verdict = {"state": state, "note": _NOTES[state]}
     if did_you_mean:
         verdict["did_you_mean"] = list(did_you_mean)[:5]
+    _attach_coverage(verdict, coverage)
     return verdict
 
 
@@ -126,11 +179,14 @@ def build_verdict(
     lexical_used: bool = True,
     index_stale: bool = False,
     did_you_mean: Optional[Sequence[str]] = None,
+    coverage: Optional[dict] = None,
 ) -> dict:
     """Compute the ``_meta.verdict`` dict for a section search.
 
     ``degraded`` takes precedence over ``absent``: a downgraded channel means a
-    partial scan, which cannot prove absence.
+    partial scan, which cannot prove absence. ``coverage`` (from
+    :func:`index_coverage_meta`) is attached only on ``absent``/``degraded`` —
+    an absence claim discloses what index-time discovery excluded.
     """
     below = confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD
 
@@ -157,10 +213,12 @@ def build_verdict(
             "semantic": semantic_channel,
             "index": "stale" if index_stale else "fresh",
         },
+        "scorer": SCORER_VERSION,
         "note": _NOTES[state],
     }
     if confidence is not None:
         verdict["confidence"] = round(float(confidence), 4)
     if did_you_mean:
         verdict["did_you_mean"] = list(did_you_mean)[:5]
+    _attach_coverage(verdict, coverage)
     return verdict

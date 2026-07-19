@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.102.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.103.0 | **Tests:** `pytest tests/ -q`
 
 ## CHANGELOG maintenance warning (2026-07-18 incident)
 CHANGELOG.md's established format is `## [X.Y.Z] - date - title` with curated
@@ -13,6 +13,40 @@ docs-only commit (recall 1.0 -> 0.7, exactly the 3 CHANGELOG goldens).
 Maintain CHANGELOG by hand-appending entries in the established format, and
 keep new entry wording clear of fixture query phrases
 ([[feedback_fixture_query_corpus_pollution]] class).
+
+## v1.103.0 - coverage contract on absence claims (suite parity, jcm v1.108.145)
+Community feedback on the retrieval-verdict article: an `absent` verdict
+backed only by scan counts lies by omission when files were excluded at
+index time. INDEX-TIME: `index_local`'s full discovery walk (no `paths`)
+now persists `DocIndex.coverage` = {walk:"full", files_indexed,
+skip_counts{reason:count}, no_sections_count, recorded_at} — skip reasons
+tallied at the EXISTING `discover_doc_files` skip sites via an optional
+`skip_counts` dict param (`_count_skip`; omitted = byte-identical), plus
+read_error in the read loop and zero-section/parse-failure files counted
+on the full-parse path. Persistence follows the corpus_selection pattern:
+omit-when-empty in `_index_to_dict`, `.get` on load, `_UNSET` carry-forward
+in `incremental_save`, `coverage=` kwarg on `save_index` — NO INDEX_VERSION
+bump. Subset/incremental saves preserve; a full re-walk overwrites
+(self-heals); a non-incremental `paths` replace clears it (the stored index
+no longer reflects a full walk). QUERY-TIME: new
+`retrieval/verdict.index_coverage_meta(index)` + `_attach_coverage`;
+`build_verdict`/`filter_verdict` gain a `coverage=` kwarg, attached ONLY on
+absent/degraded (`ok`/`low_confidence` stay lean); wired in
+`search_sections` (single-repo path; repo_group fusion has no single index,
+no block) + `find_endpoint`. Block = {generation{indexed_at, index_version,
+git_head[:12] if head_sha}, files_indexed, excluded{reason:count},
+no_sections_files}; omitted entirely for pre-contract indexes (empty =
+unknown, never fabricated). `build_verdict` also emits `scorer:
+SCORER_VERSION` (=1) since it reports confidence against the 0.4 floor;
+`filter_verdict` deliberately has no pin (no scores). jDoc-shape deviation
+from jcm: jcm records coverage in its sqlite meta k-v table and its
+incremental path re-records; jDoc's incremental refresh re-walks discovery
+but does NOT re-parse unchanged files, so no_sections_count is only
+knowable on a full parse — coverage records on the full-index path only
+and carries forward otherwise. GOTCHA for tests: a zero-section trip-wire
+file = plain non-OpenAPI `.yaml` (routes through the openapi branch,
+yields []); an empty `.md` may still mint a root section. Tests:
+`tests/test_v1_103_0.py` (9). Additive/1.x. NOT committed/published yet.
 
 ## v1.102.0 - Item B: worktree-aware corpus reuse (#83)
 rknighton's PRD implemented (all 5 phases, one release). New

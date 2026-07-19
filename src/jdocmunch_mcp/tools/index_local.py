@@ -114,6 +114,16 @@ def _should_skip(rel_path: str) -> bool:
 _DISCOVERY_HARD_CEILING_MULT = 20  # safety: stop counting at max_files * this
 
 
+def _count_skip(skip_counts: Optional[dict], reason: str) -> None:
+    """Tally one discovery-time skip (v1.103.0 coverage contract).
+
+    No-op when the caller didn't ask for counts, so every existing
+    ``discover_doc_files`` call keeps its exact prior behavior.
+    """
+    if skip_counts is not None:
+        skip_counts[reason] = skip_counts.get(reason, 0) + 1
+
+
 def discover_doc_files(
     folder_path: Path,
     max_files: int = 10_000,
@@ -121,8 +131,14 @@ def discover_doc_files(
     extra_ignore_patterns: Optional[list] = None,
     follow_symlinks: bool = False,
     sort_by: str = "newest",
+    skip_counts: Optional[dict] = None,
 ) -> tuple:
     """Discover doc files (.md, .txt, .rst) with security filtering.
+
+    ``skip_counts`` (v1.103.0): optional dict the walk tallies per-reason skip
+    counts into (``unsupported_extension``, ``oversize``, ``gitignored``, ...)
+    at the existing skip sites — the index-time half of the coverage contract
+    an absent verdict discloses. Omitted = no counting, behavior unchanged.
 
     Returns ``(files, warnings, discovered_count)``. ``files`` is capped at
     ``max_files``; ``discovered_count`` is the total that matched all filters
@@ -172,40 +188,50 @@ def discover_doc_files(
             file_path = dir_path / filename
 
             if not follow_symlinks and file_path.is_symlink():
+                _count_skip(skip_counts, "symlink_not_followed")
                 continue
             if file_path.is_symlink() and is_symlink_escape(root, file_path):
                 warnings.append(f"Skipped symlink escape: {file_path}")
+                _count_skip(skip_counts, "symlink_escape")
                 continue
 
             if not validate_path(root, file_path):
                 warnings.append(f"Skipped path traversal: {file_path}")
+                _count_skip(skip_counts, "path_traversal")
                 continue
 
             rel_path = f"{dir_rel}/{filename}".lstrip("./") if dir_rel != "." else filename
 
             if _should_skip(rel_path):
+                _count_skip(skip_counts, "skip_pattern")
                 continue
 
             if gitignore_spec and gitignore_spec.match_file(rel_path):
+                _count_skip(skip_counts, "gitignored")
                 continue
 
             if extra_spec and extra_spec.match_file(rel_path):
+                _count_skip(skip_counts, "extra_ignore_pattern")
                 continue
 
             if is_secret_file(rel_path):
                 warnings.append(f"Skipped secret file: {rel_path}")
+                _count_skip(skip_counts, "secret_file")
                 continue
 
             ext = file_path.suffix.lower()
             if ext not in ALL_EXTENSIONS:
+                _count_skip(skip_counts, "unsupported_extension")
                 continue
 
             try:
                 st = file_path.stat()
                 if st.st_size > max_size:
+                    _count_skip(skip_counts, "oversize")
                     continue
                 mtime = st.st_mtime
             except OSError:
+                _count_skip(skip_counts, "stat_error")
                 continue
 
             discovered_items.append((file_path, mtime))
@@ -424,6 +450,10 @@ def index_local(
 
     try:
         requested_rels: list = []
+        # v1.103.0: per-reason skip tally from the full discovery walk — the
+        # index-time half of the coverage contract. Only a full walk (no
+        # explicit `paths`) records it; a subset call is not a coverage claim.
+        walk_skip_counts: dict = {}
         if paths:
             doc_files, discover_warnings, requested_rels = _resolve_explicit_paths(
                 folder_path,
@@ -439,6 +469,7 @@ def index_local(
                 extra_ignore_patterns=extra_ignore_patterns,
                 follow_symlinks=follow_symlinks,
                 sort_by=sort_by,
+                skip_counts=walk_skip_counts,
             )
         warnings.extend(discover_warnings)
 
@@ -754,6 +785,8 @@ def index_local(
                 current_files[rel_path] = parsed_content
             except Exception as e:
                 warnings.append(f"Failed to read {file_path}: {e}")
+                if not paths:
+                    _count_skip(walk_skip_counts, "read_error")
 
         final_git_state = (local_git_head(folder_path), False)
         head_sha, source_dirty = stable_local_git_state(initial_git_state, final_git_state)
@@ -933,6 +966,9 @@ def index_local(
         doc_types = {}
         raw_files: dict = {}
         parsed_files = []
+        # v1.103.0: files that were read and parsed but yielded zero sections
+        # are invisible to search — an absence claim must disclose them.
+        no_sections_count = 0
 
         for rel_path, content in current_files.items():
             ext = f".{rel_path.rsplit('.', 1)[-1].lower()}" if "." in rel_path else ""
@@ -943,8 +979,11 @@ def index_local(
                     doc_types[ext] = doc_types.get(ext, 0) + 1
                     raw_files[rel_path] = content
                     parsed_files.append(rel_path)
+                else:
+                    no_sections_count += 1
             except Exception as e:
                 warnings.append(f"Failed to parse {rel_path}: {e}")
+                no_sections_count += 1
 
         if not all_sections:
             if claim_token and claim_store is not None:
@@ -958,6 +997,23 @@ def index_local(
                 all_sections,
                 owner=owner, name=repo_name, storage_path=storage_path,
             )
+
+        # v1.103.0: coverage contract from the full discovery walk. Recorded
+        # only when the walk covered the whole corpus (no explicit `paths`);
+        # a full re-walk overwrites the prior block (self-heals), incremental
+        # saves carry it forward unchanged. Empty = unknown, never fabricated.
+        coverage_block: dict = {}
+        if not paths:
+            from datetime import datetime, timezone
+            coverage_block = {
+                "walk": "full",
+                "files_indexed": len(parsed_files),
+                "no_sections_count": no_sections_count,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+            nonzero_skips = {k: v for k, v in walk_skip_counts.items() if v}
+            if nonzero_skips:
+                coverage_block["skip_counts"] = nonzero_skips
 
         # jdoc#62: persist the core index BEFORE the optional sidecars. The
         # sidecars (the related-graph build especially) are best-effort
@@ -974,6 +1030,7 @@ def index_local(
             sha_certified=sha_certified,
             source_root=str(folder_path),
             corpus_selection=call_selection,
+            coverage=coverage_block or None,
             **lineage_kwargs,
         )
 

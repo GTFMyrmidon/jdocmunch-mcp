@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.103.0] - 2026-07-19 - coverage contract on absence claims
+
+Prompted by community feedback on the retrieval-verdict article: an
+`absent` verdict backed only by scan counts lies by omission when files
+were excluded at index time. A doc index now remembers what its discovery
+walk left out, and an absence claim discloses it.
+
+Index time: every full discovery walk of `index_local` (no explicit
+`paths`) persists a coverage block on the index (`DocIndex.coverage`):
+walk kind, files indexed, per-reason skip counts tallied at the existing
+discovery skip sites (unsupported extension, oversize, gitignored, skip
+patterns, secret files, symlink and traversal guards, stat/read errors),
+the count of files that parsed to zero sections, and a UTC timestamp.
+Incremental and subset (`paths`) saves carry the block forward unchanged;
+the next full re-walk overwrites it (self-heals). No index-format version
+bump: the field follows the established omit-when-empty convention, and
+legacy indexes load with an empty block.
+
+Query time: `search_sections` and `find_endpoint` attach a `coverage`
+block to `absent`/`degraded` verdicts only, via the new
+`index_coverage_meta` helper: generation metadata (`indexed_at`,
+`index_version`, `git_head` first 12 when tracked), `files_indexed`,
+`excluded` per-reason counts, and `no_sections_files`. When the index
+predates the contract the block is omitted entirely; empty coverage means
+unknown, never fabricated. `ok`/`low_confidence` verdicts stay lean.
+`build_verdict` also gains a `scorer` integer version pin (starts at 1)
+so a stated confidence ties to the scorer that produced it.
+
+Suite parity with jCodeMunch v1.108.145; clean-room jDoc shape (sections,
+not symbols). Additive, 1.x-compatible: new persisted field, new response
+keys on negative verdicts only. Tests: `tests/test_v1_103_0.py` (9).
+
 ## [1.102.0] - 2026-07-18 - reuse an established corpus index across linked Git worktrees (#83)
 
 Item B of the #80 identity meta-issue, PRD by @rknighton. The same

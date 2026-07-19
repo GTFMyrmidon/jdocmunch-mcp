@@ -190,6 +190,12 @@ class DocIndex:
     repo_relative_root: str = ""
     # Identity schema version for the jdoc#83 evidence fields (0 = pre-#83).
     corpus_identity_version: int = 0
+    # v1.103.0: coverage contract for absence claims — {walk, files_indexed,
+    # skip_counts{reason: count}, no_sections_count, recorded_at} from the
+    # last full discovery walk. Empty = unknown (legacy index or no full walk
+    # recorded); an absent verdict then carries no coverage block. Suite
+    # parity with jCodeMunch v1.108.145.
+    coverage: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Build O(1) lookup dict once at load time
@@ -805,6 +811,7 @@ class DocStore:
         worktree_lineage_key: str = "",
         repo_relative_root: str = "",
         corpus_identity_version: int = 0,
+        coverage: Optional[dict] = None,
     ) -> "DocIndex":
         """Save index and raw files to storage atomically."""
         if file_hashes is None:
@@ -837,6 +844,7 @@ class DocStore:
             worktree_lineage_key=worktree_lineage_key or "",
             repo_relative_root=repo_relative_root or "",
             corpus_identity_version=int(corpus_identity_version or 0),
+            coverage=dict(coverage) if coverage else {},
         )
 
         index_path = self._index_path(owner, name)
@@ -916,6 +924,7 @@ class DocStore:
             worktree_lineage_key=data.get("worktree_lineage_key", ""),
             repo_relative_root=data.get("repo_relative_root", ""),
             corpus_identity_version=int(data.get("corpus_identity_version", 0) or 0),
+            coverage=data.get("coverage") or {},
         )
 
         # Inject lazy content loader so search can score on body text (B1).
@@ -1006,6 +1015,7 @@ class DocStore:
         worktree_lineage_key=_UNSET,
         repo_relative_root=_UNSET,
         corpus_identity_version=_UNSET,
+        coverage=_UNSET,
     ) -> Optional["DocIndex"]:
         """Incrementally update an existing index.
 
@@ -1114,6 +1124,13 @@ class DocStore:
                 getattr(index, "corpus_identity_version", 0)
                 if corpus_identity_version is _UNSET
                 else int(corpus_identity_version or 0)
+            ),
+            # v1.103.0: coverage carries forward across incremental saves; a
+            # full re-walk (save_index) overwrites it (self-heals).
+            coverage=(
+                getattr(index, "coverage", {}) or {}
+                if coverage is _UNSET
+                else (dict(coverage) if coverage else {})
             ),
         )
 
@@ -1351,6 +1368,8 @@ class DocStore:
             d["repo_relative_root"] = index.repo_relative_root
         if getattr(index, "corpus_identity_version", 0):
             d["corpus_identity_version"] = index.corpus_identity_version
+        if getattr(index, "coverage", {}):
+            d["coverage"] = index.coverage
         return d
 
     def _split_repo_at_sha(self, repo: str) -> tuple[str, Optional[str]]:
