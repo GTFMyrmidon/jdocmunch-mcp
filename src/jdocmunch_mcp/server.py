@@ -2267,7 +2267,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if _meta:
                     result["_meta"] = _meta
 
-        return [TextContent(type="text", text=json.dumps(result, separators=(',', ':')))]
+        # v1.104.0: advisory session budget (suite parity with jcm). Attached
+        # AFTER meta_fields filtering so the warning survives the
+        # token-efficient default (_meta stripped) — an advisory the default
+        # config silently deletes would be no advisory at all. Never blocks.
+        try:
+            from .storage.token_tracker import budget_status as _budget_status
+            _b = _budget_status()
+            if _b is not None and _b["state"] in ("approaching", "over") and isinstance(result, dict):
+                result.setdefault("_meta", {})["budget"] = _b
+        except Exception:
+            pass
+
+        _text = json.dumps(result, separators=(',', ':'))
+        try:
+            from .storage.token_tracker import record_response_text as _rrt
+            _rrt(_text)
+        except Exception:
+            pass
+        return [TextContent(type="text", text=_text)]
 
     except Exception as e:
         _ok = False

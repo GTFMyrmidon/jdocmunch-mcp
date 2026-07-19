@@ -562,6 +562,7 @@ See `SECURITY.md` for details.
 | `JDOCMUNCH_ST_MODEL`              | sentence-transformers model (default: `all-MiniLM-L6-v2`)        | No       |
 | `DOC_INDEX_PATH`                  | Custom cache path                                                 | No       |
 | `JDOCMUNCH_SHARE_SAVINGS`         | Set to `0` to disable anonymous community token savings reporting | No       |
+| `JDOCMUNCH_SESSION_TOKEN_BUDGET`  | Advisory session budget over response tokens served. When set, responses carry `_meta.budget` at >=80% (`approaching`) / >=100% (`over`) and `get_session_stats` reports the block. Never blocks or truncates. Unset/`0` = off | No |
 | `JDOCMUNCH_WATCH_POLL_DELAY_MS`   | Poll interval (ms) used only when the watcher falls back to polling (e.g. under WSL); default `1000` | No |
 
 ---

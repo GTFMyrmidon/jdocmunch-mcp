@@ -1,6 +1,22 @@
 # jdocmunch-mcp
 
-**Version:** 1.103.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.104.0 | **Tests:** `pytest tests/ -q`
+
+## v1.104.0 - advisory session token budget (suite parity, jcm v1.108.146)
+`JDOCMUNCH_SESSION_TOKEN_BUDGET` (env; unset/0/garbage = off) sets an advisory
+ceiling over response tokens served, counted at the single JSON return
+chokepoint in `server.py` `call_tool` (`record_response_text`, bytes/4). New
+`storage/token_tracker.py` section: `record_response_text` /
+`get_session_response_tokens` / `budget_status` (ok / approaching >=80% /
+over >=100%) / `reset_session_response_tokens` test hook. `_meta.budget
+{limit, spent, state}` attaches at approaching/over — deliberately AFTER
+meta_fields filtering, because jdoc's DEFAULT strips `_meta` entirely
+(`get_meta_fields()` -> []) and an advisory the default config silently
+deletes is no advisory at all. `get_session_stats` gains
+`session_response_tokens` + the `budget` block (all 3 states) when
+configured. Never blocks/truncates; yield block stays jcm-only. Additive/1.x,
+no INDEX_VERSION bump, inline compute (no bg-disclosure needed). Tests:
+`tests/test_v1_104_0.py` (9). README env-var table row added.
 
 ## CHANGELOG maintenance warning (2026-07-18 incident)
 CHANGELOG.md's established format is `## [X.Y.Z] - date - title` with curated
