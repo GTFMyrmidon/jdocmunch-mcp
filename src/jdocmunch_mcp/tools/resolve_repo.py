@@ -148,7 +148,13 @@ def doc_resolve_repo(path: str, storage_path: Optional[str] = None) -> dict:
             )
         return _ambiguous_response(best, "source_root_containment", t0, resolved_str)
 
-    return {
+    # jdoc#83 (Item B): no exact or containing source_root matched — the path
+    # may be a linked Git worktree of an already-indexed corpus. Worktree
+    # discovery is strictly read-only and additive: the requested path stays
+    # unindexed (found/indexed false), the established handles appear in
+    # bounded canonical_candidates, and selection evidence is reported as
+    # unavailable — a path alone can never prove Item A selection identity.
+    not_found: dict = {
         "found": False,
         "indexed": False,
         "hint": (
@@ -160,6 +166,34 @@ def doc_resolve_repo(path: str, storage_path: Optional[str] = None) -> dict:
             "resolved_path": resolved_str,
         },
     }
+    try:
+        from ._worktree_corpus import (
+            ResolutionRequest,
+            collect_git_evidence,
+            filter_lineage_candidates,
+            resolve_worktree_corpus,
+        )
+
+        probe_root = p_resolved if p_resolved.is_dir() else p_resolved.parent
+        evidence = collect_git_evidence(probe_root)
+        if evidence.in_git:
+            candidates = filter_lineage_candidates(
+                repos, evidence, allow_containment=True
+            )
+            decision = resolve_worktree_corpus(
+                ResolutionRequest(tool="doc_resolve_repo", evidence=evidence),
+                candidates,
+            )
+            if decision.status != "no_match":
+                not_found["worktree_resolution"] = decision.to_public()
+                if decision.candidates:
+                    not_found["canonical_candidates"] = decision.candidates
+                if decision.next_action:
+                    not_found["hint"] = decision.next_action
+        not_found["_meta"]["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+    except Exception:
+        pass  # discovery is best-effort; the plain not-found stays valid
+    return not_found
 
 
 def _ambiguous_response(entries: list, match: str, t0: float, resolved: str) -> dict:

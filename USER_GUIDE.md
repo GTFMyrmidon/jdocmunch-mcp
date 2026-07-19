@@ -214,10 +214,10 @@ index_repo: { "url": "owner/repo", "incremental": false }
 
 | Tool                    | Purpose                                          | Key Parameters                                                   |
 | ----------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
-| `index_local`           | Index local documentation folder. An already-indexed source reuses its established handle; an explicit conflicting `name` returns a conflict instead of creating a duplicate index; several equivalent legacy indexes return bounded ambiguity | `path`, `name`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental`, `paths` |
+| `index_local`           | Index local documentation folder. An already-indexed source reuses its established handle; an explicit conflicting `name` returns a conflict instead of creating a duplicate index; several equivalent legacy indexes return bounded ambiguity. A proven-fresh equivalent corpus in a linked Git worktree is reused rather than duplicated (`worktree_mode="branch_local"` opts out) | `path`, `name`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental`, `paths`, `worktree_mode` |
 | `index_repo`            | Index GitHub repository docs                     | `url`, `use_ai_summaries`, `incremental`                         |
 | `list_repos`            | List all indexed documentation sets              | —                                                                |
-| `doc_resolve_repo`      | Resolve a path to its doc-index handle (O(1)-sized) | `path`                                                        |
+| `doc_resolve_repo`      | Resolve a path to its doc-index handle (O(1)-sized). In a linked Git worktree of an indexed corpus, the not-found response additively lists the established handle in `canonical_candidates` + `worktree_resolution` (read-only) | `path`                                                        |
 | `get_toc`               | Flat section list in document order              | `repo`                                                           |
 | `get_toc_tree`          | Nested section tree per document                 | `repo`                                                           |
 | `get_document_outline`  | Section hierarchy for one document               | `repo`, `doc_path`                                               |

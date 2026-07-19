@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.102.0] - 2026-07-18 - reuse an established corpus index across linked Git worktrees (#83)
+
+Item B of the #80 identity meta-issue, PRD by @rknighton. The same
+documentation corpus checked out in two linked Git worktrees used to
+produce two duplicate physical indexes and a not-found resolution from the
+second worktree. One side-effect-free resolver, shared by both public
+tools, now translates identity across worktrees: logical identity =
+linked-worktree lineage (Git common directory, never inferred from remote
+URL, commit, folder name, or content) + repository-relative corpus
+location + the Item A durable selection. doc_resolve_repo additively
+returns established handles as bounded canonical_candidates with a
+worktree_resolution evidence object, read-only, with selection reported
+unavailable. index_local reuses a proven-fresh equivalent (same certified
+revision, no relevant uncommitted docs) by returning the established
+handle with no write; stale, dirty, ambiguous, legacy-unresolved, or
+evidence-incomplete outcomes return bounded decisions with no write; new
+worktree_mode="branch_local" intentionally creates an exact-path index.
+Cross-worktree creation races contend on one lineage-keyed claim with an
+under-claim recheck, extending the #82 single-winner rule; the #82
+adversarial harness stays 4/4. Additive, 1.x-compatible: optional persisted
+identity fields, one new tool parameter, new response objects only.
+
 ## [1.101.0] - 2026-07-18 - Item A hardening: single winner, true ambiguity, order-independent identity (#82)
 
 Adversarial QA by @rknighton reproduced four gaps in the 1.100.0 corpus

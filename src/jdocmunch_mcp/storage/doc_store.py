@@ -24,7 +24,6 @@ try:
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 
-from ..parser.sections import Section
 from ..embeddings import embed_query, cosine_similarity
 
 INDEX_VERSION = 3
@@ -182,6 +181,15 @@ class DocIndex:
     # forms the corpus identity index_local uses to prevent duplicate indexes.
     # Empty for legacy/GitHub indexes — legacy is presumed full-corpus.
     corpus_selection: str = ""
+    # jdoc#83 (Item B): worktree-translated identity evidence. lineage key =
+    # sha1[:16] of the normalized Git common directory (linked-worktree
+    # family); relative root = corpus location relative to the worktree top
+    # level (posix, "" = repo root). Both optional — legacy/non-Git/GitHub
+    # indexes carry "" and are treated as evidence-unknown, never inferred.
+    worktree_lineage_key: str = ""
+    repo_relative_root: str = ""
+    # Identity schema version for the jdoc#83 evidence fields (0 = pre-#83).
+    corpus_identity_version: int = 0
 
     def __post_init__(self) -> None:
         # Build O(1) lookup dict once at load time
@@ -692,6 +700,8 @@ class DocStore:
                 "source_root": getattr(index, "source_root", "") or "",
                 "source_repo": getattr(index, "source_repo", "") or "",
                 "corpus_selection": getattr(index, "corpus_selection", "") or "",
+                "worktree_lineage_key": getattr(index, "worktree_lineage_key", "") or "",
+                "repo_relative_root": getattr(index, "repo_relative_root", "") or "",
             }
             summary_path = self._summary_path(owner, name)
             tmp = summary_path.with_name(f"{summary_path.name}.{os.getpid()}.tmp")
@@ -792,6 +802,9 @@ class DocStore:
         source_root: str = "",
         source_repo: str = "",
         corpus_selection: str = "",
+        worktree_lineage_key: str = "",
+        repo_relative_root: str = "",
+        corpus_identity_version: int = 0,
     ) -> "DocIndex":
         """Save index and raw files to storage atomically."""
         if file_hashes is None:
@@ -821,6 +834,9 @@ class DocStore:
             source_root=source_root or "",
             source_repo=source_repo or "",
             corpus_selection=corpus_selection or "",
+            worktree_lineage_key=worktree_lineage_key or "",
+            repo_relative_root=repo_relative_root or "",
+            corpus_identity_version=int(corpus_identity_version or 0),
         )
 
         index_path = self._index_path(owner, name)
@@ -897,6 +913,9 @@ class DocStore:
             source_root=data.get("source_root", ""),
             source_repo=data.get("source_repo", ""),
             corpus_selection=data.get("corpus_selection", ""),
+            worktree_lineage_key=data.get("worktree_lineage_key", ""),
+            repo_relative_root=data.get("repo_relative_root", ""),
+            corpus_identity_version=int(data.get("corpus_identity_version", 0) or 0),
         )
 
         # Inject lazy content loader so search can score on body text (B1).
@@ -984,6 +1003,9 @@ class DocStore:
         source_root=_UNSET,
         source_repo=_UNSET,
         corpus_selection=_UNSET,
+        worktree_lineage_key=_UNSET,
+        repo_relative_root=_UNSET,
+        corpus_identity_version=_UNSET,
     ) -> Optional["DocIndex"]:
         """Incrementally update an existing index.
 
@@ -1077,6 +1099,21 @@ class DocStore:
                 getattr(index, "corpus_selection", "")
                 if corpus_selection is _UNSET
                 else (corpus_selection or "")
+            ),
+            worktree_lineage_key=(
+                getattr(index, "worktree_lineage_key", "")
+                if worktree_lineage_key is _UNSET
+                else (worktree_lineage_key or "")
+            ),
+            repo_relative_root=(
+                getattr(index, "repo_relative_root", "")
+                if repo_relative_root is _UNSET
+                else (repo_relative_root or "")
+            ),
+            corpus_identity_version=(
+                getattr(index, "corpus_identity_version", 0)
+                if corpus_identity_version is _UNSET
+                else int(corpus_identity_version or 0)
             ),
         )
 
@@ -1178,6 +1215,10 @@ class DocStore:
             row["source_root"] = data["source_root"]
         if data.get("corpus_selection"):
             row["corpus_selection"] = data["corpus_selection"]
+        if data.get("worktree_lineage_key"):
+            row["worktree_lineage_key"] = data["worktree_lineage_key"]
+        if data.get("repo_relative_root"):
+            row["repo_relative_root"] = data["repo_relative_root"]
         if data.get("source_repo"):
             row["source_repo"] = data["source_repo"]
             source_repo_at_sha = format_repo_at_sha(
@@ -1304,6 +1345,12 @@ class DocStore:
             d["source_repo"] = index.source_repo
         if getattr(index, "corpus_selection", ""):
             d["corpus_selection"] = index.corpus_selection
+        if getattr(index, "worktree_lineage_key", ""):
+            d["worktree_lineage_key"] = index.worktree_lineage_key
+        if getattr(index, "repo_relative_root", ""):
+            d["repo_relative_root"] = index.repo_relative_root
+        if getattr(index, "corpus_identity_version", 0):
+            d["corpus_identity_version"] = index.corpus_identity_version
         return d
 
     def _split_repo_at_sha(self, repo: str) -> tuple[str, Optional[str]]:

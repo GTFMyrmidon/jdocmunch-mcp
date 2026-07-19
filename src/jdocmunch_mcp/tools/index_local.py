@@ -16,7 +16,6 @@ from ..security import (
     validate_path,
     is_symlink_escape,
     is_secret_file,
-    should_exclude_file,
     DEFAULT_MAX_FILE_SIZE,
 )
 from ..storage import DocStore
@@ -330,6 +329,7 @@ def index_local(
     sort_by: str = "newest",
     autotune: bool = False,
     paths: Optional[list] = None,
+    worktree_mode: str = "reuse_equivalent",
 ) -> dict:
     """Index a local folder containing documentation files.
 
@@ -367,6 +367,13 @@ def index_local(
             the listed subset (jdoc#31): listed files are added/updated, a listed
             file that no longer exists on disk is removed, and indexed files NOT
             in the list are left untouched (never treated as deleted).
+        worktree_mode: ``"reuse_equivalent"`` (default, jdoc#83) recognizes when
+            an equivalent corpus in a linked Git worktree already has an
+            established index — a proven-fresh equivalent is reused (returned,
+            not refreshed) instead of creating a duplicate; stale, dirty,
+            ambiguous, or evidence-incomplete outcomes return a bounded
+            decision with no write. ``"branch_local"`` opts out: intentionally
+            create or refresh an exact-path index for THIS worktree.
 
     Returns:
         Dict with indexing results.
@@ -564,11 +571,88 @@ def index_local(
                 err["warnings"] = warnings
             return err
 
+        # jdoc#83 (Item B): collect Git evidence ONCE for this request —
+        # used by the worktree gate below and persisted as identity metadata
+        # on every save path. Non-Git folders come back in_git=False and keep
+        # exactly the pre-#83 behavior.
+        from ._worktree_corpus import (
+            ResolutionRequest,
+            collect_git_evidence,
+            filter_lineage_candidates,
+            resolve_worktree_corpus,
+            worktree_claim_key,
+            CORPUS_IDENTITY_VERSION,
+        )
+
+        wt_evidence = collect_git_evidence(folder_path)
+        branch_local = str(worktree_mode or "reuse_equivalent") == "branch_local"
+        lineage_kwargs: dict = {}
+        if wt_evidence.lineage_state == "confirmed":
+            lineage_kwargs = {
+                "worktree_lineage_key": wt_evidence.lineage_key,
+                "repo_relative_root": wt_evidence.relative_root,
+                "corpus_identity_version": CORPUS_IDENTITY_VERSION,
+            }
+
+        def _wt_decision() -> "object":
+            candidates = filter_lineage_candidates(
+                store.list_repos(), wt_evidence, allow_containment=False
+            )
+            # The requesting root's own same-root indexes were handled by the
+            # Item A block; exclude the target handle itself defensively.
+            candidates = [c for c in candidates if c.get("repo") != repo_id]
+            return resolve_worktree_corpus(
+                ResolutionRequest(
+                    tool="index_local",
+                    evidence=wt_evidence,
+                    selection=call_selection,
+                    branch_local=branch_local,
+                ),
+                candidates,
+            )
+
+        if existing_index is None and not branch_local and wt_evidence.in_git:
+            decision = _wt_decision()
+            if decision.status == "reusable":
+                # PRD 9.3: reuse returns the established handle. It never
+                # refreshes, retargets, or writes anything.
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                return {
+                    "success": True,
+                    "repo": decision.established_handle,
+                    "reused_established_handle": True,
+                    "requested_path": str(folder_path),
+                    "message": (
+                        "An established index for this documentation corpus "
+                        "already exists in a linked worktree and is proven "
+                        "fresh; it was reused. No index was created."
+                    ),
+                    "worktree_resolution": decision.to_public(did_write=False),
+                    "_meta": {"latency_ms": latency_ms},
+                }
+            if decision.status in ("reference_only", "related", "ambiguous", "unknown"):
+                out = {
+                    "success": False,
+                    "error": decision.reason_code,
+                    "worktree_resolution": decision.to_public(did_write=False),
+                }
+                if decision.next_action:
+                    out["hint"] = decision.next_action
+                return out
+            # decision.status == "created": creation may proceed under claim.
+
         # jdoc#81: about to create a brand-new index — close the concurrent-
         # create race with an atomic claim. The loser of the race routes to the
         # winner's handle instead of creating a duplicate physical index.
+        # jdoc#83: worktree-translated identities contend on ONE claim keyed by
+        # lineage + relative location + selection, so two worktrees racing to
+        # create the same logical corpus still produce a single winner;
+        # branch-local and non-Git creation keep the exact-path key.
         if existing_index is None:
-            key = claim_key(root_key, call_selection)
+            wt_key = None if branch_local else worktree_claim_key(
+                wt_evidence, call_selection
+            )
+            key = wt_key or claim_key(root_key, call_selection)
             acquired, existing_claim = try_claim(
                 store.base_path, key, repo_id, root_key, call_selection,
                 index_exists=lambda r: store.load_index(
@@ -578,6 +662,38 @@ def index_local(
             if acquired:
                 claim_token = key
                 claim_store = store
+                # jdoc#83 R11: resolve AGAIN while holding the claim — a
+                # competitor may have established the corpus between the
+                # first resolution and the claim. A changed decision returns
+                # the new result; creation proceeds only if still permitted.
+                if not branch_local and wt_evidence.in_git:
+                    recheck = _wt_decision()
+                    if recheck.status != "created":
+                        release_claim(store.base_path, claim_token)
+                        claim_token = None
+                        if recheck.status == "reusable":
+                            latency_ms = int((time.perf_counter() - t0) * 1000)
+                            return {
+                                "success": True,
+                                "repo": recheck.established_handle,
+                                "reused_established_handle": True,
+                                "requested_path": str(folder_path),
+                                "message": (
+                                    "An established index for this corpus was "
+                                    "created concurrently and is proven fresh; "
+                                    "it was reused. No index was created."
+                                ),
+                                "worktree_resolution": recheck.to_public(did_write=False),
+                                "_meta": {"latency_ms": latency_ms},
+                            }
+                        out = {
+                            "success": False,
+                            "error": recheck.reason_code,
+                            "worktree_resolution": recheck.to_public(did_write=False),
+                        }
+                        if recheck.next_action:
+                            out["hint"] = recheck.next_action
+                        return out
             elif existing_claim is None:
                 # jdoc#82 invariant 1: a claim exists but its ownership payload
                 # is not readable — a winner is mid-creation and its identity is
@@ -676,6 +792,11 @@ def index_local(
             # jdoc#81: a full-corpus refresh (re)asserts the durable selection;
             # a subset-scoped `paths` refresh never redefines it.
             selection_kwargs = {} if paths else {"corpus_selection": call_selection}
+            # jdoc#83: a full-corpus refresh of the established handle also
+            # backfills/validates the worktree identity metadata (PRD 11 —
+            # backfill happens on explicit refresh, never during discovery).
+            if not paths and lineage_kwargs:
+                selection_kwargs.update(lineage_kwargs)
             # jdoc#82 invariant 4: when a corpus-shaping input changed the
             # durable selection, the identity change is reconciled and
             # DISCLOSED — stored coverage never shifts under an unchanged
@@ -698,6 +819,12 @@ def index_local(
                     or bool(existing_index.sha_certified) != bool(sha_certified)
                     or getattr(existing_index, "source_root", "") != str(folder_path)
                     or (not paths and getattr(existing_index, "corpus_selection", "") != call_selection)
+                    or (
+                        not paths
+                        and bool(lineage_kwargs)
+                        and getattr(existing_index, "worktree_lineage_key", "")
+                        != lineage_kwargs.get("worktree_lineage_key", "")
+                    )
                 ):
                     updated = store.incremental_save(
                         owner=owner, name=repo_name,
@@ -847,6 +974,7 @@ def index_local(
             sha_certified=sha_certified,
             source_root=str(folder_path),
             corpus_selection=call_selection,
+            **lineage_kwargs,
         )
 
         # v1.19.0: glossary sidecar built from final section content.

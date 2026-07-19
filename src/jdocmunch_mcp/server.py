@@ -311,6 +311,12 @@ def _all_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional list of explicit paths to index. When provided, the directory walk is skipped; only these files (and the contents of any directories in the list) are indexed. Entries may be absolute or relative to `path`. Useful for batch-indexing exactly the files an agent already knows about — e.g. the doc files git just touched."
+                    },
+                    "worktree_mode": {
+                        "type": "string",
+                        "enum": ["reuse_equivalent", "branch_local"],
+                        "description": "Linked-worktree behavior (jdoc#83). 'reuse_equivalent' (default) reuses a proven-fresh established index from another linked worktree instead of creating a duplicate; uncertain outcomes return a bounded decision with no write. 'branch_local' intentionally creates/refreshes an exact-path index for this worktree.",
+                        "default": "reuse_equivalent"
                     }
                 },
                 "required": ["path"]
@@ -1816,6 +1822,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 sort_by=arguments.get("sort_by", "newest"),
                 autotune=arguments.get("autotune", False),
                 paths=arguments.get("paths"),
+                worktree_mode=arguments.get("worktree_mode", "reuse_equivalent"),
             )
         elif name in ("doc_index_repo", "index_repo"):  # index_repo kept for backward compat
             result = await index_repo(

@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.101.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.102.0 | **Tests:** `pytest tests/ -q`
 
 ## CHANGELOG maintenance warning (2026-07-18 incident)
 CHANGELOG.md's established format is `## [X.Y.Z] - date - title` with curated
@@ -13,6 +13,36 @@ docs-only commit (recall 1.0 -> 0.7, exactly the 3 CHANGELOG goldens).
 Maintain CHANGELOG by hand-appending entries in the established format, and
 keep new entry wording clear of fixture query phrases
 ([[feedback_fixture_query_corpus_pollution]] class).
+
+## v1.102.0 - Item B: worktree-aware corpus reuse (#83)
+rknighton's PRD implemented (all 5 phases, one release). New
+`tools/_worktree_corpus.py`: GitEvidence (4 bounded git subprocesses per
+REQUEST — common-dir/toplevel/HEAD/status-porcelain-uall-cwd-relative;
+NEVER per stored index, I7), lineage states confirmed/unknown/conflicting,
+pure `resolve_worktree_corpus(request, candidates)` decision table
+(statuses exact/created/reusable/reference_only/ambiguous/related/unknown/
+no_match + stable reason codes), `worktree_claim_key` (lineage+rel-root+
+selection; both worktrees contend on ONE claim). Persisted (additive,
+INDEX_VERSION 3): DocIndex.worktree_lineage_key (sha1[:16] of normcase
+common dir), repo_relative_root, corpus_identity_version=1; in summary
+sidecar + list_repos rows; backfilled on explicit full-corpus refresh only.
+doc_resolve_repo: worktree discovery on the not-found path (additive
+canonical_candidates + worktree_resolution; containment allowed for
+read-only resolution ONLY — index_local matches exact location, PRD 4.2).
+index_local: gate before creation; reusable → returns established handle
+NO refresh (PRD 9.3); reference_only/related/ambiguous/unknown → no-write
+error = reason_code; created → claim (worktree key when lineage confirmed)
++ R11 under-claim re-resolve; `worktree_mode` param (reuse_equivalent
+default / branch_local escape). GOTCHAS: git status pathspec must be "."
+(cwd=corpus root), NOT the toplevel-relative root (silently clean
+otherwise); test worktrees created via `git worktree add` sit at the
+commit at add-time (checkout the new HEAD after later commits); the
+persistent creation claim survives metadata stripping (simulating pre-#83
+stores requires clearing .corpus_claims too). Legacy without lineage
+fields: invisible to translation, never inferred (I6) — a worktree call
+then creates its own index. Tests: `tests/test_v1_102_0.py` (27: decision
+table + real `git worktree` fixtures); #82 harness stays 4/4; suite 1641
+green. Docs: SPEC discovery section + USER_GUIDE rows. Additive/1.x.
 
 ## v1.101.0 - Item A hardening: four adversarial-QA gaps closed (#82)
 @rknighton's harness reproduced four failures in v1.100.0's identity
