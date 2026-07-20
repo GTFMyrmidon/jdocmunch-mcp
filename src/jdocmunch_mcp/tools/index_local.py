@@ -631,10 +631,16 @@ def index_local(
         from ._worktree_corpus import (
             ResolutionRequest,
             collect_git_evidence,
+            count_provisional_for_root,
             filter_lineage_candidates,
+            legacy_sibling_handles,
             resolve_worktree_corpus,
             worktree_claim_key,
             CORPUS_IDENTITY_VERSION,
+            PROVISIONAL_PER_ROOT_CAP,
+            REASON_PROVISIONAL_CAP,
+            REASON_PROVISIONAL_CREATED,
+            RECONCILIATION_PROVISIONAL,
         )
 
         wt_evidence = collect_git_evidence(folder_path)
@@ -693,6 +699,41 @@ def index_local(
                     out["hint"] = decision.next_action
                 return out
             # decision.status == "created": creation may proceed under claim.
+
+        # jdoc#80 Part B (B1/B3): quarantine on failed Git verification. When
+        # both common-dir probes were UNAVAILABLE (timeout/missing/OS error —
+        # not a clean not-a-repo answer) and we are creating a new index, the
+        # index is stamped provisional (authority-free; no lineage key; NO
+        # graduation path in Part B). Before creating, enforce the per-root cap
+        # (B3): a large pile of provisional indexes for one source_root is an
+        # anomaly, so creation beyond the cap fails closed and loud rather than
+        # accreting silently.
+        provisional_state = ""
+        if existing_index is not None:
+            # A refresh never graduates or re-quarantines: carry forward
+            # whatever reconciliation state the established index already has.
+            provisional_state = getattr(existing_index, "reconciliation_state", "") or ""
+        elif wt_evidence.verification_failed:
+            existing_provisional = count_provisional_for_root(
+                store.list_repos(), str(folder_path)
+            )
+            if existing_provisional >= PROVISIONAL_PER_ROOT_CAP:
+                return {
+                    "success": False,
+                    "error": REASON_PROVISIONAL_CAP,
+                    "requested_path": str(folder_path),
+                    "provisional_count": existing_provisional,
+                    "provisional_cap": PROVISIONAL_PER_ROOT_CAP,
+                    "hint": (
+                        "Git lineage could not be verified for this path and the "
+                        "number of provisional (reconciliation-pending) indexes "
+                        "for this source root has reached the cap. Resolve the Git "
+                        "verification failure (the git binary, a timeout, or "
+                        "permissions), or delete_index the stale provisional "
+                        "indexes. No new index was created."
+                    ),
+                }
+            provisional_state = RECONCILIATION_PROVISIONAL
 
         # jdoc#81: about to create a brand-new index — close the concurrent-
         # create race with an atomic claim. The loser of the race routes to the
@@ -1062,6 +1103,7 @@ def index_local(
             sha_certified=sha_certified,
             source_root=str(folder_path),
             corpus_selection=call_selection,
+            reconciliation_state=provisional_state,
             coverage=coverage_block or None,
             **lineage_kwargs,
         )
@@ -1135,6 +1177,45 @@ def index_local(
         _add_commit_fields(result, saved)
         if autotune_result is not None:
             result["autotune"] = autotune_result
+
+        # jdoc#80 Part B (B1): disclose reconciliation quarantine. A provisional
+        # index was created because Git lineage could not be verified; it is
+        # authority-free and reconciliation-pending (no graduation ships in
+        # Part B). Surfaced as a structured block, not just a note string.
+        if getattr(saved, "reconciliation_state", "") == RECONCILIATION_PROVISIONAL:
+            result["reconciliation"] = {
+                "state": RECONCILIATION_PROVISIONAL,
+                "reason_code": REASON_PROVISIONAL_CREATED,
+                "detail": (
+                    "Git lineage could not be verified for this path (the Git "
+                    "common-directory probe was unavailable, not a clean "
+                    "not-a-repository answer), so this index is marked "
+                    "provisional and reconciliation-pending. It will not be "
+                    "reused as an established corpus by linked-worktree calls "
+                    "until it is reconciled. Re-run once Git is reachable to "
+                    "index it normally."
+                ),
+            }
+
+        # jdoc#80 Part B (B2): disclose a pre-1.102 sibling. When a fresh index
+        # was created and an older (identity-fieldless) index for a plausibly
+        # equivalent corpus exists, the duplicate is no longer silent — the
+        # caller can reindex the legacy corpus to bring it into the lineage
+        # system. Non-blocking hint.
+        if existing_index is None:
+            _legacy = legacy_sibling_handles(store.list_repos(), str(folder_path))
+            if _legacy:
+                result["legacy_index_present"] = {
+                    "handles": _legacy,
+                    "detail": (
+                        "One or more existing indexes (created before the "
+                        "corpus-identity fields) may cover this same "
+                        "documentation corpus from a different worktree or "
+                        "path. A separate index was created here. To bring the "
+                        "older index into the lineage system, re-run "
+                        "index_local against its path."
+                    ),
+                }
 
         # jdoc#15: surface truncation as structured top-level fields so
         # callers can detect it programmatically, not just from a free-text

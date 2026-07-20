@@ -1,6 +1,40 @@
 # jdocmunch-mcp
 
-**Version:** 1.105.1 | **Tests:** `pytest tests/ -q`
+**Version:** 1.106.0 | **Tests:** `pytest tests/ -q`
+
+## v1.106.0 - reconciliation quarantine, QUARANTINE-ONLY (#80 Part B)
+Part B of the #80 reconciliation arc; the safe foundation for Part C.
+**NO graduation path ships here** — a provisional index stays provisional
+until the Part C reconciler (PRD `C:\MCPs\business\jdoc-worktree-reconcile\PRD.md`,
+invariants I1-I6). Pieces:
+- **B1 provisional stamp:** new `_git_probe` in `_git.py` classifies a failed
+  git call as `GIT_NOT_A_REPO` (git ran, made a determination) vs
+  `GIT_UNAVAILABLE` (timeout/missing/OS error). `collect_git_evidence` sets
+  `GitEvidence.verification_failed=True` only on UNAVAILABLE. `index_local`
+  then creates the index but stamps `reconciliation_state="provisional"` +
+  distinct reason_code `provisional_verification_unavailable` + a structured
+  `reconciliation` response block. Confirmed-non-Git (NOT_A_REPO) stays normal.
+- **DocIndex.reconciliation_state** additive field, omit-when-empty, threaded
+  save_index / from_dict / _index_to_dict / incremental_save (_UNSET
+  carry-forward — refresh NEVER graduates) / summary sidecar / list_repos row.
+  NO INDEX_VERSION bump.
+- **I4 authority-free:** `filter_lineage_candidates` skips
+  `reconciliation_state=="provisional"` rows (also structurally excluded — a
+  provisional index carries no lineage_key). Never an established_handle/reuse.
+- **B3 per-root cap:** `count_provisional_for_root` + `PROVISIONAL_PER_ROOT_CAP=3`;
+  create beyond cap → fail-closed `provisional_cap_exceeded` (no write). NOTE:
+  Item A already dedups same-root+same-selection, so the multi-provisional
+  vector is distinct SELECTIONS per root; the cap bounds that.
+- **B2 `legacy_index_present`:** `legacy_sibling_handles` flags pre-1.102
+  (corpus_identity_version==0) local indexes with matching source_root basename
+  on a fresh create; non-blocking disclosure.
+- **B4 vocabulary drift-guard:** test asserts every runtime STATUS_*/REASON_*
+  is documented (teeth for #84 item 4 until Part C publishes the full table).
+Tests `tests/test_v1_106_0.py` (10). GOTCHA burned: cap test can't create N
+provisionals via different NAMES on one root+selection — Item A claim dedups
+them to `corpus_already_indexed`; plant via save_index or use distinct
+selections. Additive/1.x. **Part C (graduation/reconcile) = NOT built; needs
+jjg §7 answers: cap N, mismatch cleanup-vs-review, provisional-report surface.**
 
 ## v1.105.1 - consistent candidate-list bound on doc_resolve_repo (#84)
 rknighton's QA follow-up on the 1.102.0 (#83) worktree work. On the

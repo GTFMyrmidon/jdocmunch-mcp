@@ -29,6 +29,48 @@ def _git_timeout() -> Optional[float]:
     return val if val > 0 else None
 
 
+# Probe outcome kinds (jdoc#80 Part B): a failed git call is either a clean
+# "git ran and this is not a usable repo" answer (a determination) or an
+# "unavailable" result (git could not answer: timeout, missing binary, OS
+# error). Only the latter is treated as failed-verification worth quarantining.
+GIT_OK = "ok"
+GIT_NOT_A_REPO = "not_a_repo"
+GIT_UNAVAILABLE = "unavailable"
+
+
+def _git_probe(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
+    """Like ``_git`` but classifies the failure mode.
+
+    Returns ``(ok, stdout, kind)`` where ``kind`` is ``GIT_OK`` on success,
+    ``GIT_NOT_A_REPO`` when git ran and made a determination (a non-zero
+    ``fatal`` exit, e.g. 128 outside a repository — a definitive "no"), or
+    ``GIT_UNAVAILABLE`` when git could not produce an answer at all (missing
+    binary, timeout, or OS error). The distinction lets a caller tell a
+    confirmed non-Git corpus from a transient verification failure without
+    depending on git's (localizable) stderr text.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,  # see _git: prevents stdio-server deadlock
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_git_timeout(),
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        # git ran and exited non-zero: a determination (not-a-repo / bad path).
+        return False, "", GIT_NOT_A_REPO
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # git could not answer: binary missing, timed out, or OS error.
+        return False, "", GIT_UNAVAILABLE
+    except Exception:
+        return False, "", GIT_UNAVAILABLE
+    return True, proc.stdout.strip(), GIT_OK
+
+
 def _git(cwd: Path, args: list[str]) -> tuple[bool, str]:
     try:
         proc = subprocess.run(

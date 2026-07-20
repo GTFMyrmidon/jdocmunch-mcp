@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.106.0] - 2026-07-20 - reconciliation quarantine, quarantine-only (#80 Part B)
+
+Part B of the local-index reconciliation arc (#80), the safe foundation the
+Part C reconciler is built on. **Quarantine only, with no graduation path** —
+a quarantined index stays quarantined until Part C.
+
+- **Provisional stamp on failed Git verification.** When both git
+  common-directory probes are *unavailable* (timeout, missing binary, or OS
+  error — not a clean not-a-repository answer), `index_local` still creates the
+  index (availability over a transient git failure) but stamps it
+  `reconciliation_state = "provisional"` and discloses a structured
+  `reconciliation` block on the response. A new `_git_probe` classifies the
+  failure so a genuine non-Git corpus (git ran and said no) stays normal while
+  only an unanswerable probe quarantines. New additive `DocIndex.reconciliation_state`
+  (omit-when-empty; carried through save / incremental / summary sidecar /
+  list_repos row; no INDEX_VERSION bump).
+- **Authority-free while provisional.** A provisional index is excluded from
+  worktree reuse candidates, so it can never become an `established_handle` or
+  suppress creation of the real corpus. It carries no lineage key and never
+  graduates in Part B — a refresh preserves the provisional state (no silent
+  promotion via reindex).
+- **Per-source_root provisional cap.** Creation beyond a small per-root ceiling
+  fails closed with `provisional_cap_exceeded` rather than letting many
+  marginal provisional indexes accrue silently.
+- **`legacy_index_present` disclosure.** When a fresh index is created and an
+  older (pre-1.102, identity-fieldless) index for a plausibly equivalent corpus
+  exists, the response flags it so the duplicate is not silent and the caller
+  can reindex the older corpus into the lineage system.
+- **Vocabulary drift-guard.** A test asserts every Part B status / reason_code
+  the runtime can emit is documented, keeping the public vocabulary honest
+  until Part C publishes the complete runtime-matched table.
+
+Graduation and reconciliation (promoting a provisional index to established,
+merging pre-1.102 duplicates) are **Part C**, gated behind a single hard proof
+gate — a genuine git-verified identity match, never an accumulation of
+grey-area signals. Tests: `tests/test_v1_106_0.py` (10). Additive / 1.x.
+
 ## [1.105.1] - 2026-07-20 - consistent candidate-list bound on doc_resolve_repo (#84)
 
 QA follow-up (@rknighton) on the 1.102.0 worktree-reuse work. On the

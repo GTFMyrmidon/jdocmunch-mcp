@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ._git import _git
+from ._git import _git, _git_probe, GIT_UNAVAILABLE
 
 # Evidence states (PRD 4.3).
 LINEAGE_CONFIRMED = "confirmed"
@@ -59,6 +59,60 @@ MAX_CANDIDATES = 5
 
 # Identity schema version for the persisted evidence fields (PRD 10.1).
 CORPUS_IDENTITY_VERSION = 1
+
+# jdoc#80 Part B (v1.106.0) — reconciliation quarantine.
+RECONCILIATION_PROVISIONAL = "provisional"
+# Distinct reason_codes for the failed-verification quarantine path.
+REASON_PROVISIONAL_CREATED = "provisional_verification_unavailable"
+REASON_PROVISIONAL_CAP = "provisional_cap_exceeded"
+# Per-source_root ceiling on provisional indexes. A real corpus has one, maybe
+# a handful of worktrees; a large pile for one root is an anomaly, so creation
+# beyond the cap fails closed and loud (B3) rather than accreting silently.
+PROVISIONAL_PER_ROOT_CAP = 3
+
+
+def legacy_sibling_handles(stored_rows: list, source_root: str, max_n: int = MAX_CANDIDATES) -> list:
+    """Pre-1.102 (identity-fieldless) local indexes plausibly equivalent to the
+    corpus at ``source_root``, matched by source_root basename (B2 disclosure).
+
+    Disclosure only — never blocks and never asserts equivalence; it flags that
+    a duplicate is being created beside an older index that could not enter the
+    lineage system because it predates the identity fields. Metadata-only over
+    list_repos rows; a same-location index is excluded (that is the same corpus,
+    not a sibling)."""
+    base = os.path.basename(os.path.normpath(str(source_root))).lower()
+    if not base:
+        return []
+    target = _norm(source_root or "")
+    out: list = []
+    for entry in stored_rows:
+        repo = entry.get("repo") or ""
+        if not repo.startswith("local/"):
+            continue
+        if int(entry.get("corpus_identity_version") or 0) != 0:
+            continue  # already in the identity system — not legacy
+        sr = entry.get("source_root") or ""
+        if not sr or _norm(sr) == target:
+            continue
+        if os.path.basename(os.path.normpath(sr)).lower() == base:
+            out.append(repo)
+            if len(out) >= max_n:
+                break
+    return out
+
+
+def count_provisional_for_root(stored_rows: list, source_root: str) -> int:
+    """Count existing provisional indexes whose source_root matches ``source_root``
+    (B3 cap input). Both sides are normalized here. Metadata-only over
+    list_repos rows; no git subprocess, no index load."""
+    target = _norm(source_root or "")
+    n = 0
+    for entry in stored_rows:
+        if (entry.get("reconciliation_state") or "") != RECONCILIATION_PROVISIONAL:
+            continue
+        if _norm(entry.get("source_root") or "") == target:
+            n += 1
+    return n
 
 
 def _norm(p: str) -> str:
@@ -81,6 +135,11 @@ class GitEvidence:
     relative_root: str = ""        # corpus root relative to toplevel (posix)
     head_sha: Optional[str] = None
     corpus_dirty: bool = False     # uncommitted changes under the corpus root
+    # jdoc#80 Part B: True when the git-common-dir probe was UNAVAILABLE
+    # (timeout / missing binary / OS error) rather than a clean not-a-repo
+    # determination. Distinguishes a transient verification failure (quarantine
+    # a new index as provisional) from a confirmed non-Git corpus (normal).
+    verification_failed: bool = False
 
 
 def lineage_key_for(common_dir_norm: str) -> str:
@@ -96,16 +155,20 @@ def collect_git_evidence(corpus_root: Path) -> GitEvidence:
     (PRD Section 11).
     """
     ev = GitEvidence()
-    ok, common = _git(
+    ok, common, kind = _git_probe(
         corpus_root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]
     )
     if not ok or not common:
         # Older git (<2.31) lacks --path-format; fall back and absolutize.
-        ok, common = _git(corpus_root, ["rev-parse", "--git-common-dir"])
+        ok, common, kind = _git_probe(corpus_root, ["rev-parse", "--git-common-dir"])
         if ok and common and not os.path.isabs(common):
             common = str((corpus_root / common))
     if not ok or not common:
-        return ev  # not a git repo (or git failed): in_git False, unknown
+        # Both common-dir probes failed. If git could not answer at all
+        # (unavailable), flag verification_failed so a new index is quarantined
+        # provisional; a clean not-a-repo determination stays confirmed-non-Git.
+        ev.verification_failed = kind == GIT_UNAVAILABLE
+        return ev  # in_git False, unknown
     ev.in_git = True
     ev.common_dir = _norm(common)
     ev.lineage_key = lineage_key_for(ev.common_dir)
@@ -241,6 +304,12 @@ def filter_lineage_candidates(
     for entry in stored_rows:
         repo = entry.get("repo") or ""
         if not repo.startswith("local/"):
+            continue
+        # jdoc#80 I4: a provisional index is authority-free — it can never be a
+        # reuse candidate or established_handle. (It also carries no lineage
+        # key, so the next check already excludes it; this is explicit + robust
+        # to future changes.)
+        if (entry.get("reconciliation_state") or "") == "provisional":
             continue
         if (entry.get("worktree_lineage_key") or "") != ev.lineage_key:
             continue

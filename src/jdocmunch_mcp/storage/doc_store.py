@@ -190,6 +190,14 @@ class DocIndex:
     repo_relative_root: str = ""
     # Identity schema version for the jdoc#83 evidence fields (0 = pre-#83).
     corpus_identity_version: int = 0
+    # jdoc#80 Part B (v1.106.0): reconciliation state. "" = normal (proven or
+    # confirmed-non-Git); "provisional" = created when Git lineage could not be
+    # verified (both common-dir probes were unavailable — timeout/missing/OS
+    # error, NOT a clean not-a-repo answer). A provisional index is authority-
+    # free: it never wins worktree reuse, is never an established_handle, and
+    # never carries a lineage key. Part B ships NO graduation path — it stays
+    # provisional until the Part C reconciler (behind the #80 proof gate).
+    reconciliation_state: str = ""
     # v1.103.0: coverage contract for absence claims — {walk, files_indexed,
     # skip_counts{reason: count}, no_sections_count, recorded_at} from the
     # last full discovery walk. Empty = unknown (legacy index or no full walk
@@ -708,6 +716,7 @@ class DocStore:
                 "corpus_selection": getattr(index, "corpus_selection", "") or "",
                 "worktree_lineage_key": getattr(index, "worktree_lineage_key", "") or "",
                 "repo_relative_root": getattr(index, "repo_relative_root", "") or "",
+                "reconciliation_state": getattr(index, "reconciliation_state", "") or "",
             }
             summary_path = self._summary_path(owner, name)
             tmp = summary_path.with_name(f"{summary_path.name}.{os.getpid()}.tmp")
@@ -811,6 +820,7 @@ class DocStore:
         worktree_lineage_key: str = "",
         repo_relative_root: str = "",
         corpus_identity_version: int = 0,
+        reconciliation_state: str = "",
         coverage: Optional[dict] = None,
     ) -> "DocIndex":
         """Save index and raw files to storage atomically."""
@@ -844,6 +854,7 @@ class DocStore:
             worktree_lineage_key=worktree_lineage_key or "",
             repo_relative_root=repo_relative_root or "",
             corpus_identity_version=int(corpus_identity_version or 0),
+            reconciliation_state=reconciliation_state or "",
             coverage=dict(coverage) if coverage else {},
         )
 
@@ -924,6 +935,7 @@ class DocStore:
             worktree_lineage_key=data.get("worktree_lineage_key", ""),
             repo_relative_root=data.get("repo_relative_root", ""),
             corpus_identity_version=int(data.get("corpus_identity_version", 0) or 0),
+            reconciliation_state=data.get("reconciliation_state", ""),
             coverage=data.get("coverage") or {},
         )
 
@@ -1015,6 +1027,7 @@ class DocStore:
         worktree_lineage_key=_UNSET,
         repo_relative_root=_UNSET,
         corpus_identity_version=_UNSET,
+        reconciliation_state=_UNSET,
         coverage=_UNSET,
     ) -> Optional["DocIndex"]:
         """Incrementally update an existing index.
@@ -1124,6 +1137,14 @@ class DocStore:
                 getattr(index, "corpus_identity_version", 0)
                 if corpus_identity_version is _UNSET
                 else int(corpus_identity_version or 0)
+            ),
+            # jdoc#80 Part B: reconciliation_state carries forward across
+            # incremental refreshes (a provisional index stays provisional —
+            # Part B has no graduation path).
+            reconciliation_state=(
+                getattr(index, "reconciliation_state", "")
+                if reconciliation_state is _UNSET
+                else (reconciliation_state or "")
             ),
             # v1.103.0: coverage carries forward across incremental saves; a
             # full re-walk (save_index) overwrites it (self-heals).
@@ -1236,6 +1257,8 @@ class DocStore:
             row["worktree_lineage_key"] = data["worktree_lineage_key"]
         if data.get("repo_relative_root"):
             row["repo_relative_root"] = data["repo_relative_root"]
+        if data.get("reconciliation_state"):
+            row["reconciliation_state"] = data["reconciliation_state"]
         if data.get("source_repo"):
             row["source_repo"] = data["source_repo"]
             source_repo_at_sha = format_repo_at_sha(
@@ -1368,6 +1391,8 @@ class DocStore:
             d["repo_relative_root"] = index.repo_relative_root
         if getattr(index, "corpus_identity_version", 0):
             d["corpus_identity_version"] = index.corpus_identity_version
+        if getattr(index, "reconciliation_state", ""):
+            d["reconciliation_state"] = index.reconciliation_state
         if getattr(index, "coverage", {}):
             d["coverage"] = index.coverage
         return d
