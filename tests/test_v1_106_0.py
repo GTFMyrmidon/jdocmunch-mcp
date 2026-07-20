@@ -199,6 +199,9 @@ def test_part_b_vocabulary_is_documented():
     }
     documented_reason_codes = {
         REASON_PROVISIONAL_CREATED, REASON_PROVISIONAL_CAP,
+        # jdoc#80 Part C graduation outcomes (v1.107.0):
+        wc.REASON_GRADUATED, wc.REASON_RECONCILED,
+        wc.REASON_GRADUATION_AMBIGUOUS, wc.REASON_GRADUATION_DIVERGED,
     }
     # Enumerate the STATUS_* constants actually defined on the module.
     live_statuses = {

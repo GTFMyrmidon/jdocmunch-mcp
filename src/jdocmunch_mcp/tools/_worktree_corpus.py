@@ -65,6 +65,11 @@ RECONCILIATION_PROVISIONAL = "provisional"
 # Distinct reason_codes for the failed-verification quarantine path.
 REASON_PROVISIONAL_CREATED = "provisional_verification_unavailable"
 REASON_PROVISIONAL_CAP = "provisional_cap_exceeded"
+# jdoc#80 Part C — graduation (provisional -> established) outcomes.
+REASON_GRADUATED = "graduated_verified"
+REASON_RECONCILED = "reconciled_to_established"
+REASON_GRADUATION_AMBIGUOUS = "graduation_ambiguous"
+REASON_GRADUATION_DIVERGED = "graduation_content_diverged"
 # Per-source_root ceiling on provisional indexes. A real corpus has one, maybe
 # a handful of worktrees; a large pile for one root is an anomaly, so creation
 # beyond the cap fails closed and loud (B3) rather than accreting silently.
@@ -99,6 +104,36 @@ def legacy_sibling_handles(stored_rows: list, source_root: str, max_n: int = MAX
             if len(out) >= max_n:
                 break
     return out
+
+
+def classify_graduation(established_candidates: list, selection: str) -> tuple:
+    """Decide the fate of a provisional index whose Git lineage has now been
+    CONFIRMED (jdoc#80 Part C, §4.2). Pure — the security core.
+
+    ``established_candidates`` are non-provisional rows already matched on
+    lineage_key + repo_relative_root (``filter_lineage_candidates`` output,
+    which excludes provisional indexes — I2: provisionals never vouch). This
+    narrows them to the ones whose durable selection also matches, then:
+
+    - exactly one match  -> ("reconcile", handle): an established index for this
+      identity exists; the provisional is the loser (I5, established untouched).
+    - no match           -> ("graduate", ""): promote the provisional in place.
+    - more than one match -> ("ambiguous", ""): a pre-existing ambiguity; fail
+      closed, stay provisional (I6: no gameable tiebreak, never guess a winner).
+
+    Graduation requires the same positive proof #83 requires (confirmed
+    lineage), never weaker, and never an accumulation of grey-area signals (I1).
+    """
+    sel = selection or "full"
+    matches = [
+        c for c in established_candidates
+        if (c.get("corpus_selection") or "full") == sel
+    ]
+    if len(matches) == 1:
+        return "reconcile", matches[0].get("repo") or ""
+    if not matches:
+        return "graduate", ""
+    return "ambiguous", ""
 
 
 def count_provisional_for_root(stored_rows: list, source_root: str) -> int:

@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.107.0] - 2026-07-20 - provisional-index graduation (#80 Part C)
+
+Part C of the local-index reconciliation arc: a provisional index (created
+under failed Git verification in Part B) can now graduate when the proof
+arrives, behind six security invariants so promotion can never be manufactured.
+
+When a provisional index is FULLY refreshed (`index_local`, no `paths` subset)
+and Git lineage is now CONFIRMED, one of:
+
+- **Graduate in place.** No established index shares the identity, so the
+  provisional is promoted: identity fields written, provisional flag cleared,
+  it becomes a normal established index.
+- **Reconcile (auto-cleanup).** An established index already holds this
+  identity, so the provisional is the loser: it is removed and the established
+  handle is returned, but ONLY after confirming the provisional's documents are
+  a subset of the established index (no document loss). The established index is
+  never modified.
+- **Fail closed and stay provisional** when it would not be safe: more than one
+  established index matches the identity (ambiguous), or the provisional holds
+  documents the established index lacks (diverged, so it is never deleted).
+
+The gate is the same positive proof #83 requires (confirmed lineage), never
+weaker and never an accumulation of grey-area signals; provisional indexes are
+excluded from the candidate set, so they never vouch for each other; promotion
+is event-driven (a verifying refresh), never time-driven; and conflicts never
+touch the established index. A subset refresh, a still-unverifiable refresh, and
+any volume of provisional accretion never produce a graduation.
+
+New pure `classify_graduation` helper plus graduation outcome vocabulary
+(`graduated_verified`, `reconciled_to_established`, `graduation_ambiguous`,
+`graduation_content_diverged`), all covered by the drift-guard. Tests:
+`tests/test_v1_107_0.py` (13, including the adversarial invariant gate).
+Additive / 1.x, no INDEX_VERSION bump. Deferred to a follow-on: pre-1.102
+legacy physical-index merge (§4.3); Part B already discloses that case
+(`legacy_index_present`).
+
 ## [1.106.0] - 2026-07-20 - reconciliation quarantine, quarantine-only (#80 Part B)
 
 Part B of the local-index reconciliation arc (#80), the safe foundation the

@@ -1,6 +1,37 @@
 # jdocmunch-mcp
 
-**Version:** 1.106.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.107.0 | **Tests:** `pytest tests/ -q`
+
+## v1.107.0 - provisional-index graduation (#80 Part C)
+Provisional indexes (Part B) can now GRADUATE behind the six security
+invariants (PRD `C:\MCPs\business\jdoc-worktree-reconcile\PRD.md` §4.1 I1-I6).
+Trigger: a provisional index FULLY refreshed (`index_local`, NOT `paths`
+subset, not branch_local) while `wt_evidence.lineage_state=="confirmed"`.
+`_resolve_graduation()` (module-level in index_local.py) decides via pure
+`classify_graduation(est_candidates, selection)`:
+- **graduate in place** (no established peer): refresh writes lineage_kwargs +
+  `selection_kwargs["reconciliation_state"]=""` clears the flag. Outcome
+  `graduated_verified`.
+- **reconcile/auto-cleanup** (exactly one established peer, jjg §7 decision):
+  load target, verify P.doc_paths ⊆ target.doc_paths (NO document loss), then
+  `store.delete_index` the provisional (loser ONLY) + return target handle.
+  Outcome `reconciled_to_established`.
+- **diverged** (P has docs target lacks): FAIL CLOSED, never delete, stay
+  provisional. Outcome `graduation_content_diverged`.
+- **ambiguous** (>1 established peer): FAIL CLOSED, stay provisional. Outcome
+  `graduation_ambiguous`.
+Invariant mapping: I1 confirmed-lineage-only (never weaker/accretion) + full
+refresh only; I2 `filter_lineage_candidates` excludes provisional (they never
+vouch); I3 event-driven (verifying refresh), never time; I4 authority-free
+until graduated; I5 conflict deletes only P, established untouched; I6 >1 match
+→ ambiguous, never a tiebreak. Outcome attached via
+`_attach_reconciliation_outcome` at all 3 refresh return sites (no-change /
+incremental / create-replace). Tests `test_v1_107_0.py` (13 incl. adversarial
+§6.6: still-unverifiable/subset/provisionals-never-vouch/authority-free).
+Updated B4 drift-guard set in test_v1_106_0.py with the 4 new reason codes.
+Additive/1.x, NO INDEX_VERSION bump. **DEFERRED to Part C.2 follow-on: pre-1.102
+legacy physical-index MERGE (§4.3) — the riskiest op; Part B `legacy_index_present`
+already de-silences it. NOT built.**
 
 ## v1.106.0 - reconciliation quarantine, QUARANTINE-ONLY (#80 Part B)
 Part B of the #80 reconciliation arc; the safe foundation for Part C.

@@ -110,6 +110,134 @@ def _add_commit_fields(result: dict, index) -> None:
         result["repo_at_sha"] = index.repo_at_sha
 
 
+def _attach_reconciliation_outcome(result, graduating, disclosure):
+    """Attach the Part C graduation outcome to a refresh response: a `graduated`
+    block when the provisional index was promoted this refresh, otherwise any
+    ambiguous/diverged disclosure that kept it provisional (fail closed)."""
+    from ._worktree_corpus import REASON_GRADUATED
+    if graduating:
+        result["reconciliation"] = {
+            "state": "graduated",
+            "reason_code": REASON_GRADUATED,
+            "detail": (
+                "Git lineage was verified on this refresh; the previously "
+                "provisional index was graduated to an established index."
+            ),
+        }
+    elif disclosure is not None:
+        result["reconciliation"] = disclosure
+    return result
+
+
+def _resolve_graduation(
+    store, owner, repo_name, repo_id, folder_path, provisional_index,
+    wt_evidence, call_selection, t0,
+):
+    """jdoc#80 Part C — decide the fate of a provisional index now that Git
+    lineage is CONFIRMED (§4.2). Returns a dict:
+
+      {"graduate": bool, "return": <response dict|None>, "disclosure": <dict|None>}
+
+    ``graduate`` True means promote in place (the caller clears the provisional
+    flag on the refresh save). ``return`` is a ready response that must be
+    returned immediately (the reconcile auto-cleanup path). ``disclosure`` is a
+    block to attach to the eventual refresh response (ambiguous / diverged —
+    stays provisional, fails closed).
+
+    Side-effect-free EXCEPT the reconcile auto-cleanup, which deletes ONLY the
+    provisional index (the loser). An established index is never touched (I5).
+    The whole decision is gated on confirmed lineage — the same proof #83
+    requires, never weaker, never an accumulation of signals (I1)."""
+    from ._worktree_corpus import (
+        classify_graduation,
+        filter_lineage_candidates,
+        RECONCILIATION_PROVISIONAL,
+        REASON_RECONCILED,
+        REASON_GRADUATION_AMBIGUOUS,
+        REASON_GRADUATION_DIVERGED,
+    )
+
+    est = filter_lineage_candidates(
+        store.list_repos(), wt_evidence, allow_containment=False
+    )
+    est = [c for c in est if c.get("repo") != repo_id]
+    action, target = classify_graduation(est, call_selection)
+
+    if action == "graduate":
+        return {"graduate": True, "return": None, "disclosure": None}
+    if action == "ambiguous":
+        return {
+            "graduate": False, "return": None,
+            "disclosure": {
+                "state": RECONCILIATION_PROVISIONAL,
+                "reason_code": REASON_GRADUATION_AMBIGUOUS,
+                "detail": (
+                    "Git lineage was verified, but more than one established "
+                    "index matches this corpus identity. The index was kept "
+                    "provisional (fail closed); resolve the ambiguity before it "
+                    "can graduate."
+                ),
+            },
+        }
+
+    # reconcile: an established index for this identity exists (I5). The
+    # provisional is the loser.
+    t_owner, _, t_name = target.partition("/")
+    target_index = store.load_index(t_owner, t_name) if target else None
+    if target_index is None:
+        # The target vanished between listing and now — graduate in place.
+        return {"graduate": True, "return": None, "disclosure": None}
+
+    p_docs = set(getattr(provisional_index, "doc_paths", []) or [])
+    e_docs = set(getattr(target_index, "doc_paths", []) or [])
+    if not (p_docs <= e_docs):
+        # The provisional has documents the established index lacks. Deleting it
+        # would lose content, so fail closed and stay provisional (never delete
+        # on divergence — jjg's auto-cleanup is safe ONLY because the loser is
+        # a recomputable subset of the winner).
+        return {
+            "graduate": False, "return": None,
+            "disclosure": {
+                "state": RECONCILIATION_PROVISIONAL,
+                "reason_code": REASON_GRADUATION_DIVERGED,
+                "established_handle": target,
+                "detail": (
+                    "Git lineage was verified and an established index for this "
+                    "corpus exists, but the provisional index has documents not "
+                    "present in it. It was kept provisional (no automatic "
+                    "removal) to avoid document loss."
+                ),
+            },
+        }
+
+    # Clean subset — auto-cleanup the provisional (loser only), return the
+    # established handle.
+    store.delete_index(owner, repo_name)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    return {
+        "graduate": False,
+        "return": {
+            "success": True,
+            "repo": target,
+            "reused_established_handle": True,
+            "requested_path": str(folder_path),
+            "reconciliation": {
+                "state": "reconciled",
+                "reason_code": REASON_RECONCILED,
+                "established_handle": target,
+                "detail": (
+                    "Git lineage was verified; an established index for this "
+                    "corpus already exists. The provisional index was reconciled "
+                    "(removed) and the established handle is returned. No "
+                    "documents were lost."
+                ),
+            },
+            "_meta": {"latency_ms": latency_ms},
+        },
+        "disclosure": None,
+    }
+
+
 def _should_skip(rel_path: str) -> bool:
     normalized = "/" + rel_path.replace("\\", "/")
     for pat in SKIP_PATTERNS:
@@ -708,11 +836,37 @@ def index_local(
         # (B3): a large pile of provisional indexes for one source_root is an
         # anomaly, so creation beyond the cap fails closed and loud rather than
         # accreting silently.
+        # jdoc#80 Part C: graduation. A provisional index being FULLY refreshed
+        # (no `paths` subset, not branch-local) while Git lineage is now
+        # CONFIRMED may graduate in place, reconcile to an established index, or
+        # (ambiguous/diverged) stay provisional and fail closed (§4.2). Subset
+        # refreshes and still-unverifiable Git never graduate (I1/I3).
+        graduating = False
+        reconciliation_disclosure = None
+        if (
+            existing_index is not None
+            and getattr(existing_index, "reconciliation_state", "") == RECONCILIATION_PROVISIONAL
+            and not paths
+            and not branch_local
+            and wt_evidence.lineage_state == "confirmed"
+        ):
+            grad = _resolve_graduation(
+                store, owner, repo_name, repo_id, folder_path,
+                existing_index, wt_evidence, call_selection, t0,
+            )
+            if grad["return"] is not None:
+                return grad["return"]
+            graduating = bool(grad["graduate"])
+            reconciliation_disclosure = grad["disclosure"]
+
         provisional_state = ""
         if existing_index is not None:
-            # A refresh never graduates or re-quarantines: carry forward
-            # whatever reconciliation state the established index already has.
-            provisional_state = getattr(existing_index, "reconciliation_state", "") or ""
+            # A refresh carries forward the existing reconciliation state,
+            # UNLESS this refresh graduates the index (Part C), which clears it.
+            provisional_state = (
+                "" if graduating
+                else getattr(existing_index, "reconciliation_state", "") or ""
+            )
         elif wt_evidence.verification_failed:
             existing_provisional = count_provisional_for_root(
                 store.list_repos(), str(folder_path)
@@ -898,6 +1052,12 @@ def index_local(
             # jdoc#81: a full-corpus refresh (re)asserts the durable selection;
             # a subset-scoped `paths` refresh never redefines it.
             selection_kwargs = {} if paths else {"corpus_selection": call_selection}
+            # jdoc#80 Part C: a graduating full refresh clears the provisional
+            # flag (the incremental save otherwise carries it forward). The
+            # `not paths` graduation gate means this only fires on a full
+            # refresh, where lineage_kwargs are also written below.
+            if graduating:
+                selection_kwargs["reconciliation_state"] = ""
             # jdoc#83: a full-corpus refresh of the established handle also
             # backfills/validates the worktree identity metadata (PRD 11 —
             # backfill happens on explicit refresh, never during discovery).
@@ -954,6 +1114,9 @@ def index_local(
                 }
                 nochange_result.update(derivation_fields)
                 nochange_result.update(reuse_fields)
+                _attach_reconciliation_outcome(
+                    nochange_result, graduating, reconciliation_disclosure
+                )
                 nochange_result.update(selection_changed_fields)
                 _add_commit_fields(nochange_result, updated)
                 # jdoc#15: report truncation even when nothing changed,
@@ -1017,6 +1180,9 @@ def index_local(
             result.update(derivation_fields)
             result.update(reuse_fields)
             result.update(selection_changed_fields)
+            _attach_reconciliation_outcome(
+                result, graduating, reconciliation_disclosure
+            )
             _add_commit_fields(result, updated)
             # jdoc#15: surface truncation on the incremental path too.
             if discovered_count > max_files:
@@ -1196,6 +1362,13 @@ def index_local(
                     "index it normally."
                 ),
             }
+        else:
+            # jdoc#80 Part C: a full (non-incremental) refresh that graduated a
+            # previously provisional index reaches this create/replace path;
+            # surface the graduated / ambiguous / diverged outcome.
+            _attach_reconciliation_outcome(
+                result, graduating, reconciliation_disclosure
+            )
 
         # jdoc#80 Part B (B2): disclose a pre-1.102 sibling. When a fresh index
         # was created and an older (identity-fieldless) index for a plausibly
