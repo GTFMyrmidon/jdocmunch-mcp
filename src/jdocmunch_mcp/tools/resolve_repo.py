@@ -168,6 +168,7 @@ def doc_resolve_repo(path: str, storage_path: Optional[str] = None) -> dict:
     }
     try:
         from ._worktree_corpus import (
+            MAX_CANDIDATES,
             ResolutionRequest,
             collect_git_evidence,
             filter_lineage_candidates,
@@ -187,7 +188,12 @@ def doc_resolve_repo(path: str, storage_path: Optional[str] = None) -> dict:
             if decision.status != "no_match":
                 not_found["worktree_resolution"] = decision.to_public()
                 if decision.candidates:
-                    not_found["canonical_candidates"] = decision.candidates
+                    # jdoc#84 item 1: both public candidate lists share the
+                    # MAX_CANDIDATES bound; the full count stays reported via
+                    # worktree_resolution.total_candidates.
+                    not_found["canonical_candidates"] = list(
+                        decision.candidates[:MAX_CANDIDATES]
+                    )
                 if decision.next_action:
                     not_found["hint"] = decision.next_action
         not_found["_meta"]["latency_ms"] = int((time.perf_counter() - t0) * 1000)

@@ -1,6 +1,26 @@
 # jdocmunch-mcp
 
-**Version:** 1.105.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.105.1 | **Tests:** `pytest tests/ -q`
+
+## v1.105.1 - consistent candidate-list bound on doc_resolve_repo (#84)
+rknighton's QA follow-up on the 1.102.0 (#83) worktree work. On the
+`doc_resolve_repo` not-found worktree branch, `worktree_resolution.candidates`
+(via `ResolutionDecision.to_public`) capped at `MAX_CANDIDATES`=5 with
+`total_candidates` reporting the true count, but the sibling top-level
+`not_found["canonical_candidates"]` (`resolve_repo.py`) assigned the raw
+`decision.candidates` unbounded — so an 8-match case leaked all 8 in one list
+and 5 in the other. Fix: cap `canonical_candidates` at `MAX_CANDIDATES` too
+(imported the shared constant from `_worktree_corpus`); resolver + all other
+fields untouched, full count still visible via
+`worktree_resolution.total_candidates`. Boundary regressions
+`tests/test_v1_105_1.py` (5: exactly-5 full, 6 capped w/ total=6, 8-match
+repro, 0 well-formed/omitted, 1 unchanged; drive doc_resolve_repo with a
+monkeypatched resolver decision since the bug is response-assembly not
+resolution). Additive/1.x, NO INDEX_VERSION bump. **Report items 2-4 are
+policy decisions for Part C (fail-closed-vs-provisional on failed git
+verification; pre-1.102 legacy compat/reconciliation; complete public
+status/reason_code vocabulary) — jjg-gated, NOT shipped here.** ruff: changed
+files clean (81 pre-existing errors elsewhere, unchanged by this).
 
 ## v1.105.0 - office document ingestion via optional [office] extra
 `pip install jdocmunch-mcp[office]` (= `markitdown[pdf,docx,pptx]>=0.1.6`,

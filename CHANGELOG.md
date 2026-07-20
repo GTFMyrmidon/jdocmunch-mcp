@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.105.1] - 2026-07-20 - consistent candidate-list bound on doc_resolve_repo (#84)
+
+QA follow-up (@rknighton) on the 1.102.0 worktree-reuse work. On the
+`doc_resolve_repo` not-found worktree path, the nested
+`worktree_resolution.candidates` list correctly capped at five records with
+`total_candidates` reporting the true count, but the top-level
+`canonical_candidates` list returned every record found. Both public lists now
+share the same five-record bound; the full number found stays reported via
+`worktree_resolution.total_candidates`. One-line assembly fix in
+`tools/resolve_repo.py` (reusing the shared `MAX_CANDIDATES` constant); the
+resolver and every other response field are unchanged. Boundary regression
+coverage added at exactly five and six records, plus the eight-record
+reproduction and zero/one sanity cases (`tests/test_v1_105_1.py`, 5).
+Additive/1.x; no INDEX_VERSION bump. Items 2 through 4 of the report are
+policy decisions parked for the Part C reconciliation phase.
+
 ## [1.105.0] - 2026-07-19 - office document ingestion (.pdf/.docx/.pptx/.epub)
 
 New optional extra: `pip install jdocmunch-mcp[office]` teaches local
