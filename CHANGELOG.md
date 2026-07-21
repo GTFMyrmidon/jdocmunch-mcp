@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.112.0] - 2026-07-21 - tool-surface schema receipt in session stats (suite parity, jcodemunch-mcp v1.108.153)
+
+`get_session_stats` now carries an advisory `tool_surface` block: visible vs
+catalog tool counts (after `JDOCMUNCH_TOOL_PROFILE` + `JDOCMUNCH_DISABLED_TOOLS`
+filtering), estimated schema tokens for each, `schema_tokens_avoided` by the
+active profile, and the top-15 heaviest tool schemas. Estimated at the meter's
+bytes/4 scale over the `{name, description, inputSchema}` serialization. jDoc
+has no Counter surface, so the block carries `profile` but no `surface` key.
+Read-only, computed inline on the stats call only, nothing persisted; a probe
+failure omits the block rather than failing the call. Additive/1.x — no new
+tool, no schema change, no INDEX_VERSION bump. Tests: `tests/test_v1_112_0.py`
+(6).
+
 ## [1.111.0] - 2026-07-21 - runtime identity resource (suite parity, jcodemunch-mcp#371)
 
 New MCP resource `munch://runtime/identity` — a read-only

@@ -592,6 +592,8 @@ See `SECURITY.md` for details.
 | `JDOCMUNCH_WATCH_POLL_DELAY_MS`   | Poll interval (ms) used only when the watcher falls back to polling (e.g. under WSL); default `1000` | No |
 | `JDOCMUNCH_LAUNCH_ID`             | Opaque launch token echoed back as `launch_id` in the `munch://runtime/identity` resource (fallback: `MUNCH_LAUNCH_ID`); omitted when unset | No |
 
+`get_session_stats` also reports a `tool_surface` receipt: visible vs catalog tool counts, estimated schema tokens for each (bytes/4 scale), tokens avoided by the active tool profile, and the heaviest tool schemas. Computed inline on the stats call; nothing persisted.
+
 ---
 
 ## Runtime identity resource
