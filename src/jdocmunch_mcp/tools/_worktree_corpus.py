@@ -73,9 +73,15 @@ REASON_GRADUATION_DIVERGED = "graduation_content_diverged"
 # jdoc#85 C1-01/C1-02 — same paths but different (or unprovable) content.
 # Exact-duplicate cleanup requires BOTH the Git-verified identity gate AND
 # matching stored hashes for every retired file; a mismatch is not a duplicate.
-# Controlled supersession between certified snapshots is a deliberately
-# separate, not-yet-shipped decision — until then both indexes are kept.
 REASON_GRADUATION_CONTENT_DIFFERS = "graduation_content_differs"
+# jdoc#86 — modern verified-snapshot supersession. Fires only when BOTH
+# snapshots are certified-clean at valid commits AND git proves strict
+# ancestry; every other relationship (unordered, unproven, dirty,
+# uncertified, stale snapshot) falls back to content-differs above.
+REASON_SUPERSEDED = "superseded_by_established"
+REASON_PROVISIONAL_NEWER = "provisional_newer_than_established"
+REASON_SUPERSESSION_CONFLICT = "supersession_conflict"
+REASON_SUPERSESSION_CLEANUP_INCOMPLETE = "supersession_cleanup_incomplete"
 # Per-source_root ceiling on provisional indexes. A real corpus has one, maybe
 # a handful of worktrees; a large pile for one root is an anomaly, so creation
 # beyond the cap fails closed and loud (B3) rather than accreting silently.

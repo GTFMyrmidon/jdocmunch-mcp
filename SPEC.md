@@ -302,10 +302,49 @@ Search and retrieval tools return a `_meta` object:
 
 - **`tokens_saved`**: Tokens saved this call (raw bytes of matched docs vs response bytes, ÷ 4)
 - **`total_tokens_saved`**: Cumulative tokens saved, persisted to `~/.doc-index/_savings.json`
-- **`cost_avoided`**: Dollar value saved this call (Opus 4.6 @ $15/1M, GPT-5 @ $10/1M)
+- **`cost_avoided`**: Dollar value saved this call, valued at current model input rates (`storage/token_tracker.PRICING` is the authoritative table)
 - **`total_cost_avoided`**: Cumulative cost avoided across all sessions
 
 Present on: `search_sections`, `get_section`, `get_sections`.
+
+---
+
+## Reconciliation Status & Reason Codes
+
+The complete runtime vocabulary for corpus-identity resolution and
+provisional-index reconciliation (jdoc#80 arc; the published table required by
+#84 item 4). Every value below is drift-guarded: a test fails if the runtime
+can emit a status or reason code not listed here.
+
+**`worktree_resolution.status`** (read-time resolution, jdoc#83):
+
+| status | Meaning |
+|---|---|
+| `exact` | The requested path is an indexed corpus root. |
+| `created` | A new index was created for this corpus. |
+| `reusable` | An established index for this corpus identity exists; its handle is returned without a write. |
+| `reference_only` | An equivalent index exists but cannot be written from this location. |
+| `ambiguous` | More than one stored index matches; no write, candidates listed. |
+| `related` | Same repository lineage, different corpus location or selection. |
+| `unknown` | Identity evidence unavailable; nothing asserted. |
+| `no_match` | No stored index relates to this path. |
+
+**`reconciliation.reason_code`** (index-time quarantine, graduation, and
+supersession; jdoc#80 Parts B/C, #85, #86):
+
+| reason_code | Outcome |
+|---|---|
+| `provisional_verification_unavailable` | Git verification could not run; the index was created authority-free (provisional). |
+| `provisional_cap_exceeded` | Too many provisional indexes for one source root; creation refused. |
+| `graduated_verified` | Git lineage confirmed on a full refresh; the provisional index was promoted in place. |
+| `reconciled_to_established` | Exact duplicate proven (verified identity + per-file hash equality); the provisional was retired and the established handle returned. |
+| `graduation_ambiguous` | More than one established peer matches; kept provisional, nothing removed. |
+| `graduation_content_diverged` | The provisional holds documents the established index lacks; kept provisional, nothing removed. |
+| `graduation_content_differs` | Same paths, different or unprovable content; not a duplicate — both kept, differing files listed. |
+| `superseded_by_established` | Git proved the provisional snapshot a strict ancestor of the established one (both certified clean); the older provisional was retired. |
+| `provisional_newer_than_established` | Git proved the provisional snapshot strictly newer; the established index is never replaced automatically — both kept, explicit refresh path reported. |
+| `supersession_conflict` | The target or candidate set changed before retirement; nothing removed, retry safe. |
+| `supersession_cleanup_incomplete` | Supersession proven but retirement did not complete; the provisional remains discoverable, retry idempotent. |
 
 ---
 

@@ -129,6 +129,38 @@ def _attach_reconciliation_outcome(result, graduating, disclosure):
     return result
 
 
+def _leftover_artifacts(store, owner: str, name: str) -> list:
+    """Names of index-owned files still present after a retirement.
+
+    Visibility for jdoc#86 — a partially failed cleanup must never be silent.
+    Best-effort: an unreadable path is skipped, never raised."""
+    leftovers = []
+    try:
+        index_path = store._index_path(owner, name)
+    except Exception:
+        return leftovers
+    candidates = [
+        index_path,
+        index_path.with_name(f"{index_path.stem}.summary.json"),
+    ]
+    for suffix in (
+        ".embeddings.jsonl", ".terms.json", ".related.json",
+        ".boilerplate.json", ".duplicates.json",
+    ):
+        candidates.append(index_path.with_name(f"{name}{suffix}"))
+    try:
+        candidates.append(store._content_dir(owner, name))
+    except Exception:
+        pass
+    for p in candidates:
+        try:
+            if p.exists():
+                leftovers.append(p.name)
+        except OSError:
+            pass
+    return leftovers
+
+
 def _resolve_graduation(
     store, owner, repo_name, repo_id, folder_path, provisional_index,
     wt_evidence, call_selection, t0,
@@ -156,6 +188,17 @@ def _resolve_graduation(
         REASON_GRADUATION_AMBIGUOUS,
         REASON_GRADUATION_DIVERGED,
         REASON_GRADUATION_CONTENT_DIFFERS,
+    )
+    from ._worktree_corpus import (
+        REASON_PROVISIONAL_NEWER,
+        REASON_SUPERSEDED,
+        REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
+        REASON_SUPERSESSION_CONFLICT,
+    )
+    from ._git import (
+        ANCESTRY_ANCESTOR,
+        ANCESTRY_DESCENDANT,
+        commit_ancestry,
     )
 
     est = filter_lineage_candidates(
@@ -227,25 +270,159 @@ def _resolve_graduation(
         if not p_hashes.get(fp) or p_hashes.get(fp) != e_hashes.get(fp)
     )
     if differing:
-        return {
-            "graduate": False, "return": None,
-            "disclosure": {
-                "state": RECONCILIATION_PROVISIONAL,
-                "reason_code": REASON_GRADUATION_CONTENT_DIFFERS,
-                "established_handle": target,
-                "differing_files": differing[:20],
-                "differing_file_count": len(differing),
-                "detail": (
-                    "Git lineage was verified and an established index for this "
-                    "corpus exists, but the provisional index holds different "
-                    "content for the files listed (or content equality could not "
-                    "be proven from stored hashes). This is not an exact "
-                    "duplicate, so both indexes were kept and nothing was "
-                    "removed. Review the differing files, or refresh whichever "
-                    "index is stale and re-run."
-                ),
-            },
+        # jdoc#86: before settling for content-differs, try modern
+        # verified-snapshot supersession. Prerequisites (ALL required; any
+        # miss falls through to content-differs, never destructive):
+        # both snapshots certified-clean at valid distinct commits, and the
+        # stored provisional snapshot is still exactly what this checkout has
+        # (same HEAD, not dirty) — retiring a stale snapshot would discard
+        # the caller's newer content intent.
+        p_sha = getattr(provisional_index, "head_sha", None) or ""
+        e_sha = getattr(target_index, "head_sha", None) or ""
+        ancestry = None
+        prereqs_ok = (
+            bool(getattr(provisional_index, "sha_certified", False))
+            and not getattr(provisional_index, "source_dirty", False)
+            and bool(getattr(target_index, "sha_certified", False))
+            and not getattr(target_index, "source_dirty", False)
+            and p_sha and e_sha and p_sha != e_sha
+            and not getattr(wt_evidence, "corpus_dirty", False)
+            and (getattr(wt_evidence, "head_sha", None) or "") == p_sha
+        )
+        if prereqs_ok:
+            ancestry = commit_ancestry(Path(folder_path), p_sha, e_sha)
+
+        if ancestry == ANCESTRY_DESCENDANT:
+            # MS-01: the provisional holds the NEWER snapshot. Never retire
+            # or overwrite the established index; report the explicit
+            # completion path (MS-03) instead.
+            t_bare = target.partition("/")[2] or target
+            return {
+                "graduate": False, "return": None,
+                "disclosure": {
+                    "state": RECONCILIATION_PROVISIONAL,
+                    "reason_code": REASON_PROVISIONAL_NEWER,
+                    "established_handle": target,
+                    "provisional_sha": p_sha,
+                    "established_sha": e_sha,
+                    "relationship": "established_is_strict_ancestor_of_provisional",
+                    "differing_files": differing[:20],
+                    "differing_file_count": len(differing),
+                    "next_action": (
+                        f"Refresh the established handle from this checkout "
+                        f"(index_local with name='{t_bare}' and this path), "
+                        f"then re-run this refresh — exact deduplication will "
+                        f"then retire the provisional automatically."
+                    ),
+                    "detail": (
+                        "Git proves this provisional snapshot is strictly newer "
+                        "than the established index. The established index is "
+                        "never replaced automatically; both were kept."
+                    ),
+                },
+            }
+
+        if ancestry == ANCESTRY_ANCESTOR:
+            # MS-02: the provisional is a certified strict ancestor of the
+            # established snapshot. Final recheck (identity, candidate set,
+            # target generation) immediately before the only destructive step.
+            est2 = filter_lineage_candidates(
+                store.list_repos(), wt_evidence, allow_containment=False
+            )
+            est2 = [c for c in est2 if c.get("repo") != repo_id]
+            action2, target2 = classify_graduation(est2, call_selection)
+            fresh_target = (
+                store.load_index(t_owner, t_name)
+                if action2 == "reconcile" and target2 == target
+                else None
+            )
+            if (
+                fresh_target is None
+                or (getattr(fresh_target, "head_sha", None) or "") != e_sha
+            ):
+                return {
+                    "graduate": False, "return": None,
+                    "disclosure": {
+                        "state": RECONCILIATION_PROVISIONAL,
+                        "reason_code": REASON_SUPERSESSION_CONFLICT,
+                        "established_handle": target,
+                        "detail": (
+                            "The established target or the candidate set "
+                            "changed between classification and retirement. "
+                            "Nothing was removed; re-run to retry against the "
+                            "current state."
+                        ),
+                    },
+                }
+            try:
+                removed = store.delete_index(owner, repo_name)
+            except Exception:
+                removed = False
+            if not removed:
+                return {
+                    "graduate": False, "return": None,
+                    "disclosure": {
+                        "state": RECONCILIATION_PROVISIONAL,
+                        "reason_code": REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
+                        "established_handle": target,
+                        "detail": (
+                            "Supersession was proven but retiring the "
+                            "provisional index did not complete. It remains "
+                            "discoverable; re-run to retry (idempotent)."
+                        ),
+                    },
+                }
+            leftovers = _leftover_artifacts(store, owner, repo_name)
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            response = {
+                "success": True,
+                "repo": target,
+                "reused_established_handle": True,
+                "requested_path": str(folder_path),
+                "reconciliation": {
+                    "state": "superseded",
+                    "reason_code": REASON_SUPERSEDED,
+                    "established_handle": target,
+                    "removed_handle": f"{owner}/{repo_name}",
+                    "removed_file_count": len(p_docs),
+                    "provisional_sha": p_sha,
+                    "established_sha": e_sha,
+                    "relationship": "provisional_is_strict_ancestor_of_established",
+                    "detail": (
+                        "Git proved the provisional snapshot is a strict "
+                        "ancestor of the established index's snapshot (same "
+                        "verified corpus identity, both certified clean). The "
+                        "older provisional was retired; the established index "
+                        "is unchanged and its handle is returned."
+                    ),
+                },
+                "_meta": {"latency_ms": latency_ms},
+            }
+            if leftovers:
+                response["reconciliation"]["cleanup_incomplete"] = True
+                response["reconciliation"]["leftover_files"] = leftovers[:10]
+            return {"graduate": False, "return": response, "disclosure": None}
+
+        disclosure = {
+            "state": RECONCILIATION_PROVISIONAL,
+            "reason_code": REASON_GRADUATION_CONTENT_DIFFERS,
+            "established_handle": target,
+            "differing_files": differing[:20],
+            "differing_file_count": len(differing),
+            "detail": (
+                "Git lineage was verified and an established index for this "
+                "corpus exists, but the provisional index holds different "
+                "content for the files listed (or content equality could not "
+                "be proven from stored hashes). This is not an exact "
+                "duplicate, so both indexes were kept and nothing was "
+                "removed. Review the differing files, or refresh whichever "
+                "index is stale and re-run."
+            ),
         }
+        if ancestry is not None:
+            # Probed but unordered/unproven — say so (jdoc#86 MS-04 reporting).
+            disclosure["ancestry"] = ancestry
+        return {"graduate": False, "return": None, "disclosure": disclosure}
 
     # Exact duplicate proven (identity gate + per-file hash equality) —
     # auto-cleanup the provisional (loser only), return the established handle.

@@ -1,6 +1,35 @@
 # jdocmunch-mcp
 
-**Version:** 1.108.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.109.0 | **Tests:** `pytest tests/ -q`
+
+## v1.109.0 - modern verified-snapshot supersession (#86)
+rknighton's dedicated follow-up spec, implemented in full. New `commit_ancestry`
+(`tools/_git.py`): fail-closed tri-plus-one classification (ancestor/descendant/
+unrelated/unproven) via bounded `_git_probe` calls (`cat-file -e` existence +
+two-direction `merge-base --is-ancestor`; exit-1 = determination, UNAVAILABLE =
+unproven). `_resolve_graduation` (index_local.py): inside the `differing` branch,
+supersession prereqs = both snapshots `sha_certified` + not `source_dirty` +
+valid distinct SHAs + **currency guard** (`wt_evidence.head_sha == stored
+provisional head_sha` and checkout not dirty — retiring a stale snapshot would
+discard newer content intent; my addition on top of his 5 conditions). Outcomes:
+ANCESTOR → MS-02 retire (final recheck re-runs filter/classify + reloads target
++ compares head_sha immediately pre-delete; drift → `supersession_conflict`;
+delete fail → `supersession_cleanup_incomplete` retry-idempotent; sidecar
+leftovers → `cleanup_incomplete`+`leftover_files` via `_leftover_artifacts`);
+DESCENDANT → MS-01 keep-both `provisional_newer_than_established` + next_action
+naming the MS-03 completion (refresh established from this checkout, re-run);
+UNRELATED/UNPROVEN → content-differs + `ancestry` key. 4 new reason codes in B4
+drift guard. **SPEC.md now publishes the complete status/reason_code table**
+(#84 item 4 closed) + `test_published_vocabulary_table_is_complete` fails on any
+undocumented runtime value; also fixed SPEC's stale "$15/1M" cost_avoided line →
+points at token_tracker.PRICING. MS-01 decision (maintainer): keep-both +
+explicit refresh path, never auto-replace the established index (rknighton's
+recommendation; preserves I5). Tests `tests/test_v1_109_0.py` (11: real git
+repos + linked worktrees, byte-for-byte target verify, conflict via flaky
+filter monkeypatch counting calls, cleanup-fail retry). GOTCHA: his attached
+"current-behavior" harness intentionally asserts v1.108.0 behavior — MS-01/02/03
+now flip by design, don't run it as a gate. Suite 1716. **#87 (Part C.2 legacy
+fieldless reconcile) still OPEN — the riskiest op, not started.**
 
 ## v1.108.0 - C.1 hardening: hash-proven duplicates, complete cleanup, honest listings (#85)
 rknighton's QA on the 1.107.0 graduation shipped 4 confirmed fixes + 2 decided

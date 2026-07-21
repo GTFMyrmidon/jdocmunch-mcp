@@ -38,6 +38,52 @@ GIT_NOT_A_REPO = "not_a_repo"
 GIT_UNAVAILABLE = "unavailable"
 
 
+# Commit-relationship outcomes (jdoc#86 modern supersession). Every value is a
+# PROOF class: "unproven" is the fail-closed answer whenever git could not make
+# a determination (missing commit, unavailable binary, timeout, equal SHAs).
+ANCESTRY_ANCESTOR = "ancestor"          # a is a strict ancestor of b
+ANCESTRY_DESCENDANT = "descendant"      # b is a strict ancestor of a
+ANCESTRY_UNRELATED = "unrelated"        # both directions provably false
+ANCESTRY_UNPROVEN = "unproven"          # no determination — never destructive
+
+
+def commit_ancestry(folder_path: Path, sha_a: str, sha_b: str) -> str:
+    """Classify the Git relationship between two commits, fail-closed.
+
+    Runs in the repository containing ``folder_path``. Both SHAs must be
+    40-hex, distinct, and resolvable to commits in this repository; anything
+    short of a definitive two-directional determination returns UNPROVEN so a
+    caller can never treat uncertainty as an ordering.
+    """
+    a = (sha_a or "").strip().lower()
+    b = (sha_b or "").strip().lower()
+    hex40 = "0123456789abcdef"
+    if len(a) != 40 or len(b) != 40 or a == b:
+        return ANCESTRY_UNPROVEN
+    if any(c not in hex40 for c in a) or any(c not in hex40 for c in b):
+        return ANCESTRY_UNPROVEN
+    for sha in (a, b):
+        ok, _, kind = _git_probe(folder_path, ["cat-file", "-e", f"{sha}^{{commit}}"])
+        if not ok:
+            # NOT_A_REPO here means "commit absent" — still no proof basis.
+            return ANCESTRY_UNPROVEN
+    ok_ab, _, kind_ab = _git_probe(
+        folder_path, ["merge-base", "--is-ancestor", a, b]
+    )
+    if not ok_ab and kind_ab == GIT_UNAVAILABLE:
+        return ANCESTRY_UNPROVEN
+    if ok_ab:
+        return ANCESTRY_ANCESTOR
+    ok_ba, _, kind_ba = _git_probe(
+        folder_path, ["merge-base", "--is-ancestor", b, a]
+    )
+    if not ok_ba and kind_ba == GIT_UNAVAILABLE:
+        return ANCESTRY_UNPROVEN
+    if ok_ba:
+        return ANCESTRY_DESCENDANT
+    return ANCESTRY_UNRELATED
+
+
 def _git_probe(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
     """Like ``_git`` but classifies the failure mode.
 

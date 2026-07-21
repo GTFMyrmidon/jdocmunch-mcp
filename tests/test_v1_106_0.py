@@ -205,6 +205,9 @@ def test_part_b_vocabulary_is_documented():
         # jdoc#85 C1-02 (v1.108.0): same paths, different/unprovable content —
         # not an exact duplicate; both indexes kept, nothing removed.
         wc.REASON_GRADUATION_CONTENT_DIFFERS,
+        # jdoc#86 (v1.109.0): modern verified-snapshot supersession outcomes.
+        wc.REASON_SUPERSEDED, wc.REASON_PROVISIONAL_NEWER,
+        wc.REASON_SUPERSESSION_CONFLICT, wc.REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
     }
     # Enumerate the STATUS_* constants actually defined on the module.
     live_statuses = {

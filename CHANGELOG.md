@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.109.0] - 2026-07-21 - modern verified-snapshot supersession (#86)
+
+The dedicated modern-snapshot follow-up to the #80 identity arc. When a
+provisional and an established index represent the same verified corpus at
+different certified commits, Git ancestry now resolves them — behind proof
+gates that keep every other pair untouched.
+
+- **MS-02 — strict-ancestor provisional retires.** When the provisional's
+  snapshot is certified clean at a valid commit, still current in its
+  checkout, and Git proves it a strict ancestor of the established index's
+  certified snapshot, the older provisional is retired (loser only; the
+  established index is byte-for-byte unchanged) and the established handle
+  returned. Reason code `superseded_by_established` carries both SHAs, the
+  relationship, and `removed_handle`/`removed_file_count`. A final
+  identity/candidate/generation recheck runs immediately before the one
+  destructive step; any drift returns `supersession_conflict` with nothing
+  removed.
+- **MS-01 — descendant provisional never supersedes.** The established index
+  is never replaced, retargeted, or aliased automatically. Reason code
+  `provisional_newer_than_established` reports both SHAs and the explicit
+  completion path: refresh the established handle from this checkout, then
+  re-run — exact deduplication (v1.108.0) finishes the job (MS-03).
+- **MS-04 — every negative boundary preserved.** Equal hashes still use exact
+  dedup; diverged, unordered (`ancestry` reported), unproven, dirty,
+  uncertified, stale-snapshot, provisional-peer, and multiple-peer pairs keep
+  both indexes. A cleanup failure is visible
+  (`supersession_cleanup_incomplete`, or `cleanup_incomplete` +
+  `leftover_files` on the success disclosure) and retries idempotently.
+- **New `commit_ancestry` helper** (`tools/_git.py`): fail-closed, bounded
+  git probes; any non-determination is `unproven`, never an ordering.
+- **Published vocabulary table.** SPEC.md now carries the complete
+  runtime-matched status/reason-code table (the #84 item-4 contract), with a
+  test that fails if the runtime can emit an undocumented value.
+
+Additive/1.x: four new reason codes (drift-guarded + published), new response
+keys, no tool/schema change, no INDEX_VERSION bump. Tests:
+`tests/test_v1_109_0.py` (11, real Git repos + linked worktrees). Full suite
+1716 passed.
+
 ## [1.108.0] - 2026-07-28 - C.1 hardening: hash-proven duplicates, complete cleanup, honest listings (#85)
 
 rknighton's focused QA pass on the 1.107.0 graduation work reproduced four
