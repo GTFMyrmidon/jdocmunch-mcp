@@ -1,6 +1,18 @@
 # jdocmunch-mcp
 
-**Version:** 1.111.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.112.0 | **Tests:** `pytest tests/ -q`
+
+## v1.112.0 - tool-surface schema receipt (suite parity, jcm v1.108.153)
+`get_session_stats` gains an advisory `tool_surface` block: visible vs catalog
+tool counts (after JDOCMUNCH_TOOL_PROFILE + JDOCMUNCH_DISABLED_TOOLS
+filtering), schema tokens for each at bytes/4 over the {name, description,
+inputSchema} serialization, `schema_tokens_avoided`, `heaviest_tools` top-15,
+`estimator:"bytes/4"`. New `server.py::_tool_surface_stats()` after
+`_filter_tools`; wired in the get_session_stats dispatch branch under
+try/except (failure → block omitted, never a failed call). No `surface` key
+(the Counter is jcm-only); `profile` carried. Additive/1.x, no INDEX_VERSION
+bump. Tests `tests/test_v1_112_0.py` (6); full suite 1746. Siblings same day:
+jcm v1.108.153 + jdata v1.23.0.
 
 ## v1.111.0 - runtime identity resource (suite parity, jcodemunch-mcp#371)
 New `runtime_identity.py` module + `munch://runtime/identity` MCP RESOURCE
