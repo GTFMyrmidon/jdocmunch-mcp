@@ -161,6 +161,223 @@ def _leftover_artifacts(store, owner: str, name: str) -> list:
     return leftovers
 
 
+def _resolve_legacy_reconcile(
+    store, owner, repo_name, repo_id, folder_path,
+    wt_evidence, call_selection, mode, t0,
+):
+    """jdoc#87 Part C.2 — prove (and under ``apply``, retire) a genuine
+    pre-1.102 fieldless legacy index against its modern peer. Runs AFTER the
+    ordinary full refresh has backfilled identity/certification on the
+    selected handle. Returns ``(block, replacement)``:
+
+      ``block``       -> attach as ``result["legacy_reconciliation"]``.
+      ``replacement`` -> a complete response to return instead (the apply
+                         retirement path, which returns the peer's handle).
+
+    Safety contract (maintainer decisions on #87): the explicitly selected
+    legacy handle is the ONLY possible loser; retirement requires exactly one
+    non-provisional modern peer with matching lineage + relative root +
+    durable selection, the same clean certified SHA on both sides, and every
+    selected-handle path present in the peer with the same stored hash
+    (missing = unproven, fail closed). ``report`` changes neither handle;
+    ``apply`` repeats proof immediately before the only destructive step and
+    never touches the peer. Basename disclosure is not authority (LC2-02)."""
+    from ._worktree_corpus import (
+        classify_graduation,
+        filter_lineage_candidates,
+        REASON_LEGACY_AMBIGUOUS,
+        REASON_LEGACY_CLEANUP_INCOMPLETE,
+        REASON_LEGACY_CONFLICT,
+        REASON_LEGACY_CONTENT_DIFFERS,
+        REASON_LEGACY_NO_MODERN_PEER,
+        REASON_LEGACY_READY,
+        REASON_LEGACY_RECONCILED,
+        REASON_LEGACY_UNCERTIFIED,
+    )
+
+    def _kept(reason_code, detail, **extra):
+        block = {"state": "kept", "reason_code": reason_code, "detail": detail}
+        block.update(extra)
+        return block, None
+
+    sel_index = store.load_index(owner, repo_name)
+    if sel_index is None:
+        return _kept(
+            REASON_LEGACY_CONFLICT,
+            "The selected handle vanished between refresh and proof. "
+            "Nothing was removed; re-run to retry.",
+        )
+
+    peers = filter_lineage_candidates(
+        store.list_repos(), wt_evidence, allow_containment=False
+    )
+    peers = [c for c in peers if c.get("repo") != repo_id]
+    action, target = classify_graduation(peers, call_selection)
+    if action == "graduate":
+        return _kept(
+            REASON_LEGACY_NO_MODERN_PEER,
+            "No non-provisional modern peer matches this corpus identity "
+            "(lineage + relative root + durable selection). The legacy index "
+            "was refreshed and kept; nothing was removed. Re-run WITHOUT "
+            "legacy_reconcile to backfill it into the identity system — it "
+            "is the only index for this corpus.",
+        )
+    if action == "ambiguous":
+        return _kept(
+            REASON_LEGACY_AMBIGUOUS,
+            "More than one non-provisional modern peer matches this corpus "
+            "identity. Retirement requires exactly one; nothing was removed. "
+            "Resolve the peer ambiguity first (delete_index the duplicates "
+            "or reconcile them), then re-run.",
+            peer_count=len(peers),
+        )
+
+    t_owner, _, t_name = target.partition("/")
+    peer_index = store.load_index(t_owner, t_name)
+    if peer_index is None:
+        return _kept(
+            REASON_LEGACY_CONFLICT,
+            "The modern peer vanished between classification and proof. "
+            "Nothing was removed; re-run to retry.",
+            established_handle=target,
+        )
+
+    s_sha = getattr(sel_index, "head_sha", None) or ""
+    p_sha = getattr(peer_index, "head_sha", None) or ""
+    certified = (
+        bool(getattr(sel_index, "sha_certified", False))
+        and not getattr(sel_index, "source_dirty", False)
+        and bool(getattr(peer_index, "sha_certified", False))
+        and not getattr(peer_index, "source_dirty", False)
+        and s_sha and s_sha == p_sha
+    )
+    if not certified:
+        return _kept(
+            REASON_LEGACY_UNCERTIFIED,
+            "Retirement requires BOTH indexes to represent the same clean "
+            "certified commit. One side is dirty, uncertified, or at a "
+            "different commit; nothing was removed. Commit/refresh both "
+            "sides to the same clean state and re-run.",
+            established_handle=target,
+            selected_sha=s_sha or None,
+            established_sha=p_sha or None,
+        )
+
+    s_docs = set(getattr(sel_index, "doc_paths", []) or [])
+    s_hashes = getattr(sel_index, "file_hashes", {}) or {}
+    p_hashes = getattr(peer_index, "file_hashes", {}) or {}
+    differing = sorted(
+        fp for fp in s_docs
+        if not s_hashes.get(fp) or s_hashes.get(fp) != p_hashes.get(fp)
+    )
+    if differing:
+        return _kept(
+            REASON_LEGACY_CONTENT_DIFFERS,
+            "Every selected-handle path must exist in the modern peer with "
+            "the same stored hash; the listed files differ (or equality "
+            "could not be proven from stored hashes). Not a duplicate — "
+            "both indexes were kept, nothing removed.",
+            established_handle=target,
+            differing_files=differing[:20],
+            differing_file_count=len(differing),
+        )
+
+    if mode == "report":
+        return {
+            "state": "report",
+            "reason_code": REASON_LEGACY_READY,
+            "established_handle": target,
+            "would_remove_handle": repo_id,
+            "covered_file_count": len(s_docs),
+            "certified_sha": s_sha,
+            "detail": (
+                "Proof passed: exactly one modern peer, same clean certified "
+                "commit, full path-and-hash coverage. Nothing was changed. "
+                "Re-run with legacy_reconcile='apply' to retire this legacy "
+                "handle and keep the peer."
+            ),
+        }, None
+
+    # apply: repeat proof immediately before the only destructive step
+    # (jdoc#86 final-recheck primitive — target identity, candidate set, and
+    # peer generation must all be unchanged).
+    peers2 = filter_lineage_candidates(
+        store.list_repos(), wt_evidence, allow_containment=False
+    )
+    peers2 = [c for c in peers2 if c.get("repo") != repo_id]
+    action2, target2 = classify_graduation(peers2, call_selection)
+    fresh_peer = (
+        store.load_index(t_owner, t_name)
+        if action2 == "reconcile" and target2 == target
+        else None
+    )
+    if (
+        fresh_peer is None
+        or (getattr(fresh_peer, "head_sha", None) or "") != p_sha
+    ):
+        return _kept(
+            REASON_LEGACY_CONFLICT,
+            "The modern peer or the candidate set changed between proof and "
+            "retirement. Nothing was removed; re-run to retry against the "
+            "current state.",
+            established_handle=target,
+        )
+    try:
+        removed = store.delete_index(owner, repo_name)
+    except Exception:
+        removed = False
+    if not removed:
+        return _kept(
+            REASON_LEGACY_CLEANUP_INCOMPLETE,
+            "Retirement was proven but removing the legacy index did not "
+            "complete. It remains discoverable; re-run with "
+            "legacy_reconcile='apply' to retry (idempotent).",
+            established_handle=target,
+        )
+    leftovers = _leftover_artifacts(store, owner, repo_name)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    replacement = {
+        "success": True,
+        "repo": target,
+        "reused_established_handle": True,
+        "requested_path": str(folder_path),
+        "legacy_reconciliation": {
+            "state": "reconciled",
+            "reason_code": REASON_LEGACY_RECONCILED,
+            "established_handle": target,
+            "removed_handle": repo_id,
+            "removed_file_count": len(s_docs),
+            "certified_sha": s_sha,
+            "detail": (
+                "The selected legacy index was proven an exact duplicate of "
+                "its modern peer (verified identity, same clean certified "
+                "commit, full path-and-hash coverage) and retired. The peer "
+                "is unchanged and its handle is returned."
+            ),
+        },
+        "_meta": {"latency_ms": latency_ms},
+    }
+    if leftovers:
+        replacement["legacy_reconciliation"]["cleanup_incomplete"] = True
+        replacement["legacy_reconciliation"]["leftover_files"] = leftovers[:10]
+    return None, replacement
+
+
+def _finish_legacy_reconcile(result, legacy_ctx):
+    """Run the C.2 resolver at a successful-refresh return site (jdoc#87).
+
+    ``legacy_ctx`` is None on ordinary calls (byte-identical behavior) or the
+    kwargs dict for ``_resolve_legacy_reconcile``. Attaches the outcome block,
+    or returns the apply-retirement replacement response."""
+    if not legacy_ctx:
+        return result
+    block, replacement = _resolve_legacy_reconcile(**legacy_ctx)
+    if replacement is not None:
+        return replacement
+    result["legacy_reconciliation"] = block
+    return result
+
+
 def _resolve_graduation(
     store, owner, repo_name, repo_id, folder_path, provisional_index,
     wt_evidence, call_selection, t0,
@@ -723,6 +940,7 @@ def index_local(
     autotune: bool = False,
     paths: Optional[list] = None,
     worktree_mode: str = "reuse_equivalent",
+    legacy_reconcile: Optional[str] = None,
 ) -> dict:
     """Index a local folder containing documentation files.
 
@@ -767,6 +985,19 @@ def index_local(
             ambiguous, or evidence-incomplete outcomes return a bounded
             decision with no write. ``"branch_local"`` opts out: intentionally
             create or refresh an exact-path index for THIS worktree.
+        legacy_reconcile: jdoc#87 (Part C.2). ``"report"`` proves whether the
+            explicitly named pre-1.102 fieldless legacy index is an exact
+            duplicate of its single modern peer (same verified identity, same
+            clean certified commit, full path-and-hash coverage) WITHOUT
+            changing anything; ``"apply"`` repeats the proof immediately
+            before retiring the selected legacy handle (the only possible
+            loser — the peer is never touched). Requires an explicit
+            ``name=`` selecting a handle that is fieldless at call start, a
+            full refresh (no ``paths``), default ``worktree_mode``, and
+            confirmed Git lineage; anything else fails closed with
+            ``legacy_reconcile_not_applicable`` and no write. Omitted
+            (default): an ordinary refresh stays backfill-only and never
+            retires anything.
 
     Returns:
         Dict with indexing results.
@@ -997,6 +1228,99 @@ def index_local(
                 "repo_relative_root": wt_evidence.relative_root,
                 "corpus_identity_version": CORPUS_IDENTITY_VERSION,
             }
+
+        # jdoc#87 Part C.2 — explicit-intent legacy reconciliation precheck.
+        # Every precondition failure is a fail-closed error BEFORE any write:
+        # the caller asked for a destructive-capable operation, so a call that
+        # cannot be proven eligible must not silently degrade into an ordinary
+        # refresh. Omitted intent keeps refresh backfill-only (LC2-01).
+        legacy_ctx: Optional[dict] = None
+        if legacy_reconcile is not None:
+            from ._worktree_corpus import REASON_LEGACY_NOT_APPLICABLE
+
+            mode_str = str(legacy_reconcile).strip().lower()
+            if mode_str not in ("report", "apply"):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Invalid legacy_reconcile: {legacy_reconcile!r}. "
+                        "Use 'report' (prove without changing anything) or "
+                        "'apply' (prove, then retire the selected legacy "
+                        "handle)."
+                    ),
+                }
+
+            def _c2_refused(detail: str) -> dict:
+                return {
+                    "success": False,
+                    "error": REASON_LEGACY_NOT_APPLICABLE,
+                    "requested_handle": repo_id,
+                    "detail": detail,
+                    "hint": (
+                        "Nothing was written. Re-run without "
+                        "legacy_reconcile for an ordinary refresh."
+                    ),
+                }
+
+            if not explicit_name:
+                return _c2_refused(
+                    "legacy_reconcile requires an explicit name= selecting "
+                    "the legacy handle — the selected handle is the only "
+                    "possible loser, so it is never derived or guessed."
+                )
+            if existing_index is None:
+                return _c2_refused(
+                    f"No index named '{repo_id}' exists. C.2 applies only "
+                    "to an existing pre-1.102 fieldless legacy index."
+                )
+            if paths:
+                return _c2_refused(
+                    "legacy_reconcile requires a FULL refresh; a paths= "
+                    "subset cannot certify the whole corpus."
+                )
+            if branch_local:
+                return _c2_refused(
+                    "legacy_reconcile requires the default worktree_mode; "
+                    "branch_local opts out of lineage-based identity, which "
+                    "the proof depends on."
+                )
+            if (
+                getattr(existing_index, "reconciliation_state", "") or ""
+            ) == RECONCILIATION_PROVISIONAL:
+                return _c2_refused(
+                    "The selected handle is provisional, not a pre-1.102 "
+                    "legacy index. Provisionals reconcile through the "
+                    "graduation path (Part C.1), not legacy_reconcile."
+                )
+            if (
+                int(getattr(existing_index, "corpus_identity_version", 0) or 0) != 0
+                or (getattr(existing_index, "worktree_lineage_key", "") or "")
+            ):
+                return _c2_refused(
+                    "The selected handle already carries corpus-identity "
+                    "fields; C.2 applies only to handles proven fieldless "
+                    "at call start. Modern duplicates reconcile through the "
+                    "supersession path automatically."
+                )
+            if wt_evidence.lineage_state != "confirmed":
+                return _c2_refused(
+                    "Git lineage could not be confirmed for this path, and "
+                    "retirement requires hard Git-verified proof. Re-run "
+                    "once Git evidence is available."
+                )
+            legacy_ctx = {
+                "store": store, "owner": owner, "repo_name": repo_name,
+                "repo_id": repo_id, "folder_path": folder_path,
+                "wt_evidence": wt_evidence, "call_selection": call_selection,
+                "mode": mode_str, "t0": t0,
+            }
+            # Under C.2 intent the selected handle stays FIELDLESS: backfill
+            # is the ordinary refresh's job (LC2-01), and writing identity
+            # fields here would make a retry after a mid-flight failure
+            # (cleanup_incomplete, conflict) flunk the fieldless-at-call-start
+            # gate. Certification (head_sha/sha_certified) still refreshes —
+            # the proof needs it; identity fields are not certification.
+            lineage_kwargs = {}
 
         def _wt_decision() -> "object":
             candidates = filter_lineage_candidates(
@@ -1344,7 +1668,7 @@ def index_local(
                     nochange_result["indexed"] = len(doc_files)
                 else:
                     nochange_result["truncated"] = False
-                return nochange_result
+                return _finish_legacy_reconcile(nochange_result, legacy_ctx)
 
             files_to_parse = set(changed) | set(new)
             new_sections = []
@@ -1415,7 +1739,7 @@ def index_local(
                 result["truncated"] = False
             if warnings:
                 result["warnings"] = warnings
-            return result
+            return _finish_legacy_reconcile(result, legacy_ctx)
 
         # --- Full index path ---
         all_sections = []
@@ -1631,7 +1955,7 @@ def index_local(
         if warnings:
             result["warnings"] = warnings
 
-        return result
+        return _finish_legacy_reconcile(result, legacy_ctx)
 
     except Exception as e:
         if claim_token and claim_store is not None:

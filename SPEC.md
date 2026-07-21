@@ -346,6 +346,23 @@ supersession; jdoc#80 Parts B/C, #85, #86):
 | `supersession_conflict` | The target or candidate set changed before retirement; nothing removed, retry safe. |
 | `supersession_cleanup_incomplete` | Supersession proven but retirement did not complete; the provisional remains discoverable, retry idempotent. |
 
+**`legacy_reconciliation.reason_code`** (Part C.2 — explicit-intent
+reconciliation of genuine pre-1.102 fieldless legacy indexes; jdoc#87.
+Fires only under `index_local(legacy_reconcile="report"|"apply")`; an
+ordinary refresh stays backfill-only and never retires anything):
+
+| reason_code | Outcome |
+|---|---|
+| `legacy_reconcile_not_applicable` | A precondition failed (no explicit name, handle missing or not fieldless at call start, subset refresh, branch_local, provisional target, or unconfirmed Git lineage); refused fail-closed, nothing written. |
+| `legacy_reconcile_no_modern_peer` | No non-provisional modern peer matches the verified corpus identity; the legacy index was refreshed and kept (an ordinary refresh backfills it), nothing removed. |
+| `legacy_reconcile_ambiguous` | More than one modern peer matches; retirement requires exactly one, nothing removed. |
+| `legacy_reconcile_uncertified` | The two indexes are not both clean and certified at the same commit; nothing removed. |
+| `legacy_reconcile_content_differs` | A selected-handle path is missing from the peer or its stored hash differs (or is unprovable); not a duplicate — both kept, differing files listed. |
+| `legacy_reconcile_ready` | Report mode: proof passed (single peer, same clean certified commit, full path-and-hash coverage); nothing was changed. |
+| `legacy_reconciled_to_established` | Apply mode: proof repeated immediately before retirement; the selected legacy handle was retired, the peer is unchanged and its handle returned. |
+| `legacy_reconcile_conflict` | The peer or candidate set changed between proof and retirement; nothing removed, retry safe. |
+| `legacy_reconcile_cleanup_incomplete` | Retirement proven but removal did not complete; the legacy index remains discoverable, retry idempotent. |
+
 ---
 
 ## Error Handling

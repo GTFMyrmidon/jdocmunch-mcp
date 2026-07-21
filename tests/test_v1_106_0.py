@@ -208,6 +208,12 @@ def test_part_b_vocabulary_is_documented():
         # jdoc#86 (v1.109.0): modern verified-snapshot supersession outcomes.
         wc.REASON_SUPERSEDED, wc.REASON_PROVISIONAL_NEWER,
         wc.REASON_SUPERSESSION_CONFLICT, wc.REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
+        # jdoc#87 (v1.110.0): Part C.2 explicit-intent legacy reconciliation.
+        wc.REASON_LEGACY_NOT_APPLICABLE, wc.REASON_LEGACY_NO_MODERN_PEER,
+        wc.REASON_LEGACY_AMBIGUOUS, wc.REASON_LEGACY_UNCERTIFIED,
+        wc.REASON_LEGACY_CONTENT_DIFFERS, wc.REASON_LEGACY_READY,
+        wc.REASON_LEGACY_RECONCILED, wc.REASON_LEGACY_CONFLICT,
+        wc.REASON_LEGACY_CLEANUP_INCOMPLETE,
     }
     # Enumerate the STATUS_* constants actually defined on the module.
     live_statuses = {

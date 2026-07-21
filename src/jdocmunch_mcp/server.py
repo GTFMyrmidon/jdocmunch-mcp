@@ -317,6 +317,11 @@ def _all_tools() -> list[Tool]:
                         "enum": ["reuse_equivalent", "branch_local"],
                         "description": "Linked-worktree behavior (jdoc#83). 'reuse_equivalent' (default) reuses a proven-fresh established index from another linked worktree instead of creating a duplicate; uncertain outcomes return a bounded decision with no write. 'branch_local' intentionally creates/refreshes an exact-path index for this worktree.",
                         "default": "reuse_equivalent"
+                    },
+                    "legacy_reconcile": {
+                        "type": "string",
+                        "enum": ["report", "apply"],
+                        "description": "Part C.2 legacy reconciliation (jdoc#87). Requires an explicit name= selecting a pre-1.102 fieldless legacy index and a full refresh. 'report' proves whether it is an exact duplicate of its single modern peer (same verified identity, same clean certified commit, full path-and-hash coverage) without changing anything; 'apply' repeats the proof and retires the selected legacy handle — the only possible loser; the peer is never touched. Omitted: ordinary refresh, backfill-only, never retires."
                     }
                 },
                 "required": ["path"]
@@ -1823,6 +1828,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 autotune=arguments.get("autotune", False),
                 paths=arguments.get("paths"),
                 worktree_mode=arguments.get("worktree_mode", "reuse_equivalent"),
+                legacy_reconcile=arguments.get("legacy_reconcile"),
             )
         elif name in ("doc_index_repo", "index_repo"):  # index_repo kept for backward compat
             result = await index_repo(

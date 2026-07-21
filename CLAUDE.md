@@ -1,6 +1,42 @@
 # jdocmunch-mcp
 
-**Version:** 1.109.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.110.0 | **Tests:** `pytest tests/ -q`
+
+## v1.110.0 - Part C.2: explicit-intent legacy reconciliation (#87)
+rknighton's final spec of the #80 arc, implemented under jjg's five decisions
+(consent = report/apply param on index_local; selected-handle-only loser;
+exactly-one-peer with zero=backfill / several=ambiguity; proof = same clean
+certified SHA + full path-and-hash coverage; reuse the #86 retirement
+primitive). New `legacy_reconcile` param: precheck (in index_local, after
+git-evidence collection) fail-closes with `legacy_reconcile_not_applicable`
+unless explicit name + existing handle FIELDLESS at call start (identity
+version 0, no lineage key, not provisional) + full refresh + default
+worktree_mode + confirmed lineage. Post-refresh `_resolve_legacy_reconcile`
+(module-level, index_local.py) wired via `_finish_legacy_reconcile` at all 3
+success return sites (no-change / incremental / full): peers via
+filter_lineage_candidates + classify_graduation (provisionals never vouch,
+basename disclosure never in the proof set), certification gate (both
+sha_certified + clean + same head_sha), hash gate (every sel path in peer
+with equal stored hash; missing=unproven). report → `legacy_reconcile_ready`
+block, no mutation; apply → #86-style final recheck
+(`legacy_reconcile_conflict` on drift) → delete_index (loser only; fail →
+`legacy_reconcile_cleanup_incomplete`, idempotent) → peer handle returned +
+removed_handle/removed_file_count + leftover sidecar disclosure. **KEY
+DESIGN (found by the retry test): under C.2 intent the selected handle stays
+FIELDLESS — `lineage_kwargs` suppressed — else the first attempt's backfill
+makes any retry after cleanup-fail/conflict flunk the fieldless gate.
+Backfill stays the ordinary refresh's job (LC2-01).** 9 new REASON_LEGACY_*
+codes in _worktree_corpus.py + B4 drift guard (test_v1_106_0) + SPEC.md
+table (new `legacy_reconciliation.reason_code` section — the
+published-vocabulary guard in test_v1_109_0 checks SPEC contains every
+constant). Tests `tests/test_v1_110_0.py` (12: fieldless planting via
+monkeypatched `collect_git_evidence` returning default GitEvidence; twin =
+`git worktree add --detach` at the same commit for same-SHA certified
+pairs; content-differs via monolith JSON hash tamper; multiple-peers via
+`worktree_mode="branch_local"` second modern index — the worktree gate
+otherwise refuses the duplicate; flaky-filter conflict + delete_index
+monkeypatch cleanup-fail rows). Additive/1.x, NO INDEX_VERSION bump.
+**#80 arc COMPLETE (A, B, C.1, supersession, C.2).**
 
 ## v1.109.0 - modern verified-snapshot supersession (#86)
 rknighton's dedicated follow-up spec, implemented in full. New `commit_ancestry`

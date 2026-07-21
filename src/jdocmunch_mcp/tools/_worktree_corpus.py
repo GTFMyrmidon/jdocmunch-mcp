@@ -82,6 +82,23 @@ REASON_SUPERSEDED = "superseded_by_established"
 REASON_PROVISIONAL_NEWER = "provisional_newer_than_established"
 REASON_SUPERSESSION_CONFLICT = "supersession_conflict"
 REASON_SUPERSESSION_CLEANUP_INCOMPLETE = "supersession_cleanup_incomplete"
+# jdoc#87 — Part C.2: reconciliation of genuine pre-1.102 fieldless legacy
+# indexes. Fires ONLY under explicit `legacy_reconcile="report"|"apply"`
+# intent; an ordinary refresh stays backfill-only. The explicitly selected
+# legacy handle is the only possible loser; retirement requires exactly one
+# non-provisional modern peer with matching verified identity (lineage +
+# relative root + durable selection) AND the same clean certified SHA AND
+# full path-and-hash coverage (a missing hash is unproven, never assumed).
+# Basename disclosure (`legacy_index_present`) never enters the proof set.
+REASON_LEGACY_NOT_APPLICABLE = "legacy_reconcile_not_applicable"
+REASON_LEGACY_NO_MODERN_PEER = "legacy_reconcile_no_modern_peer"
+REASON_LEGACY_AMBIGUOUS = "legacy_reconcile_ambiguous"
+REASON_LEGACY_UNCERTIFIED = "legacy_reconcile_uncertified"
+REASON_LEGACY_CONTENT_DIFFERS = "legacy_reconcile_content_differs"
+REASON_LEGACY_READY = "legacy_reconcile_ready"
+REASON_LEGACY_RECONCILED = "legacy_reconciled_to_established"
+REASON_LEGACY_CONFLICT = "legacy_reconcile_conflict"
+REASON_LEGACY_CLEANUP_INCOMPLETE = "legacy_reconcile_cleanup_incomplete"
 # Per-source_root ceiling on provisional indexes. A real corpus has one, maybe
 # a handful of worktrees; a large pile for one root is an anomaly, so creation
 # beyond the cap fails closed and loud (B3) rather than accreting silently.

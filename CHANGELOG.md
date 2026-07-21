@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.110.0] - 2026-07-21 - Part C.2: explicit-intent legacy reconciliation (#87)
+
+The final build of the #80 identity arc: proving a genuine pre-1.102
+fieldless legacy index redundant against its modern peer, and retiring it —
+only ever under explicit caller intent, behind the same hard Git proof gates
+as the modern supersession path.
+
+- New `index_local(legacy_reconcile="report"|"apply")`. `report` proves
+  readiness without changing anything; `apply` repeats the proof immediately
+  before the only destructive step. Omitted (the default), an ordinary
+  refresh stays exactly what it was: backfill-only, never retires.
+- The explicitly selected legacy handle is the only possible loser. The
+  operation requires an explicit `name=`, a handle that is fieldless at call
+  start, a full refresh, default `worktree_mode`, and confirmed Git lineage;
+  any miss refuses fail-closed (`legacy_reconcile_not_applicable`) with no
+  write.
+- Retirement proof: exactly one non-provisional modern peer matching the
+  verified corpus identity (lineage + relative root + durable selection),
+  both indexes clean and certified at the same commit, and every
+  selected-handle path present in the peer with the same stored hash — a
+  missing hash is unproven, never assumed. Zero peers reports
+  `legacy_reconcile_no_modern_peer`; several report
+  `legacy_reconcile_ambiguous`; nothing is ever removed on a failed proof.
+- Basename disclosure (`legacy_index_present`) never enters the proof set
+  (LC2-02): identity is matched on verified lineage evidence only.
+- `apply` reuses the #86 retirement primitive: final recheck immediately
+  before deletion (`legacy_reconcile_conflict` on drift, nothing removed),
+  loud + idempotent cleanup failure (`legacy_reconcile_cleanup_incomplete`),
+  leftover sidecars disclosed. The peer is never touched; the success
+  response returns its handle with `removed_handle`/`removed_file_count`.
+- Under C.2 intent the selected handle deliberately stays fieldless (no
+  identity backfill), so a retry after any mid-flight failure still passes
+  the fieldless-at-call-start gate. Backfill remains the ordinary refresh's
+  job.
+- Nine new reason codes, all additive, in the B4 drift guard and the
+  published SPEC.md vocabulary table (the #84 contract).
+- Tests: `tests/test_v1_110_0.py` (12; real Git repos + linked worktrees,
+  peer verified byte-for-byte across apply, drift + cleanup-failure rows).
+
+Additive/1.x: new optional kwarg + new response keys only; calls without
+`legacy_reconcile` are byte-identical. No INDEX_VERSION bump.
+
 ## [1.109.0] - 2026-07-21 - modern verified-snapshot supersession (#86)
 
 The dedicated modern-snapshot follow-up to the #80 identity arc. When a
