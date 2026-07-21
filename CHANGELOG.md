@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.111.0] - 2026-07-21 - runtime identity resource (suite parity, jcodemunch-mcp#371)
+
+New MCP resource `munch://runtime/identity` — a read-only
+`munch.runtime.identity/v1` JSON document giving multi-agent harnesses process
+provenance for this server instance: `schema`, `product`, `version`,
+`transport`, `pid`, `process_start {value, source}`, `instance_id`, and an
+optional `launch_id` echo. `process_start` is OS-derived when obtainable
+(Windows `GetProcessTimes`; Linux `/proc/self/stat` starttime + btime) with
+`source: "os"`; when the OS probe is unavailable the value is the module's own
+first-read clock, disclosed as `source: "self_recorded"` — never presented as
+OS evidence. `instance_id` is a uuid4 minted once per process lifetime, so a
+restart (even with a reused PID) yields a new identity. `launch_id` echoes
+`JDOCMUNCH_LAUNCH_ID` (fallback `MUNCH_LAUNCH_ID`) and is omitted when unset.
+Deliberately excluded: command lines, env, cwd, hostnames, corpus paths, task
+data. Delivered as a resource, not a tool — no tool-count or schema change and
+zero cost when unused; on-demand read only, no background or network behavior.
+Additive/1.x. New module `runtime_identity.py`; tests `tests/test_v1_111_0.py`
+(11). Same contract ships in jcodemunch-mcp v1.108.152 and jdatamunch-mcp
+v1.22.0.
+
 ## [1.110.0] - 2026-07-21 - Part C.2: explicit-intent legacy reconciliation (#87)
 
 The final build of the #80 identity arc: proving a genuine pre-1.102

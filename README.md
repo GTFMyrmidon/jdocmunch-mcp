@@ -590,6 +590,13 @@ See `SECURITY.md` for details.
 | `JDOCMUNCH_SHARE_SAVINGS`         | Set to `0` to disable anonymous community token savings reporting | No       |
 | `JDOCMUNCH_SESSION_TOKEN_BUDGET`  | Advisory session budget over response tokens served. When set, responses carry `_meta.budget` at >=80% (`approaching`) / >=100% (`over`) and `get_session_stats` reports the block. Never blocks or truncates. Unset/`0` = off | No |
 | `JDOCMUNCH_WATCH_POLL_DELAY_MS`   | Poll interval (ms) used only when the watcher falls back to polling (e.g. under WSL); default `1000` | No |
+| `JDOCMUNCH_LAUNCH_ID`             | Opaque launch token echoed back as `launch_id` in the `munch://runtime/identity` resource (fallback: `MUNCH_LAUNCH_ID`); omitted when unset | No |
+
+---
+
+## Runtime identity resource
+
+The server exposes one MCP resource, `munch://runtime/identity` — a read-only `munch.runtime.identity/v1` JSON document identifying this exact server process (`product`, `version`, `transport`, `pid`, OS-derived `process_start`, per-process-lifetime `instance_id`, optional `launch_id` echo). Multi-agent harnesses use it to tell command-line-identical servers apart and detect restarts. Computed on demand with no disk reads, writes, or network; when the OS process-start probe is unavailable the timestamp is disclosed as `source: "self_recorded"`, never fabricated. Command lines, env, cwd, hostnames, and corpus paths are deliberately excluded. Same contract in jcodemunch-mcp and jdatamunch-mcp.
 
 ---
 

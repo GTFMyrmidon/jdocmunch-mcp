@@ -281,6 +281,18 @@ To disable, set `JDOCMUNCH_SHARE_SAVINGS=0` in your MCP server env:
 
 ---
 
+## Runtime Identity Resource
+
+The server publishes one MCP **resource** (not a tool): `munch://runtime/identity`, a read-only `munch.runtime.identity/v1` JSON document identifying this exact server process. Multi-agent harnesses use it to tell command-line-identical servers apart, detect restarts, and refuse cleanup when identity doesn't match.
+
+Fields: `schema`, `product`, `version`, `transport`, `pid`, `process_start {value, source}`, `instance_id` (uuid4 minted once per process lifetime — a restart always changes it, even if the PID is reused), and optional `launch_id`.
+
+`process_start.source` is `"os"` when the timestamp comes from the operating system (Windows `GetProcessTimes`, Linux `/proc` starttime); where that's unobtainable it falls back to the server's own first-read clock and says so with `"self_recorded"` — the value is never fabricated as OS evidence.
+
+Set `JDOCMUNCH_LAUNCH_ID` (or the suite-generic `MUNCH_LAUNCH_ID`) in the server's environment to have an opaque launch token echoed back as `launch_id`; unset means the field is omitted. The resource is computed on demand, reads nothing from disk, and writes nothing. Command lines, env, cwd, hostnames, and corpus paths are deliberately excluded. The same contract ships in jcodemunch-mcp and jdatamunch-mcp.
+
+---
+
 ## Troubleshooting
 
 **"Repo not found"**

@@ -35,5 +35,6 @@ Thumbs.db
 ~/.local/share/jdocmunch/
 
 # Local tooling byproducts (not this repo's source/toolchain)
-uv.lock          # repo builds with hatchling, not uv
+# repo builds with hatchling, not uv
+uv.lock
 AGENTS.md        # generic policy stamped by `jcodemunch-mcp init`; CLAUDE.md is the repo's authority

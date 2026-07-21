@@ -1,6 +1,25 @@
 # jdocmunch-mcp
 
-**Version:** 1.110.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.111.0 | **Tests:** `pytest tests/ -q`
+
+## v1.111.0 - runtime identity resource (suite parity, jcodemunch-mcp#371)
+New `runtime_identity.py` module + `munch://runtime/identity` MCP RESOURCE
+(`munch.runtime.identity/v1`, @rknighton's spec): schema/product/version/
+transport (always "stdio" here)/pid/`process_start {value, source}`/
+`instance_id` (uuid4 once per process lifetime)/optional `launch_id` echo of
+`JDOCMUNCH_LAUNCH_ID` (fallback `MUNCH_LAUNCH_ID`, omitted when unset).
+`process_start`: Windows GetProcessTimes via ctypes (argtypes/restype set —
+the pseudo-handle truncates on 64-bit otherwise and the call silently fails),
+Linux /proc/self/stat starttime + /proc/stat btime, else first-read clock
+DISCLOSED as `source:"self_recorded"` — never fabricated as OS evidence.
+Wired at the previously-empty `list_resources` + new `read_resource` handler
+(`ReadResourceContents` from `mcp.server.lowlevel.helper_types`). Resource not
+tool — no tool-count/schema change; on-demand only, no bg/network (README
+disclosure unaffected). Deliberately excluded: command lines/env/cwd/
+hostnames/corpus paths. Tests `tests/test_v1_111_0.py` (11). README env row +
+"Runtime identity resource" section; USER_GUIDE section. Siblings same day:
+jcm v1.108.152 + jdata v1.22.0. CHANGELOG hand-appended (wording kept clear of
+replay fixture query phrases).
 
 ## v1.110.0 - Part C.2: explicit-intent legacy reconciliation (#87)
 rknighton's final spec of the #80 arc, implemented under jjg's five decisions
