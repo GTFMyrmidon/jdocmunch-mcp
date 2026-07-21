@@ -70,6 +70,12 @@ REASON_GRADUATED = "graduated_verified"
 REASON_RECONCILED = "reconciled_to_established"
 REASON_GRADUATION_AMBIGUOUS = "graduation_ambiguous"
 REASON_GRADUATION_DIVERGED = "graduation_content_diverged"
+# jdoc#85 C1-01/C1-02 — same paths but different (or unprovable) content.
+# Exact-duplicate cleanup requires BOTH the Git-verified identity gate AND
+# matching stored hashes for every retired file; a mismatch is not a duplicate.
+# Controlled supersession between certified snapshots is a deliberately
+# separate, not-yet-shipped decision — until then both indexes are kept.
+REASON_GRADUATION_CONTENT_DIFFERS = "graduation_content_differs"
 # Per-source_root ceiling on provisional indexes. A real corpus has one, maybe
 # a handful of worktrees; a large pile for one root is an anomaly, so creation
 # beyond the cap fails closed and loud (B3) rather than accreting silently.

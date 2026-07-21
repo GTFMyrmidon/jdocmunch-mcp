@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.108.0] - 2026-07-28 - C.1 hardening: hash-proven duplicates, complete cleanup, honest listings (#85)
+
+rknighton's focused QA pass on the 1.107.0 graduation work reproduced four
+gaps; all closed, his harness passing 4/4.
+
+- **C1-01/C1-02 — exact-duplicate cleanup now requires content proof.** The
+  reconcile auto-cleanup gated only on Git-verified identity plus path
+  coverage, so a provisional index holding DIFFERENT content for the same
+  paths could be removed as though it were a duplicate. A second destructive-
+  safety gate now requires every retired file to exist in the surviving index
+  with the same stored hash; a mismatch (or an unprovable hash) keeps both
+  indexes and reports the new additive reason code
+  `graduation_content_differs` with the differing files (capped at 20),
+  the established handle, and a suggested next action. A successful
+  reconcile response now also confirms what was removed (`removed_handle`,
+  `removed_file_count`).
+- **C1-05 — dirty state.** Exact path/hash equality still proves duplication
+  regardless of Git cleanliness; differing dirty content is never removed
+  (Git ancestry cannot order uncommitted snapshots).
+- **C1-06 — hashes never replace the identity gate.** Hash equality without
+  verified lineage never reconciles (explicit negative test).
+- **C1-03 — controlled supersession: decided and deferred.** Supersession
+  between fully certified, ancestry-ordered modern snapshots is accepted in
+  principle but is NOT in this hardening pass; until it ships as its own
+  focused build with atomic-failure coverage, different-content pairs remain
+  separate and visible.
+- **C1-07/C1-08 — complete cleanup of a retired index.** `delete_index` (and
+  therefore reconcile auto-cleanup) now removes every index-owned auxiliary
+  sidecar: `.embeddings.jsonl`, `.terms.json`, `.related.json`,
+  `.boilerplate.json`, `.duplicates.json`.
+- **C1-09 — identity version survives listings.** The summary sidecar and
+  `list_repos` rows now carry `corpus_identity_version`, so a modern index is
+  never presented as pre-1.102 legacy. A summary written before the key
+  existed falls back to the monolith and self-heals on the next save.
+
+Additive/1.x: one new reason code (covered by the vocabulary drift guard),
+new response keys, no tool/schema change, no INDEX_VERSION bump. Tests:
+`tests/test_v1_108_0.py` (7, adapted from the attached harness plus the
+C1-05/C1-06 decided cases). Full suite 1705 passed.
+
 ## [1.107.0] - 2026-07-20 - provisional-index graduation (#80 Part C)
 
 Part C of the local-index reconciliation arc: a provisional index (created

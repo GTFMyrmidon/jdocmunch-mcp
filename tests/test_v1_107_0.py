@@ -141,8 +141,19 @@ def test_reconcile_auto_cleanup_to_established(tmp_path, monkeypatch):
     store = DocStore(base_path=str(store_dir))
     src = _docdir(tmp_path, files=("a.md",))
     _index(src, store_dir, name="prov")                 # provisional
-    # An established index for the SAME identity already exists (docs superset).
-    _plant_established(store, "established", _LINEAGE, docs=("a.md",))
+    # An established index for the SAME identity already exists with the SAME
+    # content (jdoc#85 v1.108.0: reconcile needs hash equality, not just path
+    # coverage). Copy the provisional's stored file hashes onto the plant.
+    prov = store.load_index("local", "prov")
+    store.save_index(
+        owner="local", name="established", sections=[],
+        raw_files={"a.md": "# a.md\n\nx\n"}, doc_types={},
+        source_root="/planted/established",
+        corpus_selection="full",
+        worktree_lineage_key=_LINEAGE, repo_relative_root="",
+        corpus_identity_version=1,
+        file_hashes=dict(prov.file_hashes),
+    )
 
     ev.mode = "confirm"
     out = _index(src, store_dir, name="prov")

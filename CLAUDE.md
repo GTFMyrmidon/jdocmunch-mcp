@@ -1,6 +1,37 @@
 # jdocmunch-mcp
 
-**Version:** 1.107.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.108.0 | **Tests:** `pytest tests/ -q`
+
+## v1.108.0 - C.1 hardening: hash-proven duplicates, complete cleanup, honest listings (#85)
+rknighton's QA on the 1.107.0 graduation shipped 4 confirmed fixes + 2 decided
+policies. **C1-01/02:** `_resolve_graduation` (index_local.py) adds a second
+destructive gate AFTER path coverage — every provisional file must match the
+established index's stored hash (`file_hashes`); mismatch/unprovable → new
+reason code `graduation_content_differs` (constant
+`REASON_GRADUATION_CONTENT_DIFFERS` in `_worktree_corpus.py`, in the B4 drift
+guard) + `differing_files` (cap 20) + established_handle; both indexes kept.
+Successful reconcile response gains `removed_handle`/`removed_file_count`.
+**C1-05 decided:** dirty state never blocks a hash-proven exact duplicate and
+never permits a differing one. **C1-06:** hash equality without confirmed
+lineage never reconciles (negative test). **C1-03 decided+deferred:**
+controlled supersession (certified, strictly ancestry-ordered modern
+snapshots) accepted in principle, NOT shipped; scheduled as its own focused
+build separate from legacy C.2 — until then different-content pairs stay
+separate and visible. **C1-07/08:** `delete_index` removes the 5 index-owned
+sidecars (`.embeddings.jsonl`/`.terms.json`/`.related.json`/
+`.boilerplate.json`/`.duplicates.json`) — reconcile auto-cleanup inherits.
+**C1-09:** `corpus_identity_version` written to the summary sidecar (always,
+even 0 — key-presence distinguishes pre-fix summaries) + projected into
+`_summary_row`; a summary LACKING the key falls back to the monolith and
+self-heals on next save. GOTCHA burned: `Path.write_text` translates `\n` →
+CRLF on Windows, so a test comparing a mirror `read_text` (universal
+newlines) against disk-byte `file_hashes` (#52 domain) fails ONLY on Windows —
+read mirrors with `open(..., newline="")` (`_exact_text` helper in
+test_v1_108_0.py); rknighton's verbatim harness is 4/4 under LF sources.
+`test_v1_107_0.py::test_reconcile_auto_cleanup_to_established` now plants the
+established peer with the provisional's hashes (save_index `file_hashes=`
+override). Additive/1.x, no INDEX_VERSION bump. Tests `test_v1_108_0.py` (7);
+suite 1705.
 
 ## v1.107.0 - provisional-index graduation (#80 Part C)
 Provisional indexes (Part B) can now GRADUATE behind the six security

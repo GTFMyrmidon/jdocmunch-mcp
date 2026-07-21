@@ -155,6 +155,7 @@ def _resolve_graduation(
         REASON_RECONCILED,
         REASON_GRADUATION_AMBIGUOUS,
         REASON_GRADUATION_DIVERGED,
+        REASON_GRADUATION_CONTENT_DIFFERS,
     )
 
     est = filter_lineage_candidates(
@@ -205,13 +206,49 @@ def _resolve_graduation(
                     "Git lineage was verified and an established index for this "
                     "corpus exists, but the provisional index has documents not "
                     "present in it. It was kept provisional (no automatic "
-                    "removal) to avoid document loss."
+                    "removal) to avoid document loss. Refresh the established "
+                    "index from a checkout containing those documents, or "
+                    "delete whichever index you no longer need."
                 ),
             },
         }
 
-    # Clean subset — auto-cleanup the provisional (loser only), return the
-    # established handle.
+    # jdoc#85 C1-01/C1-02: path coverage alone does not prove redundancy. The
+    # second destructive-safety gate requires every provisional file to exist
+    # in the established index with the SAME stored hash — a missing hash on
+    # either side leaves equality unproven and fails closed. Dirty state needs
+    # no special case here: equal hashes prove the snapshots identical
+    # regardless of Git cleanliness, and unequal hashes are kept apart
+    # (Git ancestry cannot order uncommitted content — C1-05).
+    p_hashes = getattr(provisional_index, "file_hashes", {}) or {}
+    e_hashes = getattr(target_index, "file_hashes", {}) or {}
+    differing = sorted(
+        fp for fp in p_docs
+        if not p_hashes.get(fp) or p_hashes.get(fp) != e_hashes.get(fp)
+    )
+    if differing:
+        return {
+            "graduate": False, "return": None,
+            "disclosure": {
+                "state": RECONCILIATION_PROVISIONAL,
+                "reason_code": REASON_GRADUATION_CONTENT_DIFFERS,
+                "established_handle": target,
+                "differing_files": differing[:20],
+                "differing_file_count": len(differing),
+                "detail": (
+                    "Git lineage was verified and an established index for this "
+                    "corpus exists, but the provisional index holds different "
+                    "content for the files listed (or content equality could not "
+                    "be proven from stored hashes). This is not an exact "
+                    "duplicate, so both indexes were kept and nothing was "
+                    "removed. Review the differing files, or refresh whichever "
+                    "index is stale and re-run."
+                ),
+            },
+        }
+
+    # Exact duplicate proven (identity gate + per-file hash equality) —
+    # auto-cleanup the provisional (loser only), return the established handle.
     store.delete_index(owner, repo_name)
     latency_ms = int((time.perf_counter() - t0) * 1000)
     return {
@@ -225,9 +262,12 @@ def _resolve_graduation(
                 "state": "reconciled",
                 "reason_code": REASON_RECONCILED,
                 "established_handle": target,
+                "removed_handle": f"{owner}/{repo_name}",
+                "removed_file_count": len(p_docs),
                 "detail": (
                     "Git lineage was verified; an established index for this "
-                    "corpus already exists. The provisional index was reconciled "
+                    "corpus already exists and every provisional file matches "
+                    "it by stored hash. The provisional index was reconciled "
                     "(removed) and the established handle is returned. No "
                     "documents were lost."
                 ),

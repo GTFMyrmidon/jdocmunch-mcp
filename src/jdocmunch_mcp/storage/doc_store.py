@@ -717,6 +717,12 @@ class DocStore:
                 "worktree_lineage_key": getattr(index, "worktree_lineage_key", "") or "",
                 "repo_relative_root": getattr(index, "repo_relative_root", "") or "",
                 "reconciliation_state": getattr(index, "reconciliation_state", "") or "",
+                # jdoc#85 C1-09: written even when 0 so the summary's presence
+                # or absence of THIS KEY distinguishes a pre-fix summary (fall
+                # back to the monolith) from a genuinely legacy index.
+                "corpus_identity_version": int(
+                    getattr(index, "corpus_identity_version", 0) or 0
+                ),
             }
             summary_path = self._summary_path(owner, name)
             tmp = summary_path.with_name(f"{summary_path.name}.{os.getpid()}.tmp")
@@ -1259,6 +1265,12 @@ class DocStore:
             row["repo_relative_root"] = data["repo_relative_root"]
         if data.get("reconciliation_state"):
             row["reconciliation_state"] = data["reconciliation_state"]
+        # jdoc#85 C1-09: identity version must survive the summary/list
+        # projection, or a modern index reads as pre-1.102 legacy to consumers
+        # like legacy_sibling_handles. Omit-when-zero matches the monolith.
+        _civ = int(data.get("corpus_identity_version", 0) or 0)
+        if _civ:
+            row["corpus_identity_version"] = _civ
         if data.get("source_repo"):
             row["source_repo"] = data["source_repo"]
             source_repo_at_sha = format_repo_at_sha(
@@ -1290,12 +1302,18 @@ class DocStore:
                     with open(summary_path, "r", encoding="utf-8") as f:
                         s = json.load(f)
                     if isinstance(s, dict) and "repo" in s and "section_count" in s:
-                        repos.append(self._summary_row(
-                            int(s.get("section_count", 0)),
-                            int(s.get("doc_count", 0)),
-                            s,
-                        ))
-                        continue
+                        # jdoc#85 C1-09: a summary written before the
+                        # corpus_identity_version key existed cannot say
+                        # whether the index is modern or legacy — fall through
+                        # to the monolith (the save path rewrites the summary
+                        # with the key, so this heals on the next refresh).
+                        if "corpus_identity_version" in s:
+                            repos.append(self._summary_row(
+                                int(s.get("section_count", 0)),
+                                int(s.get("doc_count", 0)),
+                                s,
+                            ))
+                            continue
                 except Exception:
                     pass  # unreadable summary -> fall through to full parse
             try:
@@ -1333,6 +1351,23 @@ class DocStore:
                 summary_path.unlink()
         except (OSError, ValueError):
             pass
+        # jdoc#85 C1-07/C1-08: every index-owned auxiliary sidecar goes with
+        # the index — embeddings, glossary terms, related graph, boilerplate,
+        # duplicates. Leaving any behind lets a retired index shed ghost files
+        # into the owner directory (and a future same-name index inherit them).
+        for suffix in (
+            ".embeddings.jsonl",
+            ".terms.json",
+            ".related.json",
+            ".boilerplate.json",
+            ".duplicates.json",
+        ):
+            sidecar = index_path.with_name(f"{name}{suffix}")
+            if sidecar.exists():
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass
         # Best-effort removal of the per-repo write-lock file (_index_write_lock).
         lock_path = index_path.with_name(f"{index_path.name}.lock")
         if lock_path.exists():
