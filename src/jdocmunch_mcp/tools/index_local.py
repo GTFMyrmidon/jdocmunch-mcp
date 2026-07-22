@@ -407,6 +407,7 @@ def _resolve_graduation(
         REASON_GRADUATION_CONTENT_DIFFERS,
     )
     from ._worktree_corpus import (
+        REASON_GRADUATION_CLEANUP_INCOMPLETE,
         REASON_PROVISIONAL_NEWER,
         REASON_SUPERSEDED,
         REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
@@ -643,7 +644,36 @@ def _resolve_graduation(
 
     # Exact duplicate proven (identity gate + per-file hash equality) —
     # auto-cleanup the provisional (loser only), return the established handle.
-    store.delete_index(owner, repo_name)
+    # jdoc#88 QA-02: the delete result is authoritative. If removal did not
+    # complete, the reconcile did NOT happen — never report `reconciled` or
+    # emit `removed_handle` for a loser that still exists. Keep both indexes
+    # discoverable and report the recoverable, retryable state (mirrors the
+    # supersession/legacy cleanup-incomplete paths, which already check this).
+    removed = store.delete_index(owner, repo_name)
+    if not removed:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        return {
+            "graduate": False,
+            "return": {
+                "success": True,
+                "repo": repo_id,
+                "requested_path": str(folder_path),
+                "reconciliation": {
+                    "state": RECONCILIATION_PROVISIONAL,
+                    "reason_code": REASON_GRADUATION_CLEANUP_INCOMPLETE,
+                    "established_handle": target,
+                    "detail": (
+                        "The provisional index was proven an exact duplicate "
+                        "of its established peer, but removing it did not "
+                        "complete. Nothing was reconciled: the provisional "
+                        "remains discoverable and the peer is untouched. "
+                        "Re-run to retry the retirement (idempotent)."
+                    ),
+                },
+                "_meta": {"latency_ms": latency_ms},
+            },
+            "disclosure": None,
+        }
     latency_ms = int((time.perf_counter() - t0) * 1000)
     return {
         "graduate": False,

@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.113.0] - 2026-07-22 - QA-02 contained fixes: retirement delete result is authoritative (#88)
+
+@rknighton's adversarial QA on the reconciliation lifecycle (#88) found three
+reproducible gaps. This release ships the two contained QA-02 fixes; the
+QA-01 refresh/retirement coordination and QA-03 read-only report follow in a
+dedicated coordinated-retirement release.
+
+- **Exact-duplicate graduation honors the delete result.** The
+  identity-plus-hash-proven duplicate path in `_resolve_graduation`
+  (`tools/index_local.py`) called `store.delete_index(...)` and ignored the
+  return, reporting `reconciled` + `removed_handle` even when removal returned
+  `False`. It now checks the result: on a failed removal it reports the new
+  recoverable `graduation_cleanup_incomplete` reason code, keeps both indexes
+  discoverable, and never emits a `removed_handle` for a loser that still
+  exists. The happy path is unchanged.
+- **Partial cleanup stays discoverable and retryable.** `DocStore.delete_index`
+  (`storage/doc_store.py`) unlinked the primary `<name>.json` record FIRST,
+  then removed the content cache and sidecars. If a later removal raised, the
+  index was already un-loadable, so the documented retry could not find the
+  handle. The primary record is now removed LAST — content cache, summary, and
+  sidecars go first — so any mid-cleanup failure leaves the index fully
+  loadable and the retry succeeds.
+
+New `REASON_GRADUATION_CLEANUP_INCOMPLETE` in `_worktree_corpus.py`, added to
+the B4 vocabulary drift-guard (`test_v1_106_0.py`) and the published
+`SPEC.md` status/reason_code table. Additive/1.x — no tool add/rename, no wire
+break (the failed-delete case previously mis-reported success), no
+`INDEX_VERSION` bump. Tests: `tests/test_v1_113_0.py` (4). QA-01/QA-03 remain
+open on the #88 tracker for the coordinated-retirement build.
+
 ## [1.112.0] - 2026-07-21 - tool-surface schema receipt in session stats (suite parity, jcodemunch-mcp v1.108.153)
 
 `get_session_stats` now carries an advisory `tool_surface` block: visible vs

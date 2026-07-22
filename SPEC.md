@@ -345,6 +345,7 @@ supersession; jdoc#80 Parts B/C, #85, #86):
 | `provisional_newer_than_established` | Git proved the provisional snapshot strictly newer; the established index is never replaced automatically — both kept, explicit refresh path reported. |
 | `supersession_conflict` | The target or candidate set changed before retirement; nothing removed, retry safe. |
 | `supersession_cleanup_incomplete` | Supersession proven but retirement did not complete; the provisional remains discoverable, retry idempotent. |
+| `graduation_cleanup_incomplete` | Exact-duplicate graduation proven but removing the provisional did not complete; nothing reconciled, the provisional remains discoverable, retry idempotent. |
 
 **`legacy_reconciliation.reason_code`** (Part C.2 — explicit-intent
 reconciliation of genuine pre-1.102 fieldless legacy indexes; jdoc#87.

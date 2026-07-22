@@ -214,6 +214,9 @@ def test_part_b_vocabulary_is_documented():
         wc.REASON_LEGACY_CONTENT_DIFFERS, wc.REASON_LEGACY_READY,
         wc.REASON_LEGACY_RECONCILED, wc.REASON_LEGACY_CONFLICT,
         wc.REASON_LEGACY_CLEANUP_INCOMPLETE,
+        # jdoc#88 QA-02 (v1.113.0): exact-duplicate graduation retirement
+        # whose delete did not complete — recoverable, retry idempotent.
+        wc.REASON_GRADUATION_CLEANUP_INCOMPLETE,
     }
     # Enumerate the STATUS_* constants actually defined on the module.
     live_statuses = {

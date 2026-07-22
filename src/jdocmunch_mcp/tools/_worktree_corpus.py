@@ -82,6 +82,13 @@ REASON_SUPERSEDED = "superseded_by_established"
 REASON_PROVISIONAL_NEWER = "provisional_newer_than_established"
 REASON_SUPERSESSION_CONFLICT = "supersession_conflict"
 REASON_SUPERSESSION_CLEANUP_INCOMPLETE = "supersession_cleanup_incomplete"
+# jdoc#88 QA-02 — the exact-duplicate graduation path (identity + hash proven)
+# retired the provisional loser but ignored the delete result, reporting
+# `reconciled` + `removed_handle` even when removal returned False. It now
+# reports this recoverable state instead: the loser stays discoverable and the
+# same call can be retried (idempotent), mirroring the supersession/legacy
+# cleanup-incomplete codes.
+REASON_GRADUATION_CLEANUP_INCOMPLETE = "graduation_cleanup_incomplete"
 # jdoc#87 — Part C.2: reconciliation of genuine pre-1.102 fieldless legacy
 # indexes. Fires ONLY under explicit `legacy_reconcile="report"|"apply"`
 # intent; an ordinary refresh stays backfill-only. The explicitly selected

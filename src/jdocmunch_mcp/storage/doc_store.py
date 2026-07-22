@@ -1336,11 +1336,14 @@ class DocStore:
         except ValueError:
             return False
 
+        # jdoc#88 QA-02: remove the primary index record LAST. Auxiliary
+        # artifacts (content cache, sidecars) go first; the `<name>.json`
+        # monolith is what `load_index`/`list_repos` key on, so if any earlier
+        # step fails (e.g. a content rmtree raises), the index stays fully
+        # discoverable and the caller's retry can find the handle again. The
+        # previous order unlinked the primary first, so a mid-cleanup failure
+        # left an un-loadable, un-retryable half-deleted index.
         deleted = False
-        if index_path.exists():
-            _evict_index_cache(index_path)
-            index_path.unlink()
-            deleted = True
         if content_dir.exists():
             shutil.rmtree(content_dir)
             deleted = True
@@ -1383,6 +1386,12 @@ class DocStore:
             cleanup_claims_for_repo(self.base_path, f"{owner}/{name}")
         except Exception:
             pass
+        # jdoc#88 QA-02: primary record removed LAST — once this succeeds the
+        # index is gone; until then a failed earlier step leaves it loadable.
+        if index_path.exists():
+            _evict_index_cache(index_path)
+            index_path.unlink()
+            deleted = True
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:

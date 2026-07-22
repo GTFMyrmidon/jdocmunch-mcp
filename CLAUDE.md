@@ -1,6 +1,28 @@
 # jdocmunch-mcp
 
-**Version:** 1.112.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.113.0 | **Tests:** `pytest tests/ -q`
+
+## v1.113.0 - QA-02 contained fixes: retirement delete result authoritative (#88)
+@rknighton's adversarial QA (#88) found 3 reproducible reconciliation-lifecycle
+gaps; jjg's call was STAGE — ship the 2 contained QA-02 fixes now, build QA-01
+(refresh/retirement coordination) + QA-03 (read-only report) as a dedicated
+coordinated/recoverable-retirement release with a PRD (both entangled with the
+refresh/certification path: QA-03's honest fix needs a certify-without-persist
+step because a genuine fieldless legacy index is only certified BY the report
+refresh — the same surface QA-01 reworks). **QA-02.1:** `_resolve_graduation`
+exact-dedup path (`index_local.py:~646`) ignored `delete_index`'s return →
+reported `reconciled`+`removed_handle` even on `False`; now checks it, reports
+new `graduation_cleanup_incomplete`, keeps both indexes, no `removed_handle`.
+**QA-02.2:** `DocStore.delete_index` unlinked the primary `<name>.json` FIRST
+then rmtree'd content → a mid-cleanup failure left an un-loadable, un-retryable
+half-deleted index; primary record now removed LAST (content/summary/sidecars/
+claims first), so a partial failure stays discoverable and the caller's retry
+(legacy `apply` already returns `legacy_reconcile_cleanup_incomplete`) finds
+the handle. New `REASON_GRADUATION_CLEANUP_INCOMPLETE` in `_worktree_corpus.py`
++ B4 drift guard (`test_v1_106_0.py`) + SPEC.md vocabulary table. Reproduced
+against rknighton's attached harness (7 fail/1 control on v1.112.0; the 2 QA-02
+cases now green; 4 QA-01 cases deferred). Additive/1.x, no INDEX_VERSION bump.
+Tests `tests/test_v1_113_0.py` (4). **#88 QA-01 + QA-03 still OPEN.**
 
 ## v1.112.0 - tool-surface schema receipt (suite parity, jcm v1.108.153)
 `get_session_stats` gains an advisory `tool_surface` block: visible vs catalog
