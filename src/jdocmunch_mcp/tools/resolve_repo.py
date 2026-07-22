@@ -169,6 +169,7 @@ def doc_resolve_repo(path: str, storage_path: Optional[str] = None) -> dict:
     try:
         from ._worktree_corpus import (
             MAX_CANDIDATES,
+            REASON_GIT_VERIFICATION_UNAVAILABLE,
             ResolutionRequest,
             collect_git_evidence,
             filter_lineage_candidates,
@@ -196,6 +197,30 @@ def doc_resolve_repo(path: str, storage_path: Optional[str] = None) -> dict:
                     )
                 if decision.next_action:
                     not_found["hint"] = decision.next_action
+        elif evidence.verification_failed:
+            # jdoc#88 QA-04: Git could not answer at all (missing binary,
+            # timeout, permissions) — a state previously indistinguishable
+            # from a confirmed non-Git path. Disclose that identity
+            # verification was unavailable and that worktree discovery was
+            # skipped. index_local still works; a new index created in this
+            # state is quarantined provisional (jdoc#80 Part B), unchanged.
+            not_found["git_verification"] = {
+                "verified": False,
+                "reason_code": REASON_GIT_VERIFICATION_UNAVAILABLE,
+                "detail": (
+                    "Git verification failed for this path (the git binary, "
+                    "a timeout, or permissions), so it could not be checked "
+                    "against indexed repository worktrees. This is distinct "
+                    "from a confirmed non-Git path."
+                ),
+            }
+            not_found["hint"] = (
+                "No documentation index was found for this path, and Git "
+                "verification was unavailable, so worktree-based canonical-"
+                "index discovery was skipped. index_local can still index "
+                "it; the new index will be provisional until verification "
+                "succeeds."
+            )
         not_found["_meta"]["latency_ms"] = int((time.perf_counter() - t0) * 1000)
     except Exception:
         pass  # discovery is best-effort; the plain not-found stays valid

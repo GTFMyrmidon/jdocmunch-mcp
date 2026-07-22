@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.114.0] - 2026-07-22 - QA-04/QA-05: disclose failed Git verification, complete the result-code contract (#88)
+
+@rknighton's follow-up QA on #88.
+
+**QA-04 (Medium):** `doc_resolve_repo` returned the same ordinary not-found
+response whether Git confirmed a path as non-Git or Git verification failed
+outright (missing binary, timeout, permissions). A failed verification now adds
+a structured `git_verification` block (`verified: false`, reason code
+`git_verification_unavailable`) and a hint explaining that worktree-based
+canonical-index discovery was skipped. The provisional-creation path is
+unchanged: `index_local` still works in this state and quarantines the new
+index as provisional.
+
+**QA-05 (Low):** SPEC.md claimed a complete, drift-guarded result vocabulary,
+but the read-time resolver emitted reason codes written as inline string
+literals (e.g. `unique_location_candidate`) that bypassed the guard's
+STATUS_*/REASON_* attribute scan. All twelve resolver codes are now module
+constants, documented in a new `worktree_resolution.reason_code` table, and a
+new AST guard rejects any future inline `reason_code` literal in src.
+Related corrections in the same pass:
+
+- `provisional_cap_exceeded` and `legacy_reconcile_not_applicable` are
+  documented as top-level `error` codes — the field where they are actually
+  returned — instead of reason-code table rows.
+- USER_GUIDE.md documents the `legacy_reconcile="report"|"apply"` workflow.
+- The v1.108.0 changelog date is corrected (2026-07-28 → 2026-07-20).
+
+Additive and 1.x-compatible: one new response block on an existing error path,
+no tool or schema change, no INDEX_VERSION bump. Tests:
+`tests/test_v1_114_0.py` (7); the attached `test_remaining_qa_findings.py`
+harness passes 3/3 without weakened assertions.
+
 ## [1.113.0] - 2026-07-22 - QA-02 contained fixes: retirement delete result is authoritative (#88)
 
 @rknighton's adversarial QA on the reconciliation lifecycle (#88) found three
@@ -144,7 +176,7 @@ keys, no tool/schema change, no INDEX_VERSION bump. Tests:
 `tests/test_v1_109_0.py` (11, real Git repos + linked worktrees). Full suite
 1716 passed.
 
-## [1.108.0] - 2026-07-28 - C.1 hardening: hash-proven duplicates, complete cleanup, honest listings (#85)
+## [1.108.0] - 2026-07-20 - C.1 hardening: hash-proven duplicates, complete cleanup, honest listings (#85)
 
 rknighton's focused QA pass on the 1.107.0 graduation work reproduced four
 gaps; all closed, his harness passing 4/4.

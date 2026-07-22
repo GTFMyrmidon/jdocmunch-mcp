@@ -217,6 +217,18 @@ def test_part_b_vocabulary_is_documented():
         # jdoc#88 QA-02 (v1.113.0): exact-duplicate graduation retirement
         # whose delete did not complete — recoverable, retry idempotent.
         wc.REASON_GRADUATION_CLEANUP_INCOMPLETE,
+        # jdoc#88 QA-05 (v1.114.0): the read-time resolver's codes, promoted
+        # from inline literals to constants so this guard and the SPEC.md
+        # table cover them.
+        wc.REASON_BRANCH_LOCAL_CREATED, wc.REASON_NO_EQUIVALENT_CANDIDATE,
+        wc.REASON_LINEAGE_CONFLICT, wc.REASON_LINEAGE_UNKNOWN,
+        wc.REASON_UNIQUE_LOCATION_CANDIDATE, wc.REASON_MULTIPLE_EQUIVALENT,
+        wc.REASON_SELECTION_INCOMPLETE, wc.REASON_EQUIVALENT_FRESH,
+        wc.REASON_EQUIVALENT_DIRTY, wc.REASON_EQUIVALENT_STALE,
+        wc.REASON_UNRESOLVED_LEGACY_CANDIDATE, wc.REASON_NEW_CORPUS_CREATED,
+        # jdoc#88 QA-04 (v1.114.0): doc_resolve_repo's failed-Git-verification
+        # disclosure.
+        wc.REASON_GIT_VERIFICATION_UNAVAILABLE,
     }
     # Enumerate the STATUS_* constants actually defined on the module.
     live_statuses = {

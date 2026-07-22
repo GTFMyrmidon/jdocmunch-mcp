@@ -214,7 +214,7 @@ index_repo: { "url": "owner/repo", "incremental": false }
 
 | Tool                    | Purpose                                          | Key Parameters                                                   |
 | ----------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
-| `index_local`           | Index local documentation folder. An already-indexed source reuses its established handle; an explicit conflicting `name` returns a conflict instead of creating a duplicate index; several equivalent legacy indexes return bounded ambiguity. A proven-fresh equivalent corpus in a linked Git worktree is reused rather than duplicated (`worktree_mode="branch_local"` opts out) | `path`, `name`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental`, `paths`, `worktree_mode` |
+| `index_local`           | Index local documentation folder. An already-indexed source reuses its established handle; an explicit conflicting `name` returns a conflict instead of creating a duplicate index; several equivalent legacy indexes return bounded ambiguity. A proven-fresh equivalent corpus in a linked Git worktree is reused rather than duplicated (`worktree_mode="branch_local"` opts out) | `path`, `name`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental`, `paths`, `worktree_mode`, `legacy_reconcile` |
 | `index_repo`            | Index GitHub repository docs                     | `url`, `use_ai_summaries`, `incremental`                         |
 | `list_repos`            | List all indexed documentation sets              | —                                                                |
 | `doc_resolve_repo`      | Resolve a path to its doc-index handle (O(1)-sized). In a linked Git worktree of an indexed corpus, the not-found response additively lists the established handle in `canonical_candidates` + `worktree_resolution` (read-only) | `path`                                                        |
@@ -226,6 +226,29 @@ index_repo: { "url": "owner/repo", "incremental": false }
 | `get_sections`          | Batch content retrieval                          | `repo`, `section_ids`, `verify`                                  |
 | `get_section_context`   | Section + ancestor headings + child summaries    | `repo`, `section_id`, `max_tokens`, `include_children`           |
 | `delete_index`          | Delete index and cache                           | `repo`                                                           |
+
+---
+
+## Legacy Index Reconciliation (`legacy_reconcile`)
+
+Indexes created before v1.102.0 predate corpus identity and can coexist with a
+modern index of the same source. `index_local` accepts an opt-in
+`legacy_reconcile` parameter to resolve one explicitly:
+
+- `legacy_reconcile="report"` — refresh the explicitly named legacy handle,
+  then prove (or fail to prove) it is an exact duplicate of a single modern
+  peer: same verified corpus identity, same clean certified commit, and full
+  path-and-hash coverage. Reports `legacy_reconcile_ready` when the proof
+  passes. Nothing is retired in report mode.
+- `legacy_reconcile="apply"` — repeat the proof immediately before retirement,
+  then retire the selected legacy handle and return the modern peer's handle.
+
+Both modes require an explicit `name=` selecting the legacy handle (the
+selected handle is the only possible loser — it is never derived or guessed), a
+full refresh (no `paths` subset), and confirmed Git lineage. Any precondition
+failure returns the top-level error `legacy_reconcile_not_applicable` with
+nothing written. Every outcome's `legacy_reconciliation.reason_code` is listed
+in SPEC.md's vocabulary table.
 
 ---
 

@@ -106,6 +106,29 @@ REASON_LEGACY_READY = "legacy_reconcile_ready"
 REASON_LEGACY_RECONCILED = "legacy_reconciled_to_established"
 REASON_LEGACY_CONFLICT = "legacy_reconcile_conflict"
 REASON_LEGACY_CLEANUP_INCOMPLETE = "legacy_reconcile_cleanup_incomplete"
+# jdoc#88 QA-05 — the read-time resolver's complete reason_code vocabulary.
+# These were inline string literals in resolve_worktree_corpus, which let them
+# bypass the SPEC.md drift-guard (it enumerates STATUS_*/REASON_* module
+# attributes). Every code the resolver can emit is now a constant, and an AST
+# guard (test_v1_114_0.py) rejects any future inline reason_code literal.
+REASON_BRANCH_LOCAL_CREATED = "branch_local_created"
+REASON_NO_EQUIVALENT_CANDIDATE = "no_equivalent_candidate"
+REASON_LINEAGE_CONFLICT = "lineage_conflict"
+REASON_LINEAGE_UNKNOWN = "lineage_unknown"
+REASON_UNIQUE_LOCATION_CANDIDATE = "unique_location_candidate"
+REASON_MULTIPLE_EQUIVALENT = "multiple_equivalent_candidates"
+REASON_SELECTION_INCOMPLETE = "selection_incomplete"
+REASON_EQUIVALENT_FRESH = "equivalent_corpus_fresh"
+REASON_EQUIVALENT_DIRTY = "equivalent_corpus_dirty"
+REASON_EQUIVALENT_STALE = "equivalent_corpus_stale"
+REASON_UNRESOLVED_LEGACY_CANDIDATE = "unresolved_legacy_candidate"
+REASON_NEW_CORPUS_CREATED = "new_corpus_created"
+# jdoc#88 QA-04 — doc_resolve_repo discloses when Git verification was
+# UNAVAILABLE (missing binary / timeout / OS error) rather than a clean
+# not-a-repo determination. Without it, a failed verification produced the
+# same not-found response as a confirmed non-Git path, hiding the fact that
+# worktree-based canonical-index discovery never ran.
+REASON_GIT_VERIFICATION_UNAVAILABLE = "git_verification_unavailable"
 # Per-source_root ceiling on provisional indexes. A real corpus has one, maybe
 # a handful of worktrees; a large pile for one root is an anomaly, so creation
 # beyond the cap fails closed and loud (B3) rather than accreting silently.
@@ -423,7 +446,7 @@ def resolve_worktree_corpus(
         # which the caller handles.
         return ResolutionDecision(
             status=STATUS_CREATED,
-            reason_code="branch_local_created",
+            reason_code=REASON_BRANCH_LOCAL_CREATED,
             write_policy="explicit_branch_local",
             identity=_identity_block(ev, "not_compared"),
             next_action="Branch-local index requested explicitly; exact-path rules apply.",
@@ -432,7 +455,7 @@ def resolve_worktree_corpus(
     if not ev.in_git:
         return ResolutionDecision(
             status=STATUS_NO_MATCH,
-            reason_code="no_equivalent_candidate",
+            reason_code=REASON_NO_EQUIVALENT_CANDIDATE,
             write_policy="current_behavior",
             identity=_identity_block(ev, "not_compared"),
         )
@@ -441,9 +464,9 @@ def resolve_worktree_corpus(
         return ResolutionDecision(
             status=STATUS_UNKNOWN,
             reason_code=(
-                "lineage_conflict"
+                REASON_LINEAGE_CONFLICT
                 if ev.lineage_state == LINEAGE_CONFLICTING
-                else "lineage_unknown"
+                else REASON_LINEAGE_UNKNOWN
             ),
             write_policy="read_only",
             identity=_identity_block(ev, "unavailable"),
@@ -464,7 +487,7 @@ def resolve_worktree_corpus(
         if total == 0:
             return ResolutionDecision(
                 status=STATUS_NO_MATCH,
-                reason_code="no_equivalent_candidate",
+                reason_code=REASON_NO_EQUIVALENT_CANDIDATE,
                 write_policy="read_only",
                 identity=_identity_block(ev, "unavailable"),
             )
@@ -472,7 +495,7 @@ def resolve_worktree_corpus(
             entry = stored_candidates[0]
             return ResolutionDecision(
                 status=STATUS_REFERENCE_ONLY,
-                reason_code="unique_location_candidate",
+                reason_code=REASON_UNIQUE_LOCATION_CANDIDATE,
                 established_handle=entry.get("repo", ""),
                 write_policy="read_only",
                 candidates=rows,
@@ -486,7 +509,7 @@ def resolve_worktree_corpus(
             )
         return ResolutionDecision(
             status=STATUS_AMBIGUOUS,
-            reason_code="multiple_equivalent_candidates",
+            reason_code=REASON_MULTIPLE_EQUIVALENT,
             write_policy="read_only",
             candidates=rows,
             total_candidates=total,
@@ -501,7 +524,7 @@ def resolve_worktree_corpus(
     if request.selection is None:
         return ResolutionDecision(
             status=STATUS_RELATED,
-            reason_code="selection_incomplete",
+            reason_code=REASON_SELECTION_INCOMPLETE,
             write_policy="read_only",
             candidates=rows,
             total_candidates=total,
@@ -530,7 +553,7 @@ def resolve_worktree_corpus(
     if len(equivalent) > 1:
         return ResolutionDecision(
             status=STATUS_AMBIGUOUS,
-            reason_code="multiple_equivalent_candidates",
+            reason_code=REASON_MULTIPLE_EQUIVALENT,
             write_policy="read_only",
             candidates=[_candidate_row(e) for e in equivalent],
             total_candidates=len(equivalent),
@@ -547,7 +570,7 @@ def resolve_worktree_corpus(
         if freshness.get("state") == "fresh":
             return ResolutionDecision(
                 status=STATUS_REUSABLE,
-                reason_code="equivalent_corpus_fresh",
+                reason_code=REASON_EQUIVALENT_FRESH,
                 established_handle=entry.get("repo", ""),
                 write_policy="reuse_only",
                 candidates=[_candidate_row(entry)],
@@ -557,9 +580,9 @@ def resolve_worktree_corpus(
                 next_action="Use the established handle; no index was created.",
             )
         reason = (
-            "equivalent_corpus_dirty"
+            REASON_EQUIVALENT_DIRTY
             if freshness.get("state") == "dirty"
-            else "equivalent_corpus_stale"
+            else REASON_EQUIVALENT_STALE
         )
         return ResolutionDecision(
             status=STATUS_REFERENCE_ONLY,
@@ -580,7 +603,7 @@ def resolve_worktree_corpus(
     if unresolved_legacy:
         return ResolutionDecision(
             status=STATUS_RELATED,
-            reason_code="unresolved_legacy_candidate",
+            reason_code=REASON_UNRESOLVED_LEGACY_CANDIDATE,
             write_policy="read_only",
             candidates=[_candidate_row(e) for e in unresolved_legacy],
             total_candidates=len(unresolved_legacy),
@@ -595,7 +618,7 @@ def resolve_worktree_corpus(
 
     return ResolutionDecision(
         status=STATUS_CREATED,
-        reason_code="new_corpus_created",
+        reason_code=REASON_NEW_CORPUS_CREATED,
         write_policy="create_if_claim_wins",
         identity=_identity_block(ev, "equivalent"),
         next_action="No established equivalent exists; creation may proceed under claim.",

@@ -1,6 +1,32 @@
 # jdocmunch-mcp
 
-**Version:** 1.113.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.114.0 | **Tests:** `pytest tests/ -q`
+
+## v1.114.0 - QA-04/QA-05: Git-verification disclosure + complete result-code contract (#88)
+rknighton's follow-up findings on #88, both shipped same-day. **QA-04:**
+`doc_resolve_repo` hid a failed Git verification (GIT_UNAVAILABLE) as an
+ordinary not-found — `collect_git_evidence` recorded `verification_failed=True`
+but the resolver only reported when `in_git=True`. New `elif
+evidence.verification_failed:` branch in `resolve_repo.py` attaches a
+structured `git_verification` block ({verified: false, reason_code:
+`git_verification_unavailable`, detail}) + a hint that worktree discovery was
+skipped and index_local still creates a provisional index (#84 behavior
+unchanged). **QA-05:** the 12 resolver reason codes in
+`resolve_worktree_corpus` were inline literals invisible to the STATUS_*/
+REASON_* drift guard — all promoted to REASON_* constants (`_worktree_corpus.py`),
+documented in a new SPEC.md `worktree_resolution.reason_code` table, and a new
+AST guard (`test_v1_114_0.py::test_no_inline_reason_code_literals`) rejects any
+future inline `reason_code` string literal anywhere in src (Call keywords +
+dict literals). `provisional_cap_exceeded` + `legacy_reconcile_not_applicable`
+moved to a SPEC "Top-level `error` codes" table (they return as top-level
+`error`, not reason_code — the guard test asserts they no longer appear as
+reason-code rows). USER_GUIDE gains a `legacy_reconcile` section + param row;
+CHANGELOG v1.108.0 date fixed 2026-07-28 → 2026-07-20 (real tag date). B4
+drift-guard set in test_v1_106_0.py extended with the 13 new constants.
+rknighton's `test_remaining_qa_findings.py` passes 3/3 verbatim. Additive/1.x,
+no INDEX_VERSION bump. Tests `tests/test_v1_114_0.py` (7); suite 1757.
+**#88 QA-01 + QA-03 remain OPEN (dedicated coordinated-retirement release);
+rknighton available for branch QA tomorrow evening.**
 
 ## v1.113.0 - QA-02 contained fixes: retirement delete result authoritative (#88)
 @rknighton's adversarial QA (#88) found 3 reproducible reconciliation-lifecycle

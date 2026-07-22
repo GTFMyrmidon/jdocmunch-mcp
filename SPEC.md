@@ -329,13 +329,38 @@ can emit a status or reason code not listed here.
 | `unknown` | Identity evidence unavailable; nothing asserted. |
 | `no_match` | No stored index relates to this path. |
 
+**`worktree_resolution.reason_code`** (read-time resolution, jdoc#83/#84;
+the resolver-emitted codes were previously inline literals invisible to the
+drift-guard — completed in jdoc#88 QA-05):
+
+| reason_code | Emitted with status | Meaning |
+|---|---|---|
+| `branch_local_created` | `created` | Explicit `worktree_mode="branch_local"`; exact-path creation rules apply. |
+| `no_equivalent_candidate` | `no_match` | No stored index shares this path's lineage and corpus location. |
+| `lineage_unknown` | `unknown` | The path is in Git but worktree lineage could not be confirmed; nothing asserted. |
+| `lineage_conflict` | `unknown` | Collected lineage evidence disagrees with itself; nothing asserted. |
+| `unique_location_candidate` | `reference_only` | Exactly one established index matches this worktree family and corpus location; returned for read-only use (durable selection was not compared, so this is never a reuse authorization). |
+| `multiple_equivalent_candidates` | `ambiguous` | More than one established index matches; explicit selection required, no write. |
+| `selection_incomplete` | `related` | Durable-selection evidence was incomplete; no automatic decision. |
+| `equivalent_corpus_fresh` | `reusable` | A proven-equivalent established index is fresh; its handle is returned without a write. |
+| `equivalent_corpus_dirty` | `reference_only` | An equivalent index exists, but this worktree has uncommitted changes under the corpus root; reuse is not proven safe. |
+| `equivalent_corpus_stale` | `reference_only` | An equivalent index exists but is not proven fresh for this worktree. |
+| `unresolved_legacy_candidate` | `related` | A related index predates selection identity and cannot be proven equivalent. |
+| `new_corpus_created` | `created` | No established equivalent exists; creation proceeds under claim. |
+
+**`git_verification.reason_code`** (`doc_resolve_repo` not-found responses,
+jdoc#88 QA-04):
+
+| reason_code | Meaning |
+|---|---|
+| `git_verification_unavailable` | Git could not verify this path (missing binary, timeout, or permissions), so worktree-based canonical-index discovery was skipped. Distinct from a confirmed non-Git path, which omits this block entirely. `index_local` still works; an index created in this state is quarantined provisional until verification succeeds. |
+
 **`reconciliation.reason_code`** (index-time quarantine, graduation, and
 supersession; jdoc#80 Parts B/C, #85, #86):
 
 | reason_code | Outcome |
 |---|---|
 | `provisional_verification_unavailable` | Git verification could not run; the index was created authority-free (provisional). |
-| `provisional_cap_exceeded` | Too many provisional indexes for one source root; creation refused. |
 | `graduated_verified` | Git lineage confirmed on a full refresh; the provisional index was promoted in place. |
 | `reconciled_to_established` | Exact duplicate proven (verified identity + per-file hash equality); the provisional was retired and the established handle returned. |
 | `graduation_ambiguous` | More than one established peer matches; kept provisional, nothing removed. |
@@ -354,7 +379,6 @@ ordinary refresh stays backfill-only and never retires anything):
 
 | reason_code | Outcome |
 |---|---|
-| `legacy_reconcile_not_applicable` | A precondition failed (no explicit name, handle missing or not fieldless at call start, subset refresh, branch_local, provisional target, or unconfirmed Git lineage); refused fail-closed, nothing written. |
 | `legacy_reconcile_no_modern_peer` | No non-provisional modern peer matches the verified corpus identity; the legacy index was refreshed and kept (an ordinary refresh backfills it), nothing removed. |
 | `legacy_reconcile_ambiguous` | More than one modern peer matches; retirement requires exactly one, nothing removed. |
 | `legacy_reconcile_uncertified` | The two indexes are not both clean and certified at the same commit; nothing removed. |
@@ -363,6 +387,17 @@ ordinary refresh stays backfill-only and never retires anything):
 | `legacy_reconciled_to_established` | Apply mode: proof repeated immediately before retirement; the selected legacy handle was retired, the peer is unchanged and its handle returned. |
 | `legacy_reconcile_conflict` | The peer or candidate set changed between proof and retirement; nothing removed, retry safe. |
 | `legacy_reconcile_cleanup_incomplete` | Retirement proven but removal did not complete; the legacy index remains discoverable, retry idempotent. |
+
+**Top-level `error` codes** (fail-closed refusals returned as
+`{"success": false, "error": <code>, ...}` before any write — these two were
+previously listed under `reconciliation.reason_code` /
+`legacy_reconciliation.reason_code`, but they are actually returned as the
+top-level `error` field; corrected in jdoc#88 QA-05):
+
+| error | Outcome |
+|---|---|
+| `provisional_cap_exceeded` | Git verification was unavailable and the number of provisional indexes for this source root has reached the cap; creation refused, nothing written. |
+| `legacy_reconcile_not_applicable` | A `legacy_reconcile` precondition failed (no explicit name, handle missing or not fieldless at call start, subset refresh, branch_local, provisional target, or unconfirmed Git lineage); refused fail-closed, nothing written. |
 
 ---
 
