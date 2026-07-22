@@ -1,6 +1,42 @@
 # jdocmunch-mcp
 
-**Version:** 1.114.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.115.0 (branch `coordinated-retirement`, NOT yet published) | **Tests:** `pytest tests/ -q`
+
+## v1.115.0 - QA-01/QA-03: coordinated & recoverable retirement (#88) — BRANCH, awaiting rknighton QA
+PRD `C:\MCPs\business\jdoc-coordinated-retirement\PRD.md`. **QA-01 core =
+guarded delete:** `DocStore.delete_index(owner, name, expected_fingerprints=None)`
+re-verifies proof-time sha256-of-monolith fingerprints (BOTH retiring +
+retained handles, via new `index_fingerprint`) INSIDE the deletion boundary,
+before any removal; mismatch raises new `RetirementConflict(changed)` with
+nothing touched. KEY INSIGHT (why inside delete_index): rknighton's harness
+mutates an index WHEN delete_index is called (wrapping the real method), so
+any check-then-delete in the caller loses the race — the precondition must
+execute via the real delete under the wrapper. All 3 retirement sites pass
+the guard and map RetirementConflict → `legacy_reconcile_conflict` /
+`supersession_conflict` / NEW `graduation_conflict` (exact-dedup had no
+conflict vocabulary; added to B4 guard + SPEC), each w/ `changed_handles`.
+**Recoverability:** new `storage/retirements.py` durable record
+(`<owner>/.retirements/<name>.json`: retiring/retained/fingerprints/family/
+started_at) written before the destructive step; removed on success + on
+conflict (voided); KEPT on cleanup failure (`pending_retirement: true` in
+cleanup-incomplete blocks); `save_index`/`incremental_save` CANCEL a pending
+record for the handle they rewrite (fail-visible, never silently reroute);
+`delete_index` clears the record after primary-record removal (ordering
+matters: after, so partial failure keeps it). **QA-03 = read-only report via
+certification transitivity:** `legacy_reconcile="report"` diverts BEFORE the
+refresh to new `_report_legacy_reconcile` — proof from STORED snapshots +
+live Git evidence: stored loser + peer both certified clean at one SHA AND
+live checkout clean at that same SHA (three clean legs at one commit ⇒ stored
+snapshots describe the live tree; the refresh was only ever needed to
+certify). Uncertified legacy → honest `legacy_reconcile_uncertified` +
+`checkout_sha` (apply remains the certify-and-retire path). Responses carry
+`_meta.read_only: true`. NOTE: planted fieldless indexes ARE certified —
+certification comes from `local_git_state` (real git), not the
+identity-evidence `collect_git_evidence` that tests monkeypatch. rknighton's
+`qa_adversarial_test.py` (from #88) passes 8/8 verbatim; suite 1768; tests
+`tests/test_v1_115_0.py` (10). Additive/1.x, no INDEX_VERSION bump. **NEXT:
+rknighton branch QA from 2026-07-23 evening → then merge to master, publish
+PyPI + tag + GH release, close #88, then close #80 w/ arc summary.**
 
 ## v1.114.0 - QA-04/QA-05: Git-verification disclosure + complete result-code contract (#88)
 rknighton's follow-up findings on #88, both shipped same-day. **QA-04:**

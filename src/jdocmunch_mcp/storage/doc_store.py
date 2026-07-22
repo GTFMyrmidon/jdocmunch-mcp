@@ -31,6 +31,20 @@ COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _UNSET = object()
 
 
+class RetirementConflict(Exception):
+    """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
+    its retirement was approved. Raised BEFORE any removal — nothing was
+    touched. ``changed`` lists the ``owner/name`` handles that no longer match
+    their proof-time fingerprints. Only ever raised when the caller passed
+    ``expected_fingerprints``; unguarded deletes are unaffected."""
+
+    def __init__(self, changed: list):
+        self.changed = list(changed)
+        super().__init__(
+            f"index state changed since retirement was approved: {self.changed}"
+        )
+
+
 def _with_index_lock(method):
     """Serialize same-repo index writes across processes.
 
@@ -830,6 +844,7 @@ class DocStore:
         coverage: Optional[dict] = None,
     ) -> "DocIndex":
         """Save index and raw files to storage atomically."""
+        self._cancel_pending_retirement(owner, name)
         if file_hashes is None:
             file_hashes = {fp: _file_hash(c) for fp, c in raw_files.items()}
 
@@ -1044,6 +1059,7 @@ class DocStore:
         index = self.load_index(owner, name)
         if not index:
             return None
+        self._cancel_pending_retirement(owner, name)
 
         # Drop sections belonging to deleted or changed files
         files_to_remove = set(deleted_files) | set(changed_files)
@@ -1328,13 +1344,58 @@ class DocStore:
                 continue
         return repos
 
-    def delete_index(self, owner: str, name: str) -> bool:
-        """Delete an index and its raw content cache."""
+    def _cancel_pending_retirement(self, owner: str, name: str) -> None:
+        """jdoc#88 QA-01 item 3: a refresh of a retiring handle CANCELS the
+        pending retirement instead of racing it. The proof-time fingerprints
+        are stale by definition once the handle is rewritten, and a voided
+        retirement must not linger as pending work. Fail-visible by design:
+        the caller's write goes where they aimed it, never silently rerouted
+        to the retained handle. Best-effort."""
+        try:
+            from .retirements import finish_retirement
+            finish_retirement(self.base_path, owner, name)
+        except Exception:
+            pass
+
+    def index_fingerprint(self, owner: str, name: str) -> Optional[str]:
+        """sha256 of the stored monolith bytes, or None when unreadable.
+
+        The retirement precondition token (jdoc#88 QA-01): captured at proof
+        time and re-verified inside :meth:`delete_index`, it detects ANY
+        change to the stored index — content, certification, or metadata —
+        between approval and physical removal."""
+        try:
+            return hashlib.sha256(
+                self._index_path(owner, name).read_bytes()
+            ).hexdigest()
+        except (OSError, ValueError):
+            return None
+
+    def delete_index(
+        self, owner: str, name: str, expected_fingerprints: Optional[dict] = None
+    ) -> bool:
+        """Delete an index and its raw content cache.
+
+        ``expected_fingerprints`` (jdoc#88 QA-01) maps ``owner/name`` handles
+        to :meth:`index_fingerprint` values captured when the retirement was
+        approved. The precondition is verified here, inside the deletion
+        boundary and before any removal; a mismatch raises
+        :class:`RetirementConflict` with nothing touched. Omitted → the
+        pre-existing unguarded behavior, byte-identical."""
         try:
             index_path = self._index_path(owner, name)
             content_dir = self._content_dir(owner, name)
         except ValueError:
             return False
+
+        if expected_fingerprints:
+            changed = []
+            for handle, expected in expected_fingerprints.items():
+                h_owner, _, h_name = handle.partition("/")
+                if self.index_fingerprint(h_owner, h_name) != expected:
+                    changed.append(handle)
+            if changed:
+                raise RetirementConflict(changed)
 
         # jdoc#88 QA-02: remove the primary index record LAST. Auxiliary
         # artifacts (content cache, sidecars) go first; the `<name>.json`
@@ -1392,6 +1453,16 @@ class DocStore:
             _evict_index_cache(index_path)
             index_path.unlink()
             deleted = True
+        # jdoc#88 QA-01/QA-02: once the primary record is gone the index has
+        # no pending retirement — the retirement completed, or a direct user
+        # delete of a retiring handle mooted it. Runs AFTER the primary
+        # removal so a failure part-way keeps the durable record (pending
+        # cleanup stays a discoverable fact). Best-effort, like claims.
+        try:
+            from .retirements import finish_retirement
+            finish_retirement(self.base_path, owner, name)
+        except Exception:
+            pass
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:

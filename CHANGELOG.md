@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.115.0] - 2026-07-22 - QA-01/QA-03: coordinated & recoverable retirement, truly read-only report (#88)
+
+The remaining two findings from @rknighton's #88 adversarial QA.
+
+**QA-01 (High):** every retirement path proved the relationship, rechecked it,
+then deleted — and an index that changed between the recheck and the physical
+removal was still removed under the stale decision. `DocStore.delete_index`
+now accepts proof-time `expected_fingerprints` (sha256 of each handle's
+monolith, retiring AND retained) and re-verifies them inside the deletion
+boundary, before any removal. A mismatch raises `RetirementConflict` with
+nothing touched; the three retirement sites (legacy apply, supersession,
+exact-dedup graduation) report it as `legacy_reconcile_conflict`,
+`supersession_conflict`, and the new `graduation_conflict`, each with a
+`changed_handles` list and both indexes kept.
+
+**Recoverability (QA-01/QA-02):** a durable retiring record
+(`<owner>/.retirements/<name>.json` — retiring + retained handles,
+fingerprints, family, start time) is written before the destructive step.
+Removed on success and on conflict; kept when cleanup fails, so pending work
+survives a crash as a discoverable fact (`pending_retirement: true` in
+cleanup-incomplete responses). A refresh of a retiring handle cancels the
+pending retirement rather than racing it, and `delete_index` clears the
+record once the primary record is gone.
+
+**QA-03 (Medium):** `legacy_reconcile="report"` is documented as proof-only
+but ran the full refresh first, rewriting the legacy index whenever source
+files changed. Report now diverts before the refresh and proves from stored
+snapshots plus live Git evidence: both indexes certified clean at one SHA and
+the live checkout clean at that same SHA — three clean legs at one commit
+mean the stored snapshots describe the live tree, no refresh needed. Zero
+writes on every outcome; responses carry `_meta.read_only: true`. A genuinely
+uncertified legacy index reports `legacy_reconcile_uncertified` honestly
+(apply, which refreshes under C.2 intent, remains the certify-and-retire
+path).
+
+Additive and 1.x-compatible: new defaulted kwarg, new exception only raised
+when that kwarg is passed, new response keys, no INDEX_VERSION bump. Tests:
+`tests/test_v1_115_0.py` (10); @rknighton's `qa_adversarial_test.py` passes
+8/8 verbatim.
+
 ## [1.114.0] - 2026-07-22 - QA-04/QA-05: disclose failed Git verification, complete the result-code contract (#88)
 
 @rknighton's follow-up QA on #88.

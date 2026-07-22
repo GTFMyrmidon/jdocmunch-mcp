@@ -371,6 +371,7 @@ supersession; jdoc#80 Parts B/C, #85, #86):
 | `supersession_conflict` | The target or candidate set changed before retirement; nothing removed, retry safe. |
 | `supersession_cleanup_incomplete` | Supersession proven but retirement did not complete; the provisional remains discoverable, retry idempotent. |
 | `graduation_cleanup_incomplete` | Exact-duplicate graduation proven but removing the provisional did not complete; nothing reconciled, the provisional remains discoverable, retry idempotent. |
+| `graduation_conflict` | An index changed between the exact-duplicate proof and physical removal; the guarded delete voided the retirement before touching anything — both indexes kept, retry safe. |
 
 **`legacy_reconciliation.reason_code`** (Part C.2 — explicit-intent
 reconciliation of genuine pre-1.102 fieldless legacy indexes; jdoc#87.
@@ -387,6 +388,21 @@ ordinary refresh stays backfill-only and never retires anything):
 | `legacy_reconciled_to_established` | Apply mode: proof repeated immediately before retirement; the selected legacy handle was retired, the peer is unchanged and its handle returned. |
 | `legacy_reconcile_conflict` | The peer or candidate set changed between proof and retirement; nothing removed, retry safe. |
 | `legacy_reconcile_cleanup_incomplete` | Retirement proven but removal did not complete; the legacy index remains discoverable, retry idempotent. |
+
+**Retirement coordination** (jdoc#88 QA-01/QA-02, v1.115.0): every retirement
+path (legacy apply, supersession, exact-dedup graduation) captures monolith
+fingerprints for the retiring AND retained handles at proof time and passes
+them to a guarded `delete_index`, which re-verifies them inside the deletion
+boundary before touching anything. A mismatch voids the retirement — the
+conflict reason codes above fire with a `changed_handles` list and both
+indexes kept. A durable retiring record (`<owner>/.retirements/<name>.json`)
+is written before the destructive step: removed on success and on conflict,
+kept when cleanup fails (responses then carry `pending_retirement: true`). A
+refresh of a retiring handle cancels the pending retirement rather than
+racing it. `legacy_reconcile="report"` performs no writes on any outcome: it
+proves from stored snapshots plus live Git evidence (both indexes certified
+clean at the live checkout's clean commit), and its responses carry
+`_meta.read_only: true`.
 
 **Top-level `error` codes** (fail-closed refusals returned as
 `{"success": false, "error": <code>, ...}` before any write — these two were
