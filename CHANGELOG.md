@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.114.2] - 2026-07-23 - canonical handoff contract: finalize_handoff + munch://handoff/<id> (suite parity, jcodemunch-mcp #374)
+
+New tool `finalize_handoff` (`jdocmunch.handoff/v1`) + resource
+`munch://handoff/<id>` — suite parity with jcodemunch-mcp v1.108.162. A
+multi-step documentation audit ends with one authoritative, server-owned
+Markdown handoff: the assistant authors the analysis; the server
+deterministically assembles the caller's sections plus optional named
+appendices (each exactly once, duplicates rejected), validates every
+`evidence_refs` entry against the session's actual retrieval record
+(section ids and doc paths served by `search_sections` / `search_titles` /
+`get_section` / `get_sections`, recorded at the response chokepoint; unknown
+refs fail closed with an `unknown_refs` list), persists session-scoped in
+memory, and returns a compact receipt `{handoff_id, resource_uri, sha256,
+length, canonical: true}`. The resource serves the immutable body with
+byte-identical repeated reads; `canonical: true` is advisory metadata only.
+No character limit; never writes to the documentation corpus; standard tier;
+`readOnlyHint: false`. Tool count 63 → 64. Additive/1.x, no INDEX_VERSION
+bump. Tests `tests/test_v1_114_2.py` (15).
+
 ## [1.114.1] - 2026-07-23 - BM25 tokenizer: Unicode word splitting + CJK character bigrams (#91)
 
 Reported by @tetiz123. The BM25 split regex was `[^a-z0-9]+`, so every

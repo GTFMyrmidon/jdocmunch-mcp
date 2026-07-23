@@ -602,6 +602,12 @@ The server exposes one MCP resource, `munch://runtime/identity` — a read-only 
 
 ---
 
+## Canonical handoff (`finalize_handoff` + `munch://handoff/<id>`)
+
+A multi-step documentation audit can end with one authoritative, server-attested result. The assistant authors the analysis; `finalize_handoff` takes those sections plus `evidence_refs`, validates every reference against what this session **actually retrieved** (section ids or doc paths served by `search_sections` / `search_titles` / `get_section` / `get_sections` — unknown refs fail closed), deterministically assembles one canonical Markdown handoff (`jdocmunch.handoff/v1`), and returns a compact receipt: `{handoff_id, resource_uri, sha256, length, canonical: true}`. The immutable body is served by the `munch://handoff/<id>` resource — repeated reads are byte-identical. Session-scoped, in-memory, never writes to your documentation corpus; appendices appear exactly once; no character limit. Suite parity with jcodemunch-mcp and jdatamunch-mcp.
+
+---
+
 ## Keeping indexes fresh (the `watch` daemon)
 
 By default jDocMunch's index freshness rides the PostToolUse hook, which only
