@@ -406,6 +406,22 @@ a `changed_handles` list, both indexes kept. No successful retirement can
 remove the last surviving snapshot or return a retained handle that no
 longer exists.
 
+The retirement record is the PAIR coordination point (jdoc#90 QA-17): the
+guarded delete executes its final gate — fingerprint re-verify, a check
+that its own durable record still exists, the primary unlink, and record
+removal — as one destructive step under a lock on that record. Any delete
+first voids the records naming its target as retained through the same
+lock, with a bounded wait, before its own destructive steps: a void landing
+before the gate makes the gate conflict (record gone, retiring handle
+kept); a delete arriving while the gate is closed is refused (returns
+False) and succeeds on retry once the gate opens. A completed retirement
+therefore always leaves the retained index in place at completion, and no
+interleaving of retirement with saves or deletes of either handle can end
+with both participating indexes absent. No caller ever blocks on two locks
+(handle locks and record locks are acquired in a fixed handle-then-record
+order, record locks non-blocking on the delete side), so the cross-handle
+deadlock surface stays closed.
+
 A durable retiring record (`<owner>/.retirements/<name>.json`) is published
 BEFORE the destructive step, fsync'd, with a per-publication-unique temp
 name, and the publication receipt is required — a failed publication stops

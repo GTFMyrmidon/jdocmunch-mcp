@@ -66,11 +66,36 @@ unverified recovery record; both fixed before this release shipped.
   acquisition, so lockfile deletion can't split coordination across two
   inodes.
 
+**Completion QA (#90, @rknighton):**
+
+- **QA-17 (High):** pair coordination previously ended at the final
+  fingerprint check — a retained-peer delete landing between that check and
+  the primary unlink could still leave both indexes absent. The retirement
+  record is now the PAIR coordination point: the guarded delete executes its
+  final gate (fingerprint re-verify, record-existence check, primary unlink,
+  record removal) under a lock on its own retirement record, and any delete
+  first voids the records naming its target as retained THROUGH that same
+  lock (bounded wait) before touching anything. Void lands before the gate →
+  the gate finds the record gone and conflicts, keeping the retiring handle.
+  Gate already closed → the retained-peer delete is refused (returns False;
+  a retry succeeds as soon as the gate opens, normally milliseconds). No
+  interleaving finishes with both participating indexes absent, and no
+  caller ever blocks on two locks — the single-handle lock design (and its
+  absent deadlock surface) is preserved.
+- **QA-18:** corrected below — the #89 harness claim now states the exact
+  results instead of "pass in full."
+
 Additive and 1.x-compatible: new defaulted kwarg, new exception only raised
 when that kwarg is passed, new response keys, no INDEX_VERSION bump. Tests:
-`tests/test_v1_115_0.py` (10) + `tests/test_v1_115_0_qa89.py` (10);
-@rknighton's `qa_adversarial_test.py` passes 8/8 verbatim, his #89
-`qa_blockers.py`/`qa_process.py` reproductions pass in full.
+`tests/test_v1_115_0.py` (10) + `tests/test_v1_115_0_qa89.py` (10) +
+`tests/test_v1_115_0_qa90.py` (4); @rknighton's `qa_adversarial_test.py`
+passes 8/8 verbatim. His #89 `qa_blockers.py` passes 9/9; `qa_process.py`
+passes 5/6 — the one flip is `test_observation_direct_retained_delete`, his
+explicitly-labeled current-behavior observation, which now asserts pre-#89
+behavior by design (the QA-10 policy voids the record on a retained-handle
+direct delete). His #90 `qa_atomic_gap.py` both-indexes-absent state is
+unreachable: the mid-gate retained delete is refused, so the harness stops
+at its delete-returns-True assert while the invariant it protects holds.
 
 ## [1.114.0] - 2026-07-22 - QA-04/QA-05: disclose failed Git verification, complete the result-code contract (#88)
 

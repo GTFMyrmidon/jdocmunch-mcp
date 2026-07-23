@@ -32,7 +32,36 @@ record naming it as retained (`void_retirements_referencing`, called from
 fsyncs (+ dir fsync on POSIX). **QA-15:** `_index_write_lock` POSIX path
 re-verifies st_ino/st_dev after flock (lockfile unlink can't split
 coordination; Windows can't unlink open files, exempt). QA-12/13 (perf) +
-QA-16 (crash matrix) deferred post-merge per reviewer's own timing. GOTCHA:
+QA-16 (crash matrix) deferred post-merge per reviewer's own timing.
+**QA-15 CONFIRMED on real Linux by rknighton (2026-07-23, #89): three-process
+inode-split rig vs exact commit 0d22087 on Ubuntu 24.04/ext4 — waiter
+detected stale inode + retried onto current inode as designed; full suite on
+Linux 1771 passed / 7 skipped / 0 failed (first complete Linux validation of
+the branch).**
+
+**#90 QA-17 (High, FIXED same day): pair coordination via the RECORD LOCK.**
+His qa_atomic_gap.py paused the guarded delete AT the primary unlink (after
+the final fp check) and deleted the retained peer through the normal path →
+both indexes absent. Root insight: single-handle locking can't couple two
+files' existence; grabbing both handle locks reopens QA-14. Fix = the
+retirement RECORD is the pair coordination point (retirements.py:
+`hold_record_lock` blocking ctx mgr + `_acquire_fd` try/blocking w/ QA-15
+ino-recheck; `try_void_retirements_referencing(timeout=1s)` bounded;
+`void_retirements_referencing` now trylock-skip for save paths). delete_index:
+(1) BEFORE any destructive step, try-void records naming target as retained —
+busy lock ⇒ RETURN FALSE (refusal; retry succeeds ms later); (2) final gate
+under `hold_record_lock(own record)`: fp re-verify + entry-record-still-exists
+check (voided ⇒ RetirementConflict([retained])) + unlink + finish_retirement
+all inside the lock. Lock order fixed handle→record, record locks
+non-blocking on the delete side ⇒ no two-lock blocking anywhere, QA-14 stays
+closed. Leftover `.retlock` files in .retirements are permanent by design
+(never unlink a lock file you coordinate on — QA-15 lesson). QA-18 = CHANGELOG
+now states exact harness results (qa_process 5/6 w/ labeled observation flip)
+instead of "pass in full". Tests `tests/test_v1_115_0_qa90.py` (4: refusal
+inside gate + voided-record conflict + before-gate void wins + no pending
+record post-gate); his qa_atomic_gap both-absent state now unreachable
+(harness stops at its delete-returns-True assert — disclose, don't surprise).
+Suite 1782. **HOLD branch for his re-review of #90.** GOTCHA:
 rknighton's qa_followups qa09/qa10/qa11-pending asserts + qa_process
 observation test assert PRE-fix behavior and now flip by design. Tests
 `tests/test_v1_115_0_qa89.py` (10); suite 1778. SPEC.md coordination

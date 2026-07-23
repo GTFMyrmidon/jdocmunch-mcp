@@ -1459,6 +1459,35 @@ class DocStore:
             if changed:
                 raise RetirementConflict(changed)
 
+        # jdoc#90 QA-17: this handle may be the RETAINED peer of a pending
+        # retirement. Coordinate through the retirement record's lock BEFORE
+        # any destructive step: voiding the record here guarantees the owning
+        # retirement's final gate (which re-checks record existence under the
+        # same lock) conflicts instead of completing against a peer this
+        # delete is about to remove. When a record's lock is held — the
+        # owning retirement is inside its destructive step this instant —
+        # refuse the delete (retry succeeds as soon as the gate closes) so no
+        # interleaving can end with both participating indexes absent.
+        from .retirements import (
+            hold_record_lock,
+            pending_retirement,
+            try_void_retirements_referencing,
+        )
+        if not try_void_retirements_referencing(
+            self.base_path, f"{owner}/{name}"
+        ):
+            return False
+
+        # jdoc#90 QA-17: note whether a durable record backs THIS guarded
+        # delete at entry — the final gate then requires it to still exist,
+        # so a retained-peer delete that voided it (through the record lock
+        # above, in another process) turns into a conflict, never a
+        # completed retirement against a vanished peer.
+        entry_record = (
+            pending_retirement(self.base_path, owner, name)
+            if expected_fingerprints else None
+        )
+
         # jdoc#88 QA-02: remove the primary index record LAST. Auxiliary
         # artifacts (content cache, sidecars) go first; the `<name>.json`
         # monolith is what `load_index`/`list_repos` key on, so if any earlier
@@ -1512,21 +1541,44 @@ class DocStore:
         # jdoc#88 QA-02: primary record removed LAST — once this succeeds the
         # index is gone; until then a failed earlier step leaves it loadable.
         if index_path.exists():
-            # jdoc#89 QA-06: the entry check and this removal are not one
-            # moment. Re-verify every proof-time fingerprint immediately
-            # before the point of no return; a concurrent save or direct
-            # delete of the retained peer since entry aborts here with this
-            # handle still loadable (its monolith is untouched — only
-            # rebuildable auxiliary artifacts may be gone).
             if expected_fingerprints:
-                changed = self._verify_expected_fingerprints(
-                    expected_fingerprints
-                )
-                if changed:
-                    raise RetirementConflict(changed)
-            _evict_index_cache(index_path)
-            index_path.unlink()
-            deleted = True
+                # jdoc#89 QA-06 / jdoc#90 QA-17: the final gate. Everything
+                # inside the record lock is ONE destructive step: re-verify
+                # every proof-time fingerprint, require the durable record
+                # this retirement published to still exist, then unlink. A
+                # concurrent delete of the retained peer must first void that
+                # record through this same lock (try_void_retirements_
+                # referencing), so it either lands before the gate — record
+                # gone, conflict raised, this handle kept — or is refused
+                # until the gate closes. No interleaving finishes with both
+                # participating indexes absent. A conflict here leaves this
+                # handle loadable; only rebuildable auxiliary artifacts may
+                # already be gone (a refresh rebuilds them).
+                with hold_record_lock(self.base_path, owner, name):
+                    changed = self._verify_expected_fingerprints(
+                        expected_fingerprints
+                    )
+                    if changed:
+                        raise RetirementConflict(changed)
+                    if entry_record is not None and pending_retirement(
+                        self.base_path, owner, name
+                    ) is None:
+                        raise RetirementConflict(
+                            [entry_record.get("retained") or f"{owner}/{name}"]
+                        )
+                    _evict_index_cache(index_path)
+                    index_path.unlink()
+                    deleted = True
+                    # Record removal inside the gate: the retirement is
+                    # complete the instant the lock releases, so no later
+                    # observer can see "index gone, record pending" from
+                    # this path (QA-08 self-heal still covers crashes).
+                    from .retirements import finish_retirement
+                    finish_retirement(self.base_path, owner, name)
+            else:
+                _evict_index_cache(index_path)
+                index_path.unlink()
+                deleted = True
         # jdoc#88 QA-01/QA-02: once the primary record is gone the index has
         # no pending retirement — the retirement completed, or a direct user
         # delete of a retiring handle mooted it. Runs AFTER the primary
