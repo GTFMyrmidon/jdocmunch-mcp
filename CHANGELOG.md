@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.114.1] - 2026-07-23 - BM25 tokenizer: Unicode word splitting + CJK character bigrams (#91)
+
+Reported by @tetiz123. The BM25 split regex was `[^a-z0-9]+`, so every
+non-ASCII character acted as a separator: Korean/Japanese/Chinese content
+produced zero tokens (the lexical channel contributed nothing, and installs
+without an embedding provider had no working search at all for those corpora),
+and accented Latin was mangled (`café` → `caf`). The module docstring claimed
+Unicode word boundaries; the implementation now actually delivers them.
+
+The tokenizer splits on Unicode word boundaries (`[\W_]+`), keeps accented
+Latin intact, and expands CJK runs (Hangul, Hiragana/Katakana, Han) into
+overlapping character bigrams — CJK has no whitespace word boundaries, and
+since index time and query time share the same expansion, bigram overlap is
+the match signal. Mixed-script tokens (`초과근무OvertimeService`) split
+cleanly; CamelCase/snake_case handling, URL expansion, frontmatter/fence
+scrubbing, and English stop-words are unchanged, and pure-ASCII corpora
+tokenize exactly as before. `search_titles`'s private ASCII-only tokenizer
+gets the same treatment via a new shared `word_tokens` helper.
+
+No reindex needed: BM25 tokenizes stored section content at scoring time, so
+existing indexes pick up CJK-capable lexical scoring immediately.
+
 ## [1.114.0] - 2026-07-22 - QA-04/QA-05: disclose failed Git verification, complete the result-code contract (#88)
 
 @rknighton's follow-up QA on #88.

@@ -14,18 +14,17 @@ to call on every keystroke if needed.
 
 from __future__ import annotations
 
-import re
 import time
 from typing import Optional
 
+from ..retrieval.tokenize import word_tokens
 from ..storage import DocStore
 
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-
 def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall((text or "").lower())
+    # Unicode-aware with CJK bigram expansion — was ASCII-only [a-z0-9]+,
+    # which made non-ASCII titles unfindable by token overlap (#91).
+    return word_tokens(text)
 
 
 def _score_title(title_lc: str, title_tokens: list[str],
