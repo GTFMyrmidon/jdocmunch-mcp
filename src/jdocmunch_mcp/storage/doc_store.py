@@ -33,10 +33,15 @@ _UNSET = object()
 
 class RetirementConflict(Exception):
     """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
-    its retirement was approved. Raised BEFORE any removal — nothing was
-    touched. ``changed`` lists the ``owner/name`` handles that no longer match
-    their proof-time fingerprints. Only ever raised when the caller passed
-    ``expected_fingerprints``; unguarded deletes are unaffected."""
+    its retirement was approved. Raised at the entry check (nothing touched)
+    or at the pre-removal recheck immediately before the primary record would
+    be unlinked (jdoc#89 QA-06) — in both cases every participating index
+    remains loadable; at worst rebuildable auxiliary artifacts of the
+    retiring handle are gone. ``changed`` lists the ``owner/name`` handles
+    that no longer match their proof-time fingerprints (an expected value of
+    None always conflicts — missing state never authorizes removal). Only
+    ever raised when the caller passed ``expected_fingerprints``; unguarded
+    deletes are unaffected."""
 
     def __init__(self, changed: list):
         self.changed = list(changed)
@@ -777,17 +782,41 @@ class DocStore:
             yield
             return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-        try:
+        while True:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
             if fcntl is not None:
                 fcntl.flock(fd, fcntl.LOCK_EX)
-            else:  # Windows: LK_LOCK blocks ~10s then raises; loop until granted
-                while True:
-                    try:
-                        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                # jdoc#89 QA-15: POSIX locks attach to the open inode, not the
+                # pathname. delete_index can unlink the lockfile while another
+                # process holds (or is queued on) its old inode; a lock taken
+                # on a stale inode would no longer coordinate with later
+                # acquirers of the recreated path. Verify the fd still IS the
+                # path after acquiring; if not, retry on the fresh inode.
+                try:
+                    path_stat = os.stat(str(lock_path))
+                    fd_stat = os.fstat(fd)
+                    if (path_stat.st_ino, path_stat.st_dev) == (
+                        fd_stat.st_ino, fd_stat.st_dev
+                    ):
                         break
-                    except OSError:
-                        time.sleep(0.05)
+                except OSError:
+                    pass  # unlinked under us — stale inode, retry
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+                continue
+            # Windows: LK_LOCK blocks ~10s then raises; loop until granted.
+            # An open file cannot be unlinked on Windows, so the inode-split
+            # hazard above cannot occur here.
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            break
+        try:
             yield
         finally:
             try:
@@ -844,7 +873,6 @@ class DocStore:
         coverage: Optional[dict] = None,
     ) -> "DocIndex":
         """Save index and raw files to storage atomically."""
-        self._cancel_pending_retirement(owner, name)
         if file_hashes is None:
             file_hashes = {fp: _file_hash(c) for fp, c in raw_files.items()}
 
@@ -892,6 +920,10 @@ class DocStore:
             # multiple GB on broadly-indexed corpora.
             json.dump(self._index_to_dict(index), f, separators=(",", ":"))
         self._atomic_replace(tmp_path, index_path)
+        # jdoc#89 QA-07: cancel the pending retirement only AFTER the rewrite
+        # actually landed — a save that fails before the replace leaves the
+        # still-pending work discoverable instead of erasing its record.
+        self._cancel_pending_retirement(owner, name)
         _evict_index_cache(index_path)
         self._write_summary(owner, name, index)  # jdoc#77
 
@@ -1059,7 +1091,6 @@ class DocStore:
         index = self.load_index(owner, name)
         if not index:
             return None
-        self._cancel_pending_retirement(owner, name)
 
         # Drop sections belonging to deleted or changed files
         files_to_remove = set(deleted_files) | set(changed_files)
@@ -1186,6 +1217,8 @@ class DocStore:
             # jdoc#75: compact separators (see save_index).
             json.dump(self._index_to_dict(updated), f, separators=(",", ":"))
         self._atomic_replace(tmp_path, index_path)
+        # jdoc#89 QA-07: cancel only after the rewrite landed (see save_index).
+        self._cancel_pending_retirement(owner, name)
         _evict_index_cache(index_path)
         self._write_summary(owner, name, updated)  # jdoc#77
 
@@ -1348,12 +1381,18 @@ class DocStore:
         """jdoc#88 QA-01 item 3: a refresh of a retiring handle CANCELS the
         pending retirement instead of racing it. The proof-time fingerprints
         are stale by definition once the handle is rewritten, and a voided
-        retirement must not linger as pending work. Fail-visible by design:
-        the caller's write goes where they aimed it, never silently rerouted
-        to the retained handle. Best-effort."""
+        retirement must not linger as pending work. jdoc#89 QA-09: the same
+        applies from the RETAINED side — rewriting the retained peer stales
+        the record's stored proof, so any record naming this handle as
+        retained is voided too. Fail-visible by design: the caller's write
+        goes where they aimed it, never silently rerouted; the next reconcile
+        re-proves against the new state. Best-effort."""
         try:
-            from .retirements import finish_retirement
+            from .retirements import (
+                finish_retirement, void_retirements_referencing,
+            )
             finish_retirement(self.base_path, owner, name)
+            void_retirements_referencing(self.base_path, f"{owner}/{name}")
         except Exception:
             pass
 
@@ -1371,17 +1410,44 @@ class DocStore:
         except (OSError, ValueError):
             return None
 
+    def _verify_expected_fingerprints(self, expected_fingerprints: dict) -> list:
+        """The handles whose current fingerprints no longer match their
+        proof-time values. jdoc#89 QA-06: an expected value of None fails
+        closed — a missing or unreadable fingerprint at proof time never
+        authorizes a removal, so ``None == None`` can never pass the guard."""
+        changed = []
+        for handle, expected in expected_fingerprints.items():
+            h_owner, _, h_name = handle.partition("/")
+            if (
+                expected is None
+                or self.index_fingerprint(h_owner, h_name) != expected
+            ):
+                changed.append(handle)
+        return changed
+
+    @_with_index_lock
     def delete_index(
         self, owner: str, name: str, expected_fingerprints: Optional[dict] = None
     ) -> bool:
         """Delete an index and its raw content cache.
 
+        Holds the same cross-process write lock as ``save_index`` /
+        ``incremental_save`` (jdoc#89 QA-06: every writer and direct delete
+        of a handle joins one lifecycle coordinator — only the target handle
+        is locked, so lock ordering across handles never arises).
+
         ``expected_fingerprints`` (jdoc#88 QA-01) maps ``owner/name`` handles
         to :meth:`index_fingerprint` values captured when the retirement was
-        approved. The precondition is verified here, inside the deletion
-        boundary and before any removal; a mismatch raises
-        :class:`RetirementConflict` with nothing touched. Omitted → the
-        pre-existing unguarded behavior, byte-identical."""
+        approved. The precondition is verified twice inside the deletion
+        boundary: at entry before any removal (a mismatch raises
+        :class:`RetirementConflict` with nothing touched), and again
+        immediately before the primary ``<name>.json`` record is removed
+        (jdoc#89 QA-06: auxiliary cleanup leaves a window a concurrent save
+        or direct delete of the OTHER handle can occupy — the second check
+        aborts with the handle still loadable; auxiliary artifacts may
+        already be gone, and a refresh rebuilds them). An expected value of
+        None always conflicts (missing state never authorizes removal).
+        Omitted → the pre-existing unguarded behavior."""
         try:
             index_path = self._index_path(owner, name)
             content_dir = self._content_dir(owner, name)
@@ -1389,11 +1455,7 @@ class DocStore:
             return False
 
         if expected_fingerprints:
-            changed = []
-            for handle, expected in expected_fingerprints.items():
-                h_owner, _, h_name = handle.partition("/")
-                if self.index_fingerprint(h_owner, h_name) != expected:
-                    changed.append(handle)
+            changed = self._verify_expected_fingerprints(expected_fingerprints)
             if changed:
                 raise RetirementConflict(changed)
 
@@ -1450,6 +1512,18 @@ class DocStore:
         # jdoc#88 QA-02: primary record removed LAST — once this succeeds the
         # index is gone; until then a failed earlier step leaves it loadable.
         if index_path.exists():
+            # jdoc#89 QA-06: the entry check and this removal are not one
+            # moment. Re-verify every proof-time fingerprint immediately
+            # before the point of no return; a concurrent save or direct
+            # delete of the retained peer since entry aborts here with this
+            # handle still loadable (its monolith is untouched — only
+            # rebuildable auxiliary artifacts may be gone).
+            if expected_fingerprints:
+                changed = self._verify_expected_fingerprints(
+                    expected_fingerprints
+                )
+                if changed:
+                    raise RetirementConflict(changed)
             _evict_index_cache(index_path)
             index_path.unlink()
             deleted = True
@@ -1457,10 +1531,16 @@ class DocStore:
         # no pending retirement — the retirement completed, or a direct user
         # delete of a retiring handle mooted it. Runs AFTER the primary
         # removal so a failure part-way keeps the durable record (pending
-        # cleanup stays a discoverable fact). Best-effort, like claims.
+        # cleanup stays a discoverable fact). jdoc#89 QA-10: a direct delete
+        # also voids any record naming this handle as the RETAINED peer —
+        # that retirement can no longer complete as recorded. Best-effort,
+        # like claims.
         try:
-            from .retirements import finish_retirement
+            from .retirements import (
+                finish_retirement, void_retirements_referencing,
+            )
             finish_retirement(self.base_path, owner, name)
+            void_retirements_referencing(self.base_path, f"{owner}/{name}")
         except Exception:
             pass
         return deleted

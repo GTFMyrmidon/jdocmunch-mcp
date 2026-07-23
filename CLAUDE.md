@@ -2,6 +2,42 @@
 
 **Version:** 1.115.0 (branch `coordinated-retirement`, NOT yet published) | **Tests:** `pytest tests/ -q`
 
+## v1.115.0 addendum — #89 pre-production corrections (QA-06..QA-11, QA-15)
+rknighton's branch QA (#89) found the QA-01 coordination still had a
+proof-to-capture gap + unverified recovery records. Fixes, all on the same
+branch pre-release: **QA-06 (High):** new `_execute_retirement` helper
+(index_local.py) is THE destructive step for all 3 retirement paths —
+ordering is the contract: (1) capture fingerprints for both handles (None
+fails closed, never authorizes), (2) RELOAD both indexes + re-run the
+decisive proof predicates (per-path `_reverify` closures: legacy = cert+hash
+coverage; supersession = both certified clean at the exact ancestry SHAs;
+dedup = subset+hash equality) — token captured BEFORE reload means proved
+state and accepted token can't diverge, (3) require `begin_retirement`
+receipt, (4) guarded delete. `delete_index` now: `@_with_index_lock` (joins
+the save-path lifecycle coordinator; only the TARGET handle is locked, so no
+cross-handle lock ordering/deadlock surface — QA-14 moot), rejects expected
+`None` fingerprints, and re-verifies the full fingerprint map a SECOND time
+immediately before the primary `<name>.json` unlink (catches retained-peer
+delete/save mid-cleanup; aborts with handle loadable, aux artifacts may be
+gone → refresh rebuilds). **QA-07:** `begin_retirement` → bool receipt
+(fsync'd file + per-publication-unique temp name: pid+tid+counter);
+publication failure → family cleanup-incomplete, NOTHING removed, no pending
+claim; `pending_retirement: true` only when record exists; save/incremental
+cancel the record AFTER `_atomic_replace` lands (failed save preserves it).
+**QA-08:** `pending_retirement` self-heals a record whose retiring index is
+gone (completed retirement, never pending). **QA-09/QA-10 policy (jjg-style
+fail-visible):** rewrite OR direct delete of the RETAINED handle voids any
+record naming it as retained (`void_retirements_referencing`, called from
+`_cancel_pending_retirement` + `delete_index`). **QA-11:** record publication
+fsyncs (+ dir fsync on POSIX). **QA-15:** `_index_write_lock` POSIX path
+re-verifies st_ino/st_dev after flock (lockfile unlink can't split
+coordination; Windows can't unlink open files, exempt). QA-12/13 (perf) +
+QA-16 (crash matrix) deferred post-merge per reviewer's own timing. GOTCHA:
+rknighton's qa_followups qa09/qa10/qa11-pending asserts + qa_process
+observation test assert PRE-fix behavior and now flip by design. Tests
+`tests/test_v1_115_0_qa89.py` (10); suite 1778. SPEC.md coordination
+section rewritten. **NEXT: rknighton re-review on #89 → merge → publish.**
+
 ## v1.115.0 - QA-01/QA-03: coordinated & recoverable retirement (#88) — BRANCH, awaiting rknighton QA
 PRD `C:\MCPs\business\jdoc-coordinated-retirement\PRD.md`. **QA-01 core =
 guarded delete:** `DocStore.delete_index(owner, name, expected_fingerprints=None)`

@@ -389,19 +389,41 @@ ordinary refresh stays backfill-only and never retires anything):
 | `legacy_reconcile_conflict` | The peer or candidate set changed between proof and retirement; nothing removed, retry safe. |
 | `legacy_reconcile_cleanup_incomplete` | Retirement proven but removal did not complete; the legacy index remains discoverable, retry idempotent. |
 
-**Retirement coordination** (jdoc#88 QA-01/QA-02, v1.115.0): every retirement
-path (legacy apply, supersession, exact-dedup graduation) captures monolith
-fingerprints for the retiring AND retained handles at proof time and passes
-them to a guarded `delete_index`, which re-verifies them inside the deletion
-boundary before touching anything. A mismatch voids the retirement — the
-conflict reason codes above fire with a `changed_handles` list and both
-indexes kept. A durable retiring record (`<owner>/.retirements/<name>.json`)
-is written before the destructive step: removed on success and on conflict,
-kept when cleanup fails (responses then carry `pending_retirement: true`). A
-refresh of a retiring handle cancels the pending retirement rather than
-racing it. `legacy_reconcile="report"` performs no writes on any outcome: it
-proves from stored snapshots plus live Git evidence (both indexes certified
-clean at the live checkout's clean commit), and its responses carry
+**Retirement coordination** (jdoc#88 QA-01/QA-02 + jdoc#89 QA-06..QA-11,
+v1.115.0): every retirement path (legacy apply, supersession, exact-dedup
+graduation) runs one coordinated destructive step. Monolith fingerprints for
+the retiring AND retained handles are captured FIRST; the decisive proof
+predicates are then re-run on a reload the token covers, so a change landing
+around capture is re-proved rather than absorbed into the accepted token. A
+missing or unreadable fingerprint fails closed — `None` never authorizes a
+removal. The guarded `delete_index` (which holds the same cross-process
+write lock as the save paths) re-verifies the fingerprints twice inside the
+deletion boundary: at entry before any removal, and again immediately
+before the primary `<name>.json` record is removed — so a concurrent save or
+direct delete of either handle voids the retirement with every participating
+index still loadable. A mismatch fires the conflict reason codes above with
+a `changed_handles` list, both indexes kept. No successful retirement can
+remove the last surviving snapshot or return a retained handle that no
+longer exists.
+
+A durable retiring record (`<owner>/.retirements/<name>.json`) is published
+BEFORE the destructive step, fsync'd, with a per-publication-unique temp
+name, and the publication receipt is required — a failed publication stops
+the retirement before anything is removed (reported as the family's
+cleanup-incomplete code without a `pending_retirement` claim). The record is
+removed on success and on conflict, and kept when cleanup fails — responses
+then carry `pending_retirement: true` only when the record actually exists.
+A record whose retiring index no longer exists describes a completed
+retirement and is self-healed, never reported pending. A rewrite of the
+retiring handle cancels the pending retirement (only after the rewrite has
+durably landed — a failed save preserves the record); a rewrite or direct
+delete of the RETAINED handle likewise voids any record naming it as the
+retained peer. Fail-visible throughout: writes go where the caller aimed
+them, and the next reconcile re-proves against the current state.
+
+`legacy_reconcile="report"` performs no writes on any outcome: it proves
+from stored snapshots plus live Git evidence (both indexes certified clean
+at the live checkout's clean commit), and its responses carry
 `_meta.read_only: true`.
 
 **Top-level `error` codes** (fail-closed refusals returned as

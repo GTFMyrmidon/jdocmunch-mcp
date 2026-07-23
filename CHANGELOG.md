@@ -35,10 +35,42 @@ uncertified legacy index reports `legacy_reconcile_uncertified` honestly
 (apply, which refreshes under C.2 intent, remains the certify-and-retire
 path).
 
+**Pre-production corrections (#89, @rknighton):** the branch QA pass found
+the coordination above still left a proof-to-capture gap and an
+unverified recovery record; both fixed before this release shipped.
+
+- **QA-06 (High):** the three retirement paths now run one coordinated
+  destructive step — fingerprints captured FIRST, decisive proof re-run on a
+  reload the token covers, then the guarded delete verifies the fingerprints
+  at entry AND immediately before the primary record is removed (a concurrent
+  save or direct delete of the retained peer mid-cleanup now conflicts with
+  every index still loadable). A missing/unreadable fingerprint fails closed
+  (`None` never authorizes), and `delete_index` holds the same cross-process
+  write lock as the save paths — every writer and direct delete of a handle
+  joins one lifecycle coordinator. Only the target handle is ever locked, so
+  cross-handle lock ordering (and its deadlock surface) never arises.
+- **QA-07 (Medium):** `begin_retirement` returns a durable publication
+  receipt (fsync'd record, per-publication-unique temp name — two
+  same-process publishers can no longer collide on one PID-based temp path)
+  and cleanup never starts without it; a failed publication reports
+  cleanup-incomplete with nothing removed. `pending_retirement: true` is
+  claimed only when the record actually exists, and the save paths cancel a
+  pending record only AFTER their atomic replace lands (a failed save
+  preserves the record).
+- **QA-08:** a record whose retiring index no longer exists is a completed
+  retirement — self-healed, never reported pending. **QA-09/QA-10** (policy):
+  a rewrite or direct delete of the RETAINED handle voids any record naming
+  it as retained (fail-visible; the next reconcile re-proves). **QA-11**
+  (contract): record publication is fsync'd, so the receipt survives sudden
+  power loss. **QA-15:** the POSIX write lock re-verifies its inode after
+  acquisition, so lockfile deletion can't split coordination across two
+  inodes.
+
 Additive and 1.x-compatible: new defaulted kwarg, new exception only raised
 when that kwarg is passed, new response keys, no INDEX_VERSION bump. Tests:
-`tests/test_v1_115_0.py` (10); @rknighton's `qa_adversarial_test.py` passes
-8/8 verbatim.
+`tests/test_v1_115_0.py` (10) + `tests/test_v1_115_0_qa89.py` (10);
+@rknighton's `qa_adversarial_test.py` passes 8/8 verbatim, his #89
+`qa_blockers.py`/`qa_process.py` reproductions pass in full.
 
 ## [1.114.0] - 2026-07-22 - QA-04/QA-05: disclose failed Git verification, complete the result-code contract (#88)
 
