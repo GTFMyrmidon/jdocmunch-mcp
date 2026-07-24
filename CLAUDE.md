@@ -1,6 +1,39 @@
 # jdocmunch-mcp
 
-**Version:** 1.114.2 | **Tests:** `pytest tests/ -q`
+**Version:** 1.116.0 | **Tests:** `pytest tests/ -q`
+
+## v1.116.0 - claim-scoped evidence (handoff/v2 phase 1, suite parity)
+Suite parity with jcm v1.108.165 / jdata v1.25.0 (jcodemunch-mcp#377 phase 1,
+design by @mightydanp). A handoff section may now carry caller-authored
+`claims`, each with its OWN `evidence_refs`. v1 proved a ref was retrieved
+this session but never bound it to a sentence - refs landed in ONE global
+block at the end of the body. New `_validate_claims` takes
+`{id, statement, evidence_refs, classification?}`; **ids unique across the
+WHOLE handoff, not per section** (the id is the citation anchor - two sections
+owning one id makes a citation ambiguous); statements/classifications
+preserved VERBATIM (server never authors); each claim's refs attested
+SEPARATELY through the unchanged `_validate_evidence`, so an unknown ref
+returns `invalid_claims: [{claim_id, unknown_refs}]` naming the claim instead
+of one global failure list. `render_handoff` prints `### <statement>` +
+`- Claim id:` + indented evidence, and takes the schema string as a param.
+**Three calls carried from jcm:** (1) the INPUT picks the contract - no claims
+anywhere means the schema stays `jdocmunch.handoff/v1`, body BYTE-IDENTICAL to
+v1, `claims_attested` omitted (not `0`); any claim promotes to `.../v2`.
+(2) claims can satisfy `evidence_refs` (top-level may be empty when claims
+carry refs - strictly more permissive, no existing call changes). (3) claim
+refs join the canonical index, caller order first, so a v1 consumer reading a
+v2 handoff sees every ref where it expects. Section `content` optional ONLY
+when claims present. Additive/1.x, no INDEX_VERSION or tool-count change.
+Tests `tests/test_v1_116_0.py` (18, incl. the byte-identical-v1 guard); suite 1801.
+WARNING **Known limit, disclosed on #377 first:** phase 1 does NOT narrow what
+counts as a match - the doc-path broadening in `_validate_evidence` means
+citing a whole document still attests when one unrelated section from it was
+served. That is phase 2 (evidence receipts), DEFERRED.
+**Shipped from MASTER as a patch (like 1.114.1 / 1.114.2) while
+`coordinated-retirement` (1.115.0) stays HELD for rknighton's re-verification.
+1.115.0 deliberately SKIPPED so the held branch keeps that number; on merge,
+resolve version conflicts to the higher number and keep all CHANGELOG
+entries.**
 
 ## v1.114.2 - canonical handoff contract (suite parity, jcm #374)
 `finalize_handoff` tool + `munch://handoff/<id>` resource
