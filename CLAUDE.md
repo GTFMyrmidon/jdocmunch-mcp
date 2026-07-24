@@ -1,6 +1,31 @@
 # jdocmunch-mcp
 
-**Version:** 1.117.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.118.0 | **Tests:** `pytest tests/ -q`
+
+## v1.118.0 - lexical query no longer lowercased before tokenizing (#91 follow-up)
+Reported by @tetiz123 while validating the v1.114.1 CJK tokenizer on a real
+111-doc / 2,053-section Korean corpus (fix confirmed: no reindex, lexical went
+from nothing to their best ranker). Second, unrelated defect found while
+measuring. `DocIndex._lexical_search` passed `query.lower()` to the scorer, but
+`bm25.tokenize` inserts CamelCase boundaries BEFORE lowercasing, so the query
+side and document side disagreed for case-bearing identifiers:
+`tokenize("OvertimeService")` -> `['overtime','service']` (doc) vs
+`tokenize("overtimeservice")` -> `['overtimeservice']` (query). Every
+code-identifier query scored 0.0 and returned a SILENT empty list - silent
+because the Stage-A posting prune tokenizes the ORIGINAL query, so candidates
+survive the prune then each scores 0 in Stage B. CamelCase + acronym-suffix
+(`HCA060T`) hit; underscore names (`SPM_NOTIFICATION`) unaffected (delimiter is
+case-independent). **Fix:** pass the raw query to `_score_section` ->
+`bm25.score_section`; `tokenize` lowercases internally after de-camel, so it is
+correct and free. `_score_section`'s first param renamed `query_lower` ->
+`query` (both call sites in `_lexical_search` + the hybrid lexical leg updated);
+`query_words` (tag kicker) stays the lowercased set (tags matched case-folded).
+Consumer-layer, NO reindex (`tokenize` runs on stored content at scoring time).
+Tests `tests/test_v1_118_0.py` (7: root-cause asymmetry + e2e CamelCase/acronym/
+repository identifiers + underscore control + lowercase-prose control); suite
+1831. Additive/1.x, no INDEX_VERSION or tool-count change. **Shipped from MASTER
+as a patch while `coordinated-retirement` (1.115.0) stays HELD; on merge resolve
+versions up and keep all CHANGELOG entries.**
 
 ## v1.117.0 - absence evidence (handoff/v2 phase 3, suite parity)
 Suite parity with jcm v1.108.166 (jcodemunch-mcp#377 phase 3, design by

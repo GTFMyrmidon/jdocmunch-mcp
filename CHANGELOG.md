@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.118.0] - 2026-07-24 - lexical query no longer lowercased before tokenizing (#91 follow-up)
+
+Reported by @tetiz123 while validating the v1.114.1 CJK tokenizer on a real
+111-document / 2,053-section Korean corpus (the fix held: no reindex, and the
+lexical channel went from returning nothing to being their best ranker). While
+measuring, they found a second, unrelated defect with a one-line cause.
+
+`DocIndex._lexical_search` computed `query.lower()` and handed that to the
+scorer. But `bm25.tokenize` inserts CamelCase boundaries BEFORE it lowercases,
+so the two sides of the match disagreed for any identifier that carries case:
+
+    document side  tokenize("OvertimeService")  -> ['overtime', 'service']
+    query side     tokenize("overtimeservice")  -> ['overtimeservice']
+
+Every code-identifier query — the one thing a keyword ranker should be
+unbeatable at — scored 0.0 and returned a silent empty list. It is silent
+rather than an error because the Stage-A posting prune tokenizes the ORIGINAL
+query, so candidates survive the prune and then each one scores 0. CamelCase
+(`OvertimeService`) and acronym-plus-suffix (`HCA060T`) identifiers were hit;
+underscore-separated names (`SPM_NOTIFICATION`) were not, because the delimiter
+is case-independent.
+
+Fix: pass the raw query to the scorer. `tokenize` lowercases internally after
+the de-camel step, so feeding it the original text is both correct and
+redundant-work-free. `_score_section`'s first argument is renamed accordingly;
+`query_words` (the tag kicker) still uses the lowercased set, since tags are
+matched case-folded. Consumer-layer only, no reindex: `tokenize` runs over
+stored content at scoring time.
+
+New `tests/test_v1_118_0.py` (7): the tokenizer asymmetry at the root, plus
+end-to-end lexical retrieval for CamelCase / acronym / repository-suffix
+identifiers, an underscore control, and a lowercase-prose control that must not
+regress. Additive/1.x, no INDEX_VERSION or tool-count change; suite 1831.
+
+Shipped from MASTER as a patch (like 1.114.1 / 1.114.2 / 1.116.0 / 1.117.0)
+while `coordinated-retirement` (1.115.0) stays HELD for rknighton's
+re-verification; on merge, resolve version conflicts to the higher number and
+keep all CHANGELOG entries.
+
 ## [1.117.0] - 2026-07-24 - absence evidence (handoff/v2 phase 3, suite parity)
 
 Suite parity with jcodemunch-mcp v1.108.166 (jcodemunch-mcp#377 phase 3, design
