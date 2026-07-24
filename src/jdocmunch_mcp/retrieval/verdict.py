@@ -88,6 +88,33 @@ def index_coverage_meta(index) -> Optional[dict]:
     return out
 
 
+def index_changed_since_load(index) -> bool:
+    """Whether the index monolith was rewritten since it was loaded (never raises).
+
+    Backs the fifth absence refusal rule. Answers a question index staleness
+    cannot: a reindex of an UNCHANGED source tree rewrites sections while
+    reporting ``fresh``, and jdoc scores body text through a lazy content
+    loader that reads from disk at scan time, so a rebuild mid-scan can move
+    the very bytes being ranked.
+
+    Deliberately a filesystem signal so it still fires when a SEPARATE watcher
+    process drives the rebuild, which in-process state cannot observe.
+
+    Unknown is NOT changed: an index with no stamped provenance (a test double,
+    a hand-built DocIndex) returns False rather than degrading every verdict.
+    """
+    try:
+        from pathlib import Path
+
+        path = getattr(index, "_index_path", None)
+        loaded_at = getattr(index, "_loaded_mtime_ns", None)
+        if not path or loaded_at is None:
+            return False
+        return Path(path).stat().st_mtime_ns != int(loaded_at)
+    except Exception:
+        return False
+
+
 def _attach_coverage(verdict: dict, coverage: Optional[dict]) -> None:
     """Attach coverage disclosure to absent/degraded verdicts (in place).
 
@@ -178,6 +205,7 @@ def build_verdict(
     semantic_available: bool = True,
     lexical_used: bool = True,
     index_stale: bool = False,
+    index_changed: bool = False,
     did_you_mean: Optional[Sequence[str]] = None,
     coverage: Optional[dict] = None,
 ) -> dict:
@@ -191,6 +219,14 @@ def build_verdict(
     below = confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD
 
     if semantic_requested and not semantic_available:
+        state = STATE_DEGRADED
+    elif result_count == 0 and index_changed:
+        # The index was rewritten underneath this scan, so "we looked and it is
+        # not there" describes a corpus that was moving while we read it. Same
+        # reasoning as the stale gate: degraded cannot prove absence, so the
+        # refusal falls out of the existing "only `absent` proves absence"
+        # check with no new rule to keep in sync. Scoped to the absence path:
+        # a scan that RETURNED sections still returns them.
         state = STATE_DEGRADED
     elif result_count == 0:
         state = STATE_ABSENT
@@ -211,7 +247,12 @@ def build_verdict(
         "channels": {
             "lexical": "ok" if lexical_used else "off",
             "semantic": semantic_channel,
-            "index": "stale" if index_stale else "fresh",
+            # "rebuilding" is disclosed on EVERY state, not just the degraded
+            # one: a caller reading an `ok` result still deserves to know the
+            # index moved under it. Only the absence CLAIM is refused.
+            "index": (
+                "rebuilding" if index_changed else ("stale" if index_stale else "fresh")
+            ),
         },
         "scorer": SCORER_VERSION,
         "note": _NOTES[state],

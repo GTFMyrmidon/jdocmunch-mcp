@@ -62,6 +62,28 @@ _INDEX_CACHE_MAXSIZE = 8
 _INDEX_CACHE: "OrderedDict[tuple, DocIndex]" = OrderedDict()
 
 
+def _stamp_load_provenance(index, index_path, mtime_ns: int):
+    """Record which monolith an index came from and its mtime at load time.
+
+    Lets a retrieval verdict detect that the index was rewritten UNDERNEATH a
+    scan (``retrieval.verdict.index_changed_since_load``) — the fifth absence
+    refusal rule. Deliberately a filesystem signal so it still fires when the
+    rebuild is driven by a SEPARATE process (a watcher), which in-process state
+    cannot see. Matters more here than elsewhere: sections score through a lazy
+    ``_content_loader`` that reads body text from disk at scan time.
+    """
+    try:
+        index._index_path = str(index_path)
+        index._loaded_mtime_ns = int(mtime_ns)
+    except Exception:  # pragma: no cover - defensive; never break a load
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "Could not stamp load provenance", exc_info=True
+        )
+    return index
+
+
 def _index_cache_get(key: tuple):
     """LRU lookup — moves the entry to the most-recently-used end on hit."""
     val = _INDEX_CACHE.get(key)
@@ -920,7 +942,7 @@ class DocStore:
         cache_key = (str(index_path), mtime_ns)
         cached = _index_cache_get(cache_key)
         if cached is not None:
-            return cached
+            return _stamp_load_provenance(cached, index_path, mtime_ns)
 
         with open(index_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -991,7 +1013,7 @@ class DocStore:
         except Exception:
             index._embeddings_sidecar = None
         _index_cache_put(cache_key, index)
-        return index
+        return _stamp_load_provenance(index, index_path, mtime_ns)
 
     def detect_changes(
         self,

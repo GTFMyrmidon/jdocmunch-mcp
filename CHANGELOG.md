@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.119.0] - 2026-07-24 - a rebuild underneath a scan cannot prove absence (5th refusal rule)
+
+Suite parity with jcodemunch-mcp v1.108.168.
+
+### Fixed
+
+- **Absence evidence could be minted over an index that was being rewritten.**
+  v1.117.0 shipped four refusal rules for absence proofs — only `absent` proves
+  absence; `low_confidence`/`degraded` do not; a stale index does not; a
+  truncated index does not. None covered an index being **rewritten while the
+  scan reads it**.
+
+  Index staleness here is `source_dirty`, which reports that the *source* moved.
+  It is blind to a reindex that rewrites sections under an unchanged tree, so
+  such a scan reported `index: "fresh"`, reached `absent`, and handed back a
+  citable `absent:<sha>` ref. That matters more in jdoc than in its siblings:
+  sections are scored through a lazy content loader that reads body text from
+  disk at scan time, so a rebuild mid-scan can move the very bytes being ranked.
+
+  Zero results plus a detected rewrite now yields `degraded` instead of
+  `absent`. Because `degraded` already cannot prove absence, the fifth rule
+  falls out of the existing "only `absent` proves absence" check — there is no
+  parallel rule to drift. `absence_refusal` names the rebuild rather than the
+  generic state.
+
+- **`channels.index` gains `"rebuilding"`**, disclosed on **every** state, not
+  only the refused one: a caller reading an `ok` result still deserves to know
+  the index moved under it. Only the absence *claim* is withheld — a scan that
+  returned sections still returns them.
+
+### Notes
+
+- Detection is a filesystem signal (`DocStore._stamp_load_provenance` stamps the
+  monolith path + mtime at both load return points;
+  `retrieval.verdict.index_changed_since_load` re-stats it), deliberately **not**
+  in-process reindex state, which cannot see a rebuild driven by a separate
+  watcher process.
+- **Unknown is not changed**: an index with no stamped provenance (a test
+  double, a hand-built `DocIndex`) reports unchanged rather than degrading every
+  verdict.
+- Byte-identical for existing callers when nothing is rebuilding. NO new tool,
+  NO tool-count or `INDEX_VERSION` change. New `tests/test_v1_119_0.py` (13).
+
 ## [1.118.0] - 2026-07-24 - lexical query no longer lowercased before tokenizing (#91 follow-up)
 
 Reported by @tetiz123 while validating the v1.114.1 CJK tokenizer on a real

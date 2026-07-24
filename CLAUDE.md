@@ -1,6 +1,38 @@
 # jdocmunch-mcp
 
-**Version:** 1.118.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.119.0 | **Tests:** `pytest tests/ -q`
+
+## v1.119.0 — 5th absence refusal rule: a rebuild underneath a scan cannot prove absence
+
+Suite parity with jcm v1.108.168. v1.117.0's four rules (only `absent`;
+not `low_confidence`/`degraded`; not stale; not truncated) had **no rule for an
+index being REWRITTEN while the scan reads it**. Index staleness here is
+`source_dirty` = the SOURCE moved; it is **blind to a reindex that rewrites
+sections under an unchanged tree**, so such a scan reported `index:"fresh"`,
+reached `absent`, and minted a citable `absent:<sha>` ref over a half-written
+index. **Worse here than in the siblings**: sections score through a lazy
+`_content_loader` that reads body text from disk at scan time, so a rebuild
+mid-scan can move the very bytes being ranked.
+
+Fix: zero results + detected rewrite ⇒ `degraded`, so the 5th rule **falls out
+of the existing "only `absent` proves absence" check** — nothing new to keep in
+sync. `absence_refusal` gains a branch BEFORE the generic state check so the
+reason names the rebuild. `channels.index` gains **`"rebuilding"`, disclosed on
+EVERY state** (an `ok` caller deserves to know the index moved under it); only
+the absence CLAIM is refused.
+
+⚠ Detection is a **FILESYSTEM** signal — `DocStore._stamp_load_provenance`
+stamps `_index_path` + `_loaded_mtime_ns` at BOTH load return points (cache hit
+and cold), `retrieval.verdict.index_changed_since_load` re-stats. **NOT
+in-process reindex state**: a separate watcher process drives most rebuilds and
+in-process state cannot see it. **Unknown ≠ changed** (unstamped index → False).
+⚠ `doc_store.py` has NO module `logger` — the helper builds one locally in its
+except (the jcm v1.108.100 NameError-in-except trap).
+
+Files: `storage/doc_store.py`, `retrieval/verdict.py`, `handoff.py`,
+`tools/search_sections.py`. Tests `tests/test_v1_119_0.py` (13). NO
+tool/schema/INDEX_VERSION change. jdoc publishes no JSON Schema, so unlike jcm
+there was no enum to update.
 
 ## v1.118.0 - lexical query no longer lowercased before tokenizing (#91 follow-up)
 Reported by @tetiz123 while validating the v1.114.1 CJK tokenizer on a real
