@@ -1,6 +1,32 @@
 # jdocmunch-mcp
 
-**Version:** 1.116.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.117.0 | **Tests:** `pytest tests/ -q`
+
+## v1.117.0 - absence evidence (handoff/v2 phase 3, suite parity)
+Suite parity with jcm v1.108.166 (jcodemunch-mcp#377 phase 3, design by
+@mightydanp). A ZERO-RESULT section search is now citable proof. v1/v2 could
+not cite it (nothing served, no id), yet "searched the complete/fresh/
+non-truncated index and it is NOT there" is the claim audits most need.
+`build_verdict` already emits state/scanned/channels/coverage/scorer;
+`handoff.note_absence` records those under a deterministic ref. An `absent`
+verdict surfaces a citable ref. **jdoc-specific carrier:** its default
+`meta_fields` STRIPS `_meta`, so the ref rides in `_meta.absence_evidence`,
+re-attached AFTER filtering (the v1.104.0 budget lesson) - a token the default
+config deletes is one the agent can never cite. **Refusal rules (his, verbatim):**
+only `absent` proves absence; `low_confidence`/`degraded` do NOT; stale index
+does NOT; truncated index does NOT. Refused scans STILL recorded so citing
+returns the REASON (`refused_absence` / `refused_absence_claims`), not a bare
+unknown-ref; absent-but-not-citable -> `_meta.absence_evidence.citable:false` +
+`blocked_by`. Rendered proof carries tool+query, SCOPE, sections/documents
+scanned, channels, coverage w/ exclusion counts, scorer; unknown coverage
+disclosed as unknown NEVER as complete; detail renders ONCE. Ref = sha256[:12]
+over `(tool, repo, query, scope)`; jdoc `_SCOPE_ARGS` = doc_path/path_glob/role/
+tag/repo_group/lang. Session-scoped, in-memory, capped. Receipt gains
+`absence_attested`. Additive/1.x, NO INDEX_VERSION/tool-count change. Tests
+`tests/test_v1_117_0.py` (23, one per refusal rule); suite 1824.
+**Shipped from MASTER while `coordinated-retirement` (1.115.0) stays HELD;
+1.115.0 SKIPPED so the held branch keeps it; on merge resolve versions up + keep
+all CHANGELOG entries.**
 
 ## v1.116.0 - claim-scoped evidence (handoff/v2 phase 1, suite parity)
 Suite parity with jcm v1.108.165 / jdata v1.25.0 (jcodemunch-mcp#377 phase 1,

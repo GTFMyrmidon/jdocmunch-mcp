@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.117.0] - 2026-07-24 - absence evidence (handoff/v2 phase 3, suite parity)
+
+Suite parity with jcodemunch-mcp v1.108.166 (jcodemunch-mcp#377 phase 3, design
+by @mightydanp). A zero-result section search can now be cited as evidence in a
+handoff. Under v1/v2 it could not: nothing was served, so there was no id to
+reference. But "we searched the complete, fresh, non-truncated index and it is
+not there" is exactly the claim an audit most needs attested.
+
+`retrieval/verdict.build_verdict` already reports state (`ok` / `low_confidence`
+/ `absent` / `degraded`), scan counts, per-channel status, coverage, and a
+scorer pin. A search whose verdict is `absent` now surfaces a citable ref;
+passing it to `finalize_handoff` attests the absence. Because jdoc's default
+`meta_fields` strips `_meta` entirely (the v1.104.0 lesson), the ref rides in
+`_meta.absence_evidence`, re-attached AFTER filtering so the token-efficient
+default cannot delete a token the agent needs to cite.
+
+The refusal rules are the feature, adopted as proposed: only `absent` proves
+absence; `low_confidence` and `degraded` do not; a stale index does not; a
+truncated index does not. A refused scan is still recorded, so citing one
+returns the reason (`refused_absence`, or `refused_absence_claims` naming the
+claim) rather than a bare unknown-ref error. The rendered proof carries the
+tool and query, the scope it was not found in, sections and documents scanned,
+channel status, coverage with exclusion counts, and the scorer. Unknown
+coverage is disclosed as unknown, never rendered as a complete scope.
+
+Refs are content-addressed over `(tool, repo, query, scope)`. Session-scoped,
+in-memory, capped, never on disk. Receipt gains `absence_attested` when cited.
+Additive/1.x, no INDEX_VERSION or tool-count change. Tests
+`tests/test_v1_117_0.py` (23, one per refusal rule); suite 1824.
+
 ## [1.116.0] - 2026-07-23 - claim-scoped evidence (handoff/v2 phase 1, suite parity)
 
 Claim-scoped evidence, suite parity with jcodemunch-mcp v1.108.165
