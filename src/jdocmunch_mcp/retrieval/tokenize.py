@@ -11,8 +11,12 @@ Produces a flat list of lowercase tokens suitable for indexing or scoring:
   yields ``api`` ``example`` ``com`` ``v2`` ``users``).
 - Splits on Unicode word boundaries; further splits CamelCase
   (``DocStore`` → ``Doc Store``) and snake_case / kebab-case
-  (``embed_query`` → ``embed query``).
-- Drops English stop-words and tokens shorter than two characters.
+  (``embed_query`` → ``embed query``). Accented Latin survives intact
+  (``café`` → ``café``).
+- CJK runs (Hangul, Hiragana/Katakana, Han) become overlapping character
+  bigrams — CJK has no whitespace word boundaries, and both index and query
+  time use this same expansion, so bigram overlap is the match signal (#91).
+- Drops English stop-words and non-CJK tokens shorter than two characters.
 
 This module has no side effects and no I/O — safe to call from index time
 and from query time. Stop-word list is intentionally short; over-aggressive
@@ -61,9 +65,49 @@ _MD_LINK_RE = re.compile(r"!?\[([^\]]+)\]\([^)]*\)")
 # Splits CamelCase / PascalCase: insert a space before any uppercase that
 # follows a lowercase OR a sequence-of-uppercase-then-lowercase boundary.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-# After de-camel + lowercasing, anything that isn't alphanumeric becomes a
-# separator. Underscores, hyphens, dots, slashes — all split.
-_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+# After de-camel + lowercasing, anything that isn't a Unicode word character
+# becomes a separator. Underscores, hyphens, dots, slashes — all split.
+# (Was [^a-z0-9]+ through v1.114.0, which silently dropped ALL non-ASCII — #91.)
+_SPLIT_RE = re.compile(r"[\W_]+")
+# CJK scripts that carry no whitespace word boundaries. Runs in these ranges
+# are expanded to overlapping character bigrams instead of whole-run tokens.
+_CJK_RE = re.compile(
+    "["
+    "ᄀ-ᇿ"  # Hangul Jamo
+    "぀-ヿ"  # Hiragana + Katakana
+    "㄰-㆏"  # Hangul Compatibility Jamo
+    "ㇰ-ㇿ"  # Katakana Phonetic Extensions
+    "㐀-䶿"  # CJK Unified Ideographs Extension A
+    "一-鿿"  # CJK Unified Ideographs
+    "가-힯"  # Hangul Syllables
+    "豈-﫿"  # CJK Compatibility Ideographs
+    "]+"
+)
+# Unicode word runs for the minimal (non-markdown-aware) tokenizer.
+_WORD_RE = re.compile(r"[^\W_]+")
+
+
+def _cjk_bigrams(run: str) -> list[str]:
+    """Overlapping character bigrams for a CJK run; a lone char passes through."""
+    if len(run) == 1:
+        return [run]
+    return [run[i : i + 2] for i in range(len(run) - 1)]
+
+
+def word_tokens(text: str) -> list[str]:
+    """Lowercase Unicode word tokens with CJK runs expanded to bigrams.
+
+    The minimal shared tokenization for surfaces that don't want markdown
+    scrubbing, stop-words, or length filtering (e.g. title search).
+    """
+    text = _CJK_RE.sub(lambda m: " " + m.group(0) + " ", (text or "").lower())
+    out: list[str] = []
+    for tok in _WORD_RE.findall(text):
+        if _CJK_RE.fullmatch(tok):
+            out.extend(_cjk_bigrams(tok))
+        else:
+            out.append(tok)
+    return out
 
 
 def _expand_url(url: str) -> str:
@@ -95,14 +139,22 @@ def tokenize(text: str) -> list[str]:
     text = _URL_RE.sub(lambda m: " " + _expand_url(m.group(0)) + " ", text)
     text = _INLINE_CODE_RE.sub(lambda m: " " + m.group(1) + " ", text)
 
-    # 2. Insert spaces at CamelCase boundaries BEFORE lowercasing.
+    # 2. Insert spaces at CamelCase boundaries BEFORE lowercasing, and pad
+    #    CJK runs so a mixed-script token ("초과근무OvertimeService") splits
+    #    cleanly into a CJK run + Latin tokens.
     text = _CAMEL_BOUNDARY_RE.sub(" ", text)
+    text = _CJK_RE.sub(lambda m: " " + m.group(0) + " ", text)
 
-    # 3. Lowercase and split on non-alphanumeric runs.
+    # 3. Lowercase and split on non-word runs; expand CJK runs to bigrams.
     raw = _SPLIT_RE.split(text.lower())
 
     out: list[str] = []
     for tok in raw:
+        if not tok:
+            continue
+        if _CJK_RE.fullmatch(tok):
+            out.extend(_cjk_bigrams(tok))
+            continue
         if len(tok) < 2:
             continue
         if tok in STOP_WORDS:

@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.115.0 (branch `coordinated-retirement`, NOT yet published) | **Tests:** `pytest tests/ -q`
+**Version:** 1.115.0 (branch `coordinated-retirement`, NOT yet published; master merged up through 1.114.2) | **Tests:** `pytest tests/ -q`
 
 ## v1.115.0 addendum — #89 pre-production corrections (QA-06..QA-11, QA-15)
 rknighton's branch QA (#89) found the QA-01 coordination still had a
@@ -102,6 +102,46 @@ identity-evidence `collect_git_evidence` that tests monkeypatch. rknighton's
 `tests/test_v1_115_0.py` (10). Additive/1.x, no INDEX_VERSION bump. **NEXT:
 rknighton branch QA from 2026-07-23 evening → then merge to master, publish
 PyPI + tag + GH release, close #88, then close #80 w/ arc summary.**
+## v1.114.2 - canonical handoff contract (suite parity, jcm #374)
+`finalize_handoff` tool + `munch://handoff/<id>` resource
+(`jdocmunch.handoff/v1`; parity with jcm v1.108.162 / jdata v1.24.0). New
+`handoff.py`: assistant authors, server assembles/attests/persists/serves.
+Attestation substrate = session retrieval record OWNED BY handoff.py (jdoc
+has no jcm-style yield tracker): server chokepoint records search_sections/
+search_titles `results` rows + get_section (`section` + `_meta.citation`
+fallback for id/doc_path) + get_sections `sections` → `note_served_rows`;
+ref = served section id OR served doc path OR doc-path component of a
+served id; unknown → in-band error + `unknown_refs` (jdoc convention, no
+isError). Deterministic body, id = sha256[:16], byte-identical resource
+reads, canonical:true ADVISORY. `_TOOL_TIER_STANDARD` + `_NON_READONLY_TOOLS`;
+tool count 63→64 (test_server bumped). Tests `tests/test_v1_114_2.py` (15,
+incl. real-index chokepoint end-to-end via DOC_INDEX_PATH env); suite 1783.
+**Shipped from MASTER as a patch (like 1.114.1) while `coordinated-retirement`
+(1.115.0) stays HELD — on merge, resolve version conflicts to 1.115.0, keep
+all CHANGELOG entries.**
+
+## v1.114.1 - BM25 tokenizer: Unicode word splitting + CJK bigrams (#91)
+First report from @tetiz123 (offered a real Korean corpus, ~114 docs/2,098
+sections, for validation — invited in the close comment; watch for their
+reply on #91). `_SPLIT_RE` was `[^a-z0-9]+`, so every non-ASCII char was a
+separator: CJK content → zero tokens (lexical channel dead; hybrid silently
+semantic-only; embedding-less installs had NO working search), accented
+Latin mangled (`café`→`caf`), and the docstring falsely claimed Unicode
+word boundaries. Fix in `retrieval/tokenize.py`: `_SPLIT_RE=[\W_]+`; new
+`_CJK_RE` (Hangul Jamo/compat/syllables, Hiragana/Katakana+ext, Han
+unified+ExtA+compat) pads runs with spaces pre-split (mixed-script tokens
+like `초과근무OvertimeService` split cleanly), then runs expand to
+overlapping character bigrams via `_cjk_bigrams` (lone char passes through;
+the <2 length filter now applies to non-CJK only). Same expansion at index
++ query time ⇒ bigram overlap is the match signal. New public
+`word_tokens()` (unicode findall + bigrams, no stopwords/minlen) shared
+with `search_titles.py`, whose private `[a-z0-9]+` `_TOKEN_RE` had the same
+bug. ASCII tokenization byte-identical. NO reindex: BM25/prune/dedup all
+tokenize stored content at load/scoring time; `.terms.json` is glossary
+(untouched). Tests `tests/test_v1_114_1.py` (11); suite 1768. **Shipped
+from MASTER as a patch while `coordinated-retirement` (1.115.0) stays HELD
+for rknighton re-review — when that branch merges, resolve the pyproject/
+CLAUDE.md version conflicts to 1.115.0 and keep both CHANGELOG entries.**
 
 ## v1.114.0 - QA-04/QA-05: Git-verification disclosure + complete result-code contract (#88)
 rknighton's follow-up findings on #88, both shipped same-day. **QA-04:**

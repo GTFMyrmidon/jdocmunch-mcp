@@ -149,7 +149,7 @@ _TOOL_TIER_STANDARD: frozenset[str] = _TOOL_TIER_CORE | frozenset({
     "doc_health_radar", "diff_doc_health_radar",
     "get_doc_pr_risk_profile", "get_watch_status",
     # Utilities
-    "verify_index", "delete_index",
+    "verify_index", "delete_index", "finalize_handoff",
 })
 
 # full = everything (no filter applied)
@@ -261,6 +261,7 @@ _NON_READONLY_TOOLS: frozenset[str] = frozenset({
     "define_repo_group",      # create / replace / delete a repo group
     "tune_weights",           # inspect reads; set/reset writes the tuning file
     "check_embedding_drift",  # reports by default; force=true re-pins the canary
+    "finalize_handoff",       # persists a session handoff record (jdocmunch.handoff/v1)
 })
 
 
@@ -1195,6 +1196,71 @@ def _all_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="finalize_handoff",
+            description=(
+                "Finalize one canonical Markdown handoff for a completed documentation "
+                "audit/analysis (jdocmunch.handoff/v1; suite parity with jCodeMunch). "
+                "The server assembles YOUR sections deterministically, validates every "
+                "evidence_refs entry against what this session actually retrieved "
+                "(section ids or doc paths served by search_sections / search_titles / "
+                "get_section / get_sections — unknown refs fail closed), persists the "
+                "result session-scoped, and returns a compact receipt {handoff_id, "
+                "resource_uri, sha256, length, canonical:true}. Read the immutable body "
+                "via the munch://handoff/<id> resource; repeated reads are byte-identical. "
+                "Appendices are included exactly once; no character limit; never writes "
+                "to the documentation corpus."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Doc repo identifier the handoff is about.",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "The task/question this handoff answers (becomes the title).",
+                    },
+                    "sections": {
+                        "type": "array",
+                        "description": "Ordered report sections, each {heading, content} (markdown). The caller authors these; the server only assembles.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "heading": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["heading", "content"],
+                        },
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Section ids or doc paths retrieved this session; validated against the session retrieval record.",
+                    },
+                    "profile": {
+                        "type": "string",
+                        "default": "general",
+                        "description": "Handoff profile label (e.g. doc_audit).",
+                    },
+                    "appendices": {
+                        "type": "array",
+                        "description": "Optional named appendices, each {name, content, content_type?}; names must be unique.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "content": {"type": "string"},
+                                "content_type": {"type": "string"},
+                            },
+                            "required": ["name", "content"],
+                        },
+                    },
+                },
+                "required": ["repo", "task", "sections", "evidence_refs"],
+            },
+        ),
+        Tool(
             name="find_code_examples",
             description=(
                 "Search fenced code blocks across the indexed docs by BM25 over the block "
@@ -1805,8 +1871,9 @@ def _generate_doc_md_snippet() -> str:
 
 @server.list_resources()
 async def list_resources() -> list[Resource]:
-    """Advertise the runtime identity resource (munch.runtime.identity/v1)."""
-    return [
+    """Advertise the runtime identity resource (munch.runtime.identity/v1)
+    plus any session-finalized canonical handoffs (jdocmunch.handoff/v1)."""
+    resources = [
         Resource(
             uri=runtime_identity.IDENTITY_URI,
             name="runtime-identity",
@@ -1819,6 +1886,17 @@ async def list_resources() -> list[Resource]:
             mimeType="application/json",
         )
     ]
+    from . import handoff as _handoff_mod
+    for row in _handoff_mod.list_handoff_resources():
+        resources.append(
+            Resource(
+                uri=row["uri"],
+                name=row["name"],
+                description=row["description"],
+                mimeType=_handoff_mod.HANDOFF_CONTENT_TYPE,
+            )
+        )
+    return resources
 
 
 @server.read_resource()
@@ -1828,6 +1906,15 @@ async def read_resource(uri) -> "list[ReadResourceContents]":
             ReadResourceContents(
                 content=runtime_identity.identity_json(),
                 mime_type="application/json",
+            )
+        ]
+    from . import handoff as _handoff_mod
+    rec = _handoff_mod.handoff_for_uri(str(uri))
+    if rec is not None:
+        return [
+            ReadResourceContents(
+                content=rec["body"],
+                mime_type=_handoff_mod.HANDOFF_CONTENT_TYPE,
             )
         ]
     raise ValueError(f"Unknown resource: {uri}")
@@ -2132,6 +2219,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "get_watch_status":
             result = get_watch_status(storage_path=storage_path)
+        elif name == "finalize_handoff":
+            from . import handoff as _handoff_mod
+            result = _handoff_mod.finalize_handoff(
+                repo=arguments["repo"],
+                task=arguments["task"],
+                sections=arguments["sections"],
+                evidence_refs=arguments["evidence_refs"],
+                profile=arguments.get("profile", "general"),
+                appendices=arguments.get("appendices"),
+            )
         elif name == "analyze_perf":
             result = analyze_perf(
                 window=arguments.get("window", "session"),
@@ -2347,6 +2444,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         _meta[field] = existing_meta[field]
                 if _meta:
                     result["_meta"] = _meta
+
+        # v1.114.2: session retrieval record for handoff attestation
+        # (jdocmunch.handoff/v1 — suite parity with jcm #374). Records the
+        # section ids / doc paths this server actually served, so
+        # finalize_handoff can attest evidence_refs against real retrieval.
+        try:
+            from . import handoff as _handoff_record
+            if isinstance(result, dict):
+                if name in ("search_sections", "search_titles"):
+                    _handoff_record.note_served_rows(result.get("results") or [])
+                elif name == "get_section" and isinstance(result.get("section"), dict):
+                    _row = dict(result["section"])
+                    _cit = (result.get("_meta") or {}).get("citation") or {}
+                    _row.setdefault("id", _cit.get("section_id"))
+                    _row.setdefault("doc_path", _cit.get("doc_path"))
+                    _handoff_record.note_served_rows([_row])
+                elif name == "get_sections":
+                    _handoff_record.note_served_rows(result.get("sections") or [])
+        except Exception:
+            pass
 
         # v1.104.0: advisory session budget (suite parity with jcm). Attached
         # AFTER meta_fields filtering so the warning survives the
