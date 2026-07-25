@@ -1,5 +1,163 @@
 # Changelog
 
+## [1.119.0] - 2026-07-24 - a rebuild underneath a scan cannot prove absence (5th refusal rule)
+
+Suite parity with jcodemunch-mcp v1.108.168.
+
+### Fixed
+
+- **Absence evidence could be minted over an index that was being rewritten.**
+  v1.117.0 shipped four refusal rules for absence proofs — only `absent` proves
+  absence; `low_confidence`/`degraded` do not; a stale index does not; a
+  truncated index does not. None covered an index being **rewritten while the
+  scan reads it**.
+
+  Index staleness here is `source_dirty`, which reports that the *source* moved.
+  It is blind to a reindex that rewrites sections under an unchanged tree, so
+  such a scan reported `index: "fresh"`, reached `absent`, and handed back a
+  citable `absent:<sha>` ref. That matters more in jdoc than in its siblings:
+  sections are scored through a lazy content loader that reads body text from
+  disk at scan time, so a rebuild mid-scan can move the very bytes being ranked.
+
+  Zero results plus a detected rewrite now yields `degraded` instead of
+  `absent`. Because `degraded` already cannot prove absence, the fifth rule
+  falls out of the existing "only `absent` proves absence" check — there is no
+  parallel rule to drift. `absence_refusal` names the rebuild rather than the
+  generic state.
+
+- **`channels.index` gains `"rebuilding"`**, disclosed on **every** state, not
+  only the refused one: a caller reading an `ok` result still deserves to know
+  the index moved under it. Only the absence *claim* is withheld — a scan that
+  returned sections still returns them.
+
+### Notes
+
+- Detection is a filesystem signal (`DocStore._stamp_load_provenance` stamps the
+  monolith path + mtime at both load return points;
+  `retrieval.verdict.index_changed_since_load` re-stats it), deliberately **not**
+  in-process reindex state, which cannot see a rebuild driven by a separate
+  watcher process.
+- **Unknown is not changed**: an index with no stamped provenance (a test
+  double, a hand-built `DocIndex`) reports unchanged rather than degrading every
+  verdict.
+- Byte-identical for existing callers when nothing is rebuilding. NO new tool,
+  NO tool-count or `INDEX_VERSION` change. New `tests/test_v1_119_0.py` (13).
+
+## [1.118.0] - 2026-07-24 - lexical query no longer lowercased before tokenizing (#91 follow-up)
+
+Reported by @tetiz123 while validating the v1.114.1 CJK tokenizer on a real
+111-document / 2,053-section Korean corpus (the fix held: no reindex, and the
+lexical channel went from returning nothing to being their best ranker). While
+measuring, they found a second, unrelated defect with a one-line cause.
+
+`DocIndex._lexical_search` computed `query.lower()` and handed that to the
+scorer. But `bm25.tokenize` inserts CamelCase boundaries BEFORE it lowercases,
+so the two sides of the match disagreed for any identifier that carries case:
+
+    document side  tokenize("OvertimeService")  -> ['overtime', 'service']
+    query side     tokenize("overtimeservice")  -> ['overtimeservice']
+
+Every code-identifier query — the one thing a keyword ranker should be
+unbeatable at — scored 0.0 and returned a silent empty list. It is silent
+rather than an error because the Stage-A posting prune tokenizes the ORIGINAL
+query, so candidates survive the prune and then each one scores 0. CamelCase
+(`OvertimeService`) and acronym-plus-suffix (`HCA060T`) identifiers were hit;
+underscore-separated names (`SPM_NOTIFICATION`) were not, because the delimiter
+is case-independent.
+
+Fix: pass the raw query to the scorer. `tokenize` lowercases internally after
+the de-camel step, so feeding it the original text is both correct and
+redundant-work-free. `_score_section`'s first argument is renamed accordingly;
+`query_words` (the tag kicker) still uses the lowercased set, since tags are
+matched case-folded. Consumer-layer only, no reindex: `tokenize` runs over
+stored content at scoring time.
+
+New `tests/test_v1_118_0.py` (7): the tokenizer asymmetry at the root, plus
+end-to-end lexical retrieval for CamelCase / acronym / repository-suffix
+identifiers, an underscore control, and a lowercase-prose control that must not
+regress. Additive/1.x, no INDEX_VERSION or tool-count change; suite 1831.
+
+Shipped from MASTER as a patch (like 1.114.1 / 1.114.2 / 1.116.0 / 1.117.0)
+while `coordinated-retirement` (1.115.0) stays HELD for rknighton's
+re-verification; on merge, resolve version conflicts to the higher number and
+keep all CHANGELOG entries.
+
+## [1.117.0] - 2026-07-24 - absence evidence (handoff/v2 phase 3, suite parity)
+
+Suite parity with jcodemunch-mcp v1.108.166 (jcodemunch-mcp#377 phase 3, design
+by @mightydanp). A zero-result section search can now be cited as evidence in a
+handoff. Under v1/v2 it could not: nothing was served, so there was no id to
+reference. But "we searched the complete, fresh, non-truncated index and it is
+not there" is exactly the claim an audit most needs attested.
+
+`retrieval/verdict.build_verdict` already reports state (`ok` / `low_confidence`
+/ `absent` / `degraded`), scan counts, per-channel status, coverage, and a
+scorer pin. A search whose verdict is `absent` now surfaces a citable ref;
+passing it to `finalize_handoff` attests the absence. Because jdoc's default
+`meta_fields` strips `_meta` entirely (the v1.104.0 lesson), the ref rides in
+`_meta.absence_evidence`, re-attached AFTER filtering so the token-efficient
+default cannot delete a token the agent needs to cite.
+
+The refusal rules are the feature, adopted as proposed: only `absent` proves
+absence; `low_confidence` and `degraded` do not; a stale index does not; a
+truncated index does not. A refused scan is still recorded, so citing one
+returns the reason (`refused_absence`, or `refused_absence_claims` naming the
+claim) rather than a bare unknown-ref error. The rendered proof carries the
+tool and query, the scope it was not found in, sections and documents scanned,
+channel status, coverage with exclusion counts, and the scorer. Unknown
+coverage is disclosed as unknown, never rendered as a complete scope.
+
+Refs are content-addressed over `(tool, repo, query, scope)`. Session-scoped,
+in-memory, capped, never on disk. Receipt gains `absence_attested` when cited.
+Additive/1.x, no INDEX_VERSION or tool-count change. Tests
+`tests/test_v1_117_0.py` (23, one per refusal rule); suite 1824.
+
+## [1.116.0] - 2026-07-23 - claim-scoped evidence (handoff/v2 phase 1, suite parity)
+
+Claim-scoped evidence, suite parity with jcodemunch-mcp v1.108.165
+(jcodemunch-mcp#377 phase 1, design by @mightydanp). A handoff section may now
+carry caller-authored `claims`, each with its own `evidence_refs`. v1 proved a
+cited ref was retrieved this session but never bound it to a sentence: refs
+landed in one global block at the end of the body.
+
+New `_validate_claims` takes `{id, statement, evidence_refs, classification?}`.
+Ids are unique across the WHOLE handoff, not per section, since the id is the
+citation anchor and two sections owning one id would make a citation ambiguous.
+Statements and classifications are preserved verbatim; the server never
+rewrites one. Each claim's refs are attested separately through the unchanged
+`_validate_evidence`, so an unknown ref returns `invalid_claims:
+[{claim_id, unknown_refs}]` and names the claim that cited it instead of
+vanishing into one global failure list. `render_handoff` prints the claim as a
+`###` heading with its evidence indented beneath.
+
+Three decisions carried from the jcm implementation:
+
+- The input picks the contract. No claims anywhere means the schema string
+  stays `jdocmunch.handoff/v1` and the body is byte-identical to what v1 rendered;
+  `claims_attested` is omitted from the receipt rather than reported as `0`.
+  Any claim promotes the handoff to `jdocmunch.handoff/v2`.
+- Claims can satisfy `evidence_refs`: the top-level list may be empty when
+  claims carry refs, so a caller who scoped everything to claims need not
+  restate it. Strictly more permissive; no existing call changes.
+- Claim refs join the canonical evidence index, caller order first, so a v1
+  consumer reading a v2 handoff still sees every reference where it expects.
+
+Section `content` becomes optional only for a section carrying claims.
+Additive/1.x, no INDEX_VERSION or tool-count change.
+
+Known limit, disclosed on the tracking issue before anyone builds against it:
+phase 1 does not narrow what counts as a match. Attestation still accepts a
+broader reference than the claim, so citing a whole document attests
+even when only one unrelated member of it was served. Narrowing that is phase
+2 (evidence receipts), which is deferred.
+
+Tests `tests/test_v1_116_0.py` (18, incl. the byte-identical v1 guard); suite 1801.
+**Shipped from MASTER as a patch (like 1.114.1 / 1.114.2) while
+`coordinated-retirement` (1.115.0) stays HELD for rknighton's re-verification.
+Version 1.115.0 is deliberately skipped here so the held branch keeps it; on
+merge, resolve version conflicts to the higher number and keep all CHANGELOG
+entries.**
+
 ## [1.115.0] - 2026-07-22 - QA-01/QA-03: coordinated & recoverable retirement, truly read-only report (#88)
 
 The remaining two findings from @rknighton's #88 adversarial QA.

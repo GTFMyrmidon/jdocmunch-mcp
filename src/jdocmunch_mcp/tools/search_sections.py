@@ -5,7 +5,12 @@ from typing import Optional
 
 from ..storage import DocStore
 from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
-from ..retrieval.verdict import build_verdict, index_coverage_meta, suggest_docs
+from ..retrieval.verdict import (
+    build_verdict,
+    index_changed_since_load,
+    index_coverage_meta,
+    suggest_docs,
+)
 
 
 def search_sections(
@@ -493,6 +498,7 @@ def search_sections(
         semantic_available=has_emb,
         lexical_used=(mode != "semantic_only"),
         index_stale=bool(index.source_dirty),
+        index_changed=index_changed_since_load(index),
         did_you_mean=suggest_docs(query, index.sections) if not results else None,
         # v1.103.0: absence discloses what index-time discovery excluded.
         # None for legacy indexes (coverage unknown, never fabricated);

@@ -116,6 +116,28 @@ _INDEX_CACHE_MAXSIZE = 8
 _INDEX_CACHE: "OrderedDict[tuple, DocIndex]" = OrderedDict()
 
 
+def _stamp_load_provenance(index, index_path, mtime_ns: int):
+    """Record which monolith an index came from and its mtime at load time.
+
+    Lets a retrieval verdict detect that the index was rewritten UNDERNEATH a
+    scan (``retrieval.verdict.index_changed_since_load``) — the fifth absence
+    refusal rule. Deliberately a filesystem signal so it still fires when the
+    rebuild is driven by a SEPARATE process (a watcher), which in-process state
+    cannot see. Matters more here than elsewhere: sections score through a lazy
+    ``_content_loader`` that reads body text from disk at scan time.
+    """
+    try:
+        index._index_path = str(index_path)
+        index._loaded_mtime_ns = int(mtime_ns)
+    except Exception:  # pragma: no cover - defensive; never break a load
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "Could not stamp load provenance", exc_info=True
+        )
+    return index
+
+
 def _index_cache_get(key: tuple):
     """LRU lookup — moves the entry to the most-recently-used end on hit."""
     val = _INDEX_CACHE.get(key)
@@ -547,7 +569,7 @@ class DocIndex:
                 continue
             if self._path_excluded(sec, doc_path, path_glob):
                 continue
-            score = self._score_section(sec, query_lower, query_words)
+            score = self._score_section(sec, query, query_words)
             if score > 0:
                 lex_pairs.append((score, sec))
         lex_pairs.sort(key=lambda x: (-x[0], x[1].get("id", "")))
@@ -615,7 +637,7 @@ class DocIndex:
                 continue
             if self._path_excluded(sec, doc_path, path_glob):
                 continue
-            score = self._score_section(sec, query_lower, query_words)
+            score = self._score_section(sec, query, query_words)
             if score > 0:
                 scored.append((score, sec))
 
@@ -635,8 +657,17 @@ class DocIndex:
         # prefix match: "authenticat" hits "authentication"
         return any(t.startswith(word) for t in text.split() if len(word) >= 3)
 
-    def _score_section(self, sec: dict, query_lower: str, query_words: set) -> float:
+    def _score_section(self, sec: dict, query: str, query_words: set) -> float:
         """BM25-Okapi scoring with tag-match kicker.
+
+        ``query`` is the ORIGINAL query text, NOT a lowercased copy (#91
+        follow-up, @tetiz123). ``bm25.tokenize`` de-camels before it
+        lowercases, so pre-lowercasing the query collapses ``OvertimeService``
+        to one token on the query side while the document side split it in two
+        — code-identifier searches then scored 0. ``tokenize`` lowercases
+        internally, so passing the raw query is both correct and free.
+        ``query_words`` stays the lowercased set: the tag kicker matches
+        case-folded tags.
 
         v1.20.0: dropped the v1.0–v1.11 legacy heuristic fallback. Callers
         that pass ``lexical_engine="legacy"`` now get a ValueError at search
@@ -652,7 +683,7 @@ class DocIndex:
 
         score = _bm25_score(
             sec,
-            query_lower,
+            query,
             stats=self.bm25_stats or None,
             content_loader=_loader,
         )
@@ -1111,7 +1142,7 @@ class DocStore:
         cache_key = (str(index_path), mtime_ns)
         cached = _index_cache_get(cache_key)
         if cached is not None:
-            return cached
+            return _stamp_load_provenance(cached, index_path, mtime_ns)
 
         with open(index_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1182,7 +1213,7 @@ class DocStore:
         except Exception:
             index._embeddings_sidecar = None
         _index_cache_put(cache_key, index)
-        return index
+        return _stamp_load_provenance(index, index_path, mtime_ns)
 
     def detect_changes(
         self,

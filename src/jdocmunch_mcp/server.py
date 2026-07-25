@@ -1223,14 +1223,31 @@ def _all_tools() -> list[Tool]:
                     },
                     "sections": {
                         "type": "array",
-                        "description": "Ordered report sections, each {heading, content} (markdown). The caller authors these; the server only assembles.",
+                        "description": "Ordered report sections, each {heading, content} (markdown). The caller authors these; the server only assembles. Optional per-section claims[] bind evidence to an individual claim instead of one global list (handoff/v2).",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "heading": {"type": "string"},
                                 "content": {"type": "string"},
+                                "claims": {
+                                    "type": "array",
+                                    "description": "Optional caller-authored claims, each {id, statement, evidence_refs, classification?}. Ids must be unique across the handoff; each claim's refs are attested separately and rendered beside the claim.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "statement": {"type": "string"},
+                                            "evidence_refs": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                            },
+                                            "classification": {"type": "string"},
+                                        },
+                                        "required": ["id", "statement", "evidence_refs"],
+                                    },
+                                },
                             },
-                            "required": ["heading", "content"],
+                            "required": ["heading"],
                         },
                     },
                     "evidence_refs": {
@@ -2426,6 +2443,29 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             result = {"error": f"Unknown tool: {name}"}
 
+        # Absence evidence (#377 phase 3): record the verdict BEFORE
+        # meta_fields filtering, which by default strips `_meta` entirely — the
+        # v1.104.0 budget lesson. The citable ref is re-attached after
+        # filtering, below, so the token-efficient default can't delete it.
+        _absence_ref = None
+        _absence_blocked = None
+        try:
+            if isinstance(result, dict):
+                _v = (result.get("_meta") or {}).get("verdict")
+                if isinstance(_v, dict):
+                    from . import handoff as _handoff_abs
+                    _absence_ref, _absence_blocked = _handoff_abs.note_absence(
+                        name,
+                        arguments.get("repo"),
+                        arguments.get("query"),
+                        _v,
+                        arguments=arguments,
+                    )
+                    if _absence_blocked and _v.get("state") != "absent":
+                        _absence_blocked = None
+        except Exception:
+            pass
+
         if isinstance(result, dict):
             result.setdefault("_meta", {})["powered_by"] = "jdocmunch-mcp by jgravelle · https://github.com/jgravelle/jdocmunch-mcp"
 
@@ -2474,6 +2514,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             _b = _budget_status()
             if _b is not None and _b["state"] in ("approaching", "over") and isinstance(result, dict):
                 result.setdefault("_meta", {})["budget"] = _b
+        except Exception:
+            pass
+
+        # Absence evidence, part two (#377 phase 3). Attached AFTER meta_fields
+        # filtering for the same reason the budget block is: a token the
+        # default config deletes is a token the agent can never cite.
+        try:
+            if isinstance(result, dict) and (_absence_ref or _absence_blocked):
+                _blk = (
+                    {"ref": _absence_ref}
+                    if _absence_ref
+                    else {"citable": False, "blocked_by": _absence_blocked}
+                )
+                result.setdefault("_meta", {})["absence_evidence"] = _blk
         except Exception:
             pass
 
