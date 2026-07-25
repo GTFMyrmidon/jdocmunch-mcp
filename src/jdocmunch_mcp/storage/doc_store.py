@@ -1616,7 +1616,7 @@ class DocStore:
         name: str,
         expected_fingerprints: Optional[dict] = None,
         outcome: Optional[dict] = None,
-        lock_wait: bool = True,
+        lock_wait: bool = False,
     ) -> bool:
         """Delete an index and its raw content cache.
 
@@ -1647,18 +1647,31 @@ class DocStore:
         rather than a changed return type so every existing caller is
         untouched.
 
-        jdoc#93 QA-23: ``lock_wait`` defaults to True, meaning this store-level
-        delete BLOCKS for the lifecycle lock the way it always has. Only the
-        PUBLIC tool opts out (``tools/delete_index.py`` passes lock_wait=False)
-        so an agent gets a fast ``index_lifecycle_busy`` refusal instead of a
-        wait it cannot see. Retirement passes lock_wait=True explicitly.
+        jdoc#93 QA-23: ``lock_wait=False`` makes contention return False
+        immediately rather than wait. The public tool passes False explicitly
+        (fast ``index_lifecycle_busy`` refusal); retirement passes True.
 
-        Both production call sites are explicit, so this default governs direct
-        store callers only. It was briefly flipped to False while QA-23 was
-        being fitted, which silently converted every direct delete into a
-        non-blocking one; the Linux-only three-process test in
-        tests/test_v1_115_0_lifecycle_v2.py is what catches that, and it skips
-        on Windows. Do not "simplify" this default to match the public tool."""
+        ⚠ UNRESOLVED (#93): this default is contested by two of the reviewer's
+        own tests, which both call ``delete_index(owner, name)`` with no
+        lock_wait and require OPPOSITE behavior on the SAME lock, the target
+        handle's write lock taken by ``_with_index_lock``:
+
+        * ``test_v1_115_0_qa90.py::test_qa17_retained_delete_refused_inside_final_gate``
+          needs an immediate False. A retirement is paused mid-unlink holding
+          this handle through ``_gate_retained_handle``, and blocking would
+          wait on work that cannot finish.
+        * ``test_v1_115_0_lifecycle_v2.py::test_three_processes_keep_one_lock_inode``
+          (Linux-only, SKIPS on Windows) needs a block. Contention there is an
+          ordinary cross-process writer that will release.
+
+        Neither is wrong. The lock does not record WHY it is held, and that is
+        the actual gap: in the QA-17 case a retirement record names this handle
+        as the retained peer, in the QA-15 case no record exists. Refusing when
+        such a record names this handle and otherwise honoring lock_wait would
+        satisfy both, and is the proposed fix. Left at False for now because
+        that preserves the QA-17 guarantee that both indexes are never absent,
+        which is a data-loss property; the QA-15 cost is coordination
+        semantics. Do not flip this default without reading both tests."""
         def _out(code: str) -> None:
             if outcome is not None:
                 outcome["reason_code"] = code
