@@ -221,8 +221,14 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
     if not published:
         return "record_unavailable", {}
     try:
+        # jdoc#93 QA-23: this is the INTERNAL coordinated operation, already
+        # mid-protocol with a published record on disk. A bounded wait for the
+        # retiring handle's own lock is correct here — bailing out would leave
+        # a pending record behind for a lock that clears in milliseconds. The
+        # public delete path is the one that must never silently wait.
         removed = store.delete_index(
-            owner, repo_name, expected_fingerprints=fingerprints
+            owner, repo_name, expected_fingerprints=fingerprints,
+            lock_wait=True,
         )
     except RetirementConflict as conflict:
         finish_retirement(store.base_path, owner, repo_name)  # voided

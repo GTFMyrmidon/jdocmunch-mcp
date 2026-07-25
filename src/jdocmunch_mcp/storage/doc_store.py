@@ -2,6 +2,7 @@
 
 import fnmatch
 import functools
+import inspect
 import hashlib
 import json
 import os
@@ -65,10 +66,44 @@ def _with_index_lock(method):
     Non-reentrant (the lock is per-fd), so a decorated method must not call
     another decorated writer for the *same* repo while holding the lock. Today
     neither writer calls the other.
+
+    jdoc#93 QA-23: a decorated method may opt into a ZERO-WAIT acquisition by
+    accepting a ``lock_wait`` parameter and being called with
+    ``lock_wait=False``. Contention then returns False immediately with
+    ``outcome["reason_code"] = "index_lifecycle_busy"`` instead of queueing.
+    That is the PUBLIC-path contract: a tool call that silently blocks on a
+    lock is indistinguishable from a hang to its caller, so contention is
+    reported as a typed, retryable answer. Internal coordinated operations
+    (the retirement's own guarded delete) keep the blocking acquisition —
+    they are mid-protocol and a bounded wait is correct there.
+
+    Only ``delete_index`` opts in today; the default is unchanged blocking, so
+    every other writer behaves exactly as before.
     """
+
+    # Resolved once, at decoration time: a method that declares `lock_wait`
+    # owns its own default, so an omitted argument honors the signature rather
+    # than this decorator's opinion. Methods without the parameter (save_index,
+    # incremental_save) keep blocking acquisition unconditionally.
+    try:
+        _param = inspect.signature(method).parameters.get("lock_wait")
+        _default_lock_wait = (
+            True if _param is None or _param.default is inspect.Parameter.empty
+            else bool(_param.default)
+        )
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        _default_lock_wait = True
 
     @functools.wraps(method)
     def wrapper(self, owner=None, name=None, *args, **kwargs):
+        if kwargs.get("lock_wait", _default_lock_wait) is False:
+            with self._try_index_write_lock(owner, name) as acquired:
+                if not acquired:
+                    outcome = kwargs.get("outcome")
+                    if outcome is not None:
+                        outcome["reason_code"] = "index_lifecycle_busy"
+                    return False
+                return method(self, owner, name, *args, **kwargs)
         with self._index_write_lock(owner, name):
             return method(self, owner, name, *args, **kwargs)
 
@@ -830,6 +865,124 @@ class DocStore:
             finally:
                 os.close(fd)
 
+    @contextmanager
+    def _try_index_write_lock(self, owner, name):
+        """Non-blocking sibling of :meth:`_index_write_lock`; yields acquired?
+
+        jdoc#93 QA-19 (Path A). The retirement gate must be able to tell that a
+        save or delete is *in flight* on the retained handle. A fingerprint
+        cannot: it proves the file has not changed YET, and says nothing about a
+        writer holding the lock one instruction from publishing.
+
+        Deliberately NON-BLOCKING. The QA-14 deadlock surface was closed by the
+        rule that no caller ever blocks on two locks, and this gate already
+        holds its own handle lock plus its record lock. An attempt that never
+        waits cannot participate in a cycle, so the rule survives: on
+        contention we fail closed rather than queue.
+
+        Degenerate case: when neither locking primitive exists, or the path is
+        unusable, this yields True — matching ``_index_write_lock``, which is
+        itself a no-op there. The check is exactly as vacuous as the lock it
+        probes, never more optimistic than the surrounding model.
+        """
+        try:
+            lock_path = self._index_path(owner, name).with_name(
+                f"{self._index_path(owner, name).name}.lock"
+            )
+        except (ValueError, TypeError):
+            yield True
+            return
+        if (fcntl is None and msvcrt is None) or not owner or not name:
+            yield True
+            return
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fd = None
+        acquired = False
+        # Bounded, because the QA-15 inode recheck can legitimately retry. With
+        # QA-21 fixed nothing unlinks the lockfile any more, so this should
+        # settle on the first pass; the cap keeps a pathological racer from
+        # spinning here forever.
+        for _ in range(5):
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        os.close(fd)
+                        fd = None
+                        break  # held by someone else — that is the answer
+                    # QA-15: confirm we locked the inode this path names.
+                    try:
+                        path_stat = os.stat(str(lock_path))
+                        fd_stat = os.fstat(fd)
+                        if (path_stat.st_ino, path_stat.st_dev) == (
+                            fd_stat.st_ino, fd_stat.st_dev
+                        ):
+                            acquired = True
+                            break
+                    except OSError:
+                        pass  # unlinked under us — stale inode, retry
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+                    fd = None
+                    continue
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    os.close(fd)
+                    fd = None
+                    break  # held by someone else
+                acquired = True
+                break
+            except Exception:
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+                raise
+
+        try:
+            yield acquired
+        finally:
+            if fd is not None:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    else:
+                        try:
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        except OSError:
+                            pass
+                finally:
+                    os.close(fd)
+
+    @contextmanager
+    def _gate_retained_handle(self, retained, owner, name):
+        """Hold the RETAINED peer's write lock across the destructive step.
+
+        Yields True when the gate may proceed. Yields False only when a writer
+        or deleter genuinely holds the retained handle right now — the caller
+        turns that into a ``RetirementConflict`` so both indexes stay loadable.
+
+        Two cases deliberately proceed without acquiring anything:
+
+        * No retained handle (an unguarded delete). There is no peer to couple.
+        * The retained handle IS this handle. ``_index_write_lock`` is
+          non-reentrant and per-fd, so acquiring it again on this thread would
+          conflict with the lock this very delete already holds and turn every
+          such retirement into a permanent false conflict.
+        """
+        if not retained or not isinstance(retained, str) or "/" not in retained:
+            yield True
+            return
+        r_owner, _, r_name = retained.partition("/")
+        if (r_owner, r_name) == (owner, name):
+            yield True
+            return
+        with self._try_index_write_lock(r_owner, r_name) as got:
+            yield got
+
     @staticmethod
     def _atomic_replace(tmp_path: Path, index_path: Path,
                         attempts: int = 10, base_delay: float = 0.02) -> None:
@@ -1427,7 +1580,12 @@ class DocStore:
 
     @_with_index_lock
     def delete_index(
-        self, owner: str, name: str, expected_fingerprints: Optional[dict] = None
+        self,
+        owner: str,
+        name: str,
+        expected_fingerprints: Optional[dict] = None,
+        outcome: Optional[dict] = None,
+        lock_wait: bool = False,
     ) -> bool:
         """Delete an index and its raw content cache.
 
@@ -1447,11 +1605,25 @@ class DocStore:
         aborts with the handle still loadable; auxiliary artifacts may
         already be gone, and a refresh rebuilds them). An expected value of
         None always conflicts (missing state never authorizes removal).
-        Omitted → the pre-existing unguarded behavior."""
+        Omitted → the pre-existing unguarded behavior.
+
+        jdoc#93 QA-20: ``outcome`` is an optional caller-supplied dict that
+        receives ``{"reason_code": ...}``. The bool return cannot distinguish
+        "no such index" from "lifecycle contention, try again", and the public
+        tool rendered both as *Index not found.* — so an agent hitting a busy
+        retirement concluded the index never existed and re-indexed, which is
+        the duplicate-creation failure this arc exists to prevent. Out-param
+        rather than a changed return type so every existing caller is
+        untouched."""
+        def _out(code: str) -> None:
+            if outcome is not None:
+                outcome["reason_code"] = code
+
         try:
             index_path = self._index_path(owner, name)
             content_dir = self._content_dir(owner, name)
         except ValueError:
+            _out("index_not_found")
             return False
 
         if expected_fingerprints:
@@ -1476,6 +1648,9 @@ class DocStore:
         if not try_void_retirements_referencing(
             self.base_path, f"{owner}/{name}"
         ):
+            # A retirement owning this handle as its retained peer is inside
+            # its destructive step right now. Retryable, and NOT missing.
+            _out("index_lifecycle_busy")
             return False
 
         # jdoc#90 QA-17: note whether a durable record backs THIS guarded
@@ -1523,13 +1698,20 @@ class DocStore:
                     sidecar.unlink()
                 except OSError:
                     pass
-        # Best-effort removal of the per-repo write-lock file (_index_write_lock).
-        lock_path = index_path.with_name(f"{index_path.name}.lock")
-        if lock_path.exists():
-            try:
-                lock_path.unlink()
-            except OSError:
-                pass
+        # jdoc#93 QA-21: the per-repo write-lock file is DELIBERATELY NOT
+        # removed. This delete is holding that very lock. On Windows the
+        # unlink of an open file fails and is swallowed, so the pathname
+        # survives and the hazard is invisible there; on POSIX it succeeds
+        # mid-critical-section, and a newcomer then O_CREATs a fresh inode,
+        # acquires it uncontended, and runs concurrently with this deleter
+        # on the orphaned one. The QA-15 stale-inode recheck in
+        # _index_write_lock cannot catch that case — nothing about the new
+        # inode is stale, it is simply a different lock.
+        #
+        # An empty lockfile is the stable coordination object; leaving it is
+        # cheaper than the race. This also demotes the QA-15 retry from
+        # load-bearing to defensive, since the unlink it compensates for is
+        # exactly what no longer happens here.
         # jdoc#81: remove any corpus-creation claim naming this repo so a
         # deleted corpus can be re-created under a fresh name without a
         # phantom conflict.
@@ -1566,15 +1748,36 @@ class DocStore:
                         raise RetirementConflict(
                             [entry_record.get("retained") or f"{owner}/{name}"]
                         )
-                    _evict_index_cache(index_path)
-                    index_path.unlink()
-                    deleted = True
-                    # Record removal inside the gate: the retirement is
-                    # complete the instant the lock releases, so no later
-                    # observer can see "index gone, record pending" from
-                    # this path (QA-08 self-heal still covers crashes).
-                    from .retirements import finish_retirement
-                    finish_retirement(self.base_path, owner, name)
+                    # jdoc#93 QA-19 (Path A): the checks above prove the
+                    # retained peer has not changed YET and that our record
+                    # still exists. Neither can see work already IN FLIGHT on
+                    # the retained handle — a delete that passed its entry void
+                    # scan before our record existed, or a save paused one
+                    # instruction before _atomic_replace. Both hold the
+                    # retained handle's write lock, so take it here,
+                    # non-blocking, and hold it through the unlink and the
+                    # record removal. Failure means in-flight work: conflict
+                    # instead of completing, leaving BOTH indexes loadable.
+                    _retained = (entry_record or {}).get("retained")
+                    with self._gate_retained_handle(
+                        _retained, owner, name
+                    ) as _gate_ok:
+                        if not _gate_ok:
+                            raise RetirementConflict(
+                                [_retained or f"{owner}/{name}"]
+                            )
+                        _evict_index_cache(index_path)
+                        index_path.unlink()
+                        deleted = True
+                        # Record removal inside the gate: the retirement is
+                        # complete the instant the lock releases, so no later
+                        # observer can see "index gone, record pending" from
+                        # this path (QA-08 self-heal still covers crashes).
+                        # Also inside the RETAINED handle's lock (QA-19), so
+                        # the whole destructive step is one interval no
+                        # retained-handle writer can interleave with.
+                        from .retirements import finish_retirement
+                        finish_retirement(self.base_path, owner, name)
             else:
                 _evict_index_cache(index_path)
                 index_path.unlink()
@@ -1595,6 +1798,7 @@ class DocStore:
             void_retirements_referencing(self.base_path, f"{owner}/{name}")
         except Exception:
             pass
+        _out("index_deleted" if deleted else "index_not_found")
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:
