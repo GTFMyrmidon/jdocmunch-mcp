@@ -1616,7 +1616,7 @@ class DocStore:
         name: str,
         expected_fingerprints: Optional[dict] = None,
         outcome: Optional[dict] = None,
-        lock_wait: bool = False,
+        lock_wait: bool = True,
     ) -> bool:
         """Delete an index and its raw content cache.
 
@@ -1645,7 +1645,20 @@ class DocStore:
         retirement concluded the index never existed and re-indexed, which is
         the duplicate-creation failure this arc exists to prevent. Out-param
         rather than a changed return type so every existing caller is
-        untouched."""
+        untouched.
+
+        jdoc#93 QA-23: ``lock_wait`` defaults to True, meaning this store-level
+        delete BLOCKS for the lifecycle lock the way it always has. Only the
+        PUBLIC tool opts out (``tools/delete_index.py`` passes lock_wait=False)
+        so an agent gets a fast ``index_lifecycle_busy`` refusal instead of a
+        wait it cannot see. Retirement passes lock_wait=True explicitly.
+
+        Both production call sites are explicit, so this default governs direct
+        store callers only. It was briefly flipped to False while QA-23 was
+        being fitted, which silently converted every direct delete into a
+        non-blocking one; the Linux-only three-process test in
+        tests/test_v1_115_0_lifecycle_v2.py is what catches that, and it skips
+        on Windows. Do not "simplify" this default to match the public tool."""
         def _out(code: str) -> None:
             if outcome is not None:
                 outcome["reason_code"] = code
