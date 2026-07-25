@@ -5,6 +5,13 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Manual trigger. Both events above are gated to master, so a feature branch
+  # cannot fire CI on its own, and a draft PR's synchronize event has not been
+  # firing either. Without this there is no way to produce a green pinned SHA on
+  # a review branch, which is exactly what an external reviewer needs to verify
+  # against. Dispatch with:
+  #   gh workflow run test.yml --ref <branch>
+  workflow_dispatch:
 
 jobs:
   replay:
