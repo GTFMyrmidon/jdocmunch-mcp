@@ -158,6 +158,57 @@ first cut), so methods without the param (`save_index`, `incremental_save`) CANN
 become non-blocking. `_execute_retirement` passes `lock_wait=True` explicitly:
 it is mid-protocol with a record already on disk, where a bounded wait is correct.
 
+⚠ **QA-23 IS NOT ACTUALLY SETTLED — the `lock_wait` default is CONTESTED BY TWO OF
+HIS OWN TESTS, and no default satisfies both.** Discovered 2026-07-25 the first time
+CI was ever able to run on this branch. Both call `delete_index(owner, name)` with
+NO `lock_wait`, and both contend on the SAME lock (the target handle's write lock
+taken by `_with_index_lock`):
+* `test_v1_115_0_qa90.py::test_qa17_retained_delete_refused_inside_final_gate`
+  needs an IMMEDIATE `False` — a retirement is paused mid-unlink holding this
+  handle via `_gate_retained_handle` (`doc_store.py:1014`), so blocking waits on
+  work that cannot finish. Passes with default `False`.
+* `test_v1_115_0_lifecycle_v2.py::test_three_processes_keep_one_lock_inode`
+  (**Linux-only, SKIPS ON WINDOWS**) needs a BLOCK — contention there is an
+  ordinary cross-process writer that will release. Passes with default `True`.
+
+**Flipping the default fixes one and breaks the other. Verified both directions on
+real Linux; do not attempt a third flip.** ⚠ **The claim above that "his QA-17 test
+passed UNTOUCHED = the strongest signal the design is right" WAS OVERREAD** — QA-17
+passing was purchased with the default that breaks QA-15, and QA-15 never ran
+locally because **every QA-23 verification was done on Windows, where it skips. A
+Windows pass was treated as verification of a POSIX locking contract.** That is
+precisely his QA-24 objection, now with a concrete example.
+
+**PROPOSED fix (posted on #93, NOT implemented, awaiting his confirmation):** the
+lock does not record WHY it is held, which is the real gap. The distinguishing fact
+lives outside it — in the QA-17 case a retirement record NAMES this handle as the
+RETAINED peer; in the QA-15 case no record exists. So: **refuse immediately when a
+pending retirement record names this handle as retained, otherwise honor
+`lock_wait` (default blocking)**. Satisfies both with neither test edited. It is a
+semantic change to HIS contract and has already been guessed at twice, so it waits
+on him.
+
+**Branch is at `f6281ba`, default reverted to `False`, ONE known failure (the
+Linux-only QA-15 test).** `False` chosen because it preserves the QA-17 guarantee
+that both indexes are never simultaneously absent — a DATA-LOSS property — whereas
+the QA-15 cost is coordination semantics: worse to get wrong, not destructive.
+
+⚠ **CI on this branch: `push`/`pull_request` are gated to `master`, so a branch push
+fires NOTHING, and the draft PR's `synchronize` event has not been firing either
+(cause unestablished; no `types`/`paths` filter and `opened` DID fire, so drafts are
+not excluded as a class). `workflow_dispatch` was added to both workflows on BOTH
+master and the branch** (it must exist on the DEFAULT branch to be exposed, and a
+dispatch runs the workflow file AS IT EXISTS AT THAT REF — hence both):
+`gh workflow run test.yml --ref coordinated-retirement`. **Never again read
+"no runs" on a branch as a CI outage; on this repo it is the designed behavior.**
+
+⚠ **The branch had drifted 5 releases behind master and that was NOT cosmetic:**
+the repo_group fan-out here calls `build_verdict(..., index_changed=...)`, a
+parameter that only landed on master in v1.119.0, so `search_sections` with a repo
+group raised `TypeError` on the branch. Merged (source clean, only version/CHANGELOG
+bookkeeping conflicted). **Rebase/merge a long-lived branch BEFORE trusting any
+local green.**
+
 **QA-20 (Medium):** every `False` rendered as *Index not found.*, so lifecycle
 contention was indistinguishable from a missing index and an agent would RE-INDEX
 — the duplicate creation this whole arc exists to prevent. Added `reason_code` +
