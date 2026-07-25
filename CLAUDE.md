@@ -2,6 +2,89 @@
 
 **Version:** 1.115.0 (branch `coordinated-retirement`, NOT yet published; master merged up through 1.114.2) | **Tests:** `pytest tests/ -q`
 
+## v1.115.0 addendum — #93 QA-19/20/21 + QA-23 (branch `coordinated-retirement`, NOT released)
+rknighton's third QA round against PR #92 head `e1ca39e`. **All three findings
+verified against the source before touching anything — 3/3 real.** Root cause he
+named and I confirmed: the QA-17 fix coordinates at **operation ENTRY, not at
+COMMIT POINTS**, so work already in flight on the retained handle never enrolls.
+`delete_index` runs its void scan ONCE at entry (and the comment there claims it
+"guarantees" the invariant — it doesn't); saves void records only AFTER the
+atomic replace; the gate verifies the retained handle by FINGERPRINT ONLY, which
+proves the file hasn't changed YET and says nothing about a writer holding its
+lock one instruction from landing.
+
+**QA-19 (High) = Path A, chosen over Path B.** The final gate now additionally
+acquires the RETAINED handle's write lock **NON-BLOCKING** and holds it through
+the unlink AND the record removal (`_try_index_write_lock` + `_gate_retained_handle`
+in doc_store.py). Failure to acquire ⇒ `RetirementConflict`, both indexes stay
+loadable. **Non-blocking is load-bearing:** QA-14's rule is that no caller ever
+blocks on two locks, and an attempt that never waits cannot join a cycle. Path B
+(canonically ordered pair locks) reopens that surface and hands a 4th architecture
+to an audit already 3 rounds deep. ⚠ **Self-conflict audit (do NOT skip if you
+touch this):** `_execute_retirement` reaches the retained handle only via
+`index_fingerprint` + `load_index`, both READS — it never holds that lock, so the
+gate has nothing to conflict with on its own thread. The retained-is-retiring case
+is guarded explicitly (the lock is per-fd and NON-REENTRANT — re-acquiring
+deadlocks by construction).
+
+**QA-23 = the public delete path is ZERO-WAIT.** ⚠ **The first Path A attempt
+BROKE his QA-17 test**: `delete_index` is `@_with_index_lock`-decorated, so the
+competing delete blocked AT THE DECORATOR before ever reaching the void scan that
+used to refuse it — turning a fast `False` refusal into a wait, then both indexes
+absent sequentially. **Fixing that by editing his test would have been rewriting a
+reviewer's oracle to match my code.** Instead the public path became zero-wait
+(his QA-23 recommendation), and **his QA-17 test then passed UNTOUCHED** — the
+strongest signal the design is right. Mechanism: `delete_index` gains
+`lock_wait: bool = False`; `_with_index_lock` resolves the default from the
+WRAPPED METHOD'S SIGNATURE at decoration time (⚠ reading `kwargs.get("lock_wait",
+True)` alone silently ignores the signature default — that was a real bug in the
+first cut), so methods without the param (`save_index`, `incremental_save`) CANNOT
+become non-blocking. `_execute_retirement` passes `lock_wait=True` explicitly:
+it is mid-protocol with a record already on disk, where a bounded wait is correct.
+
+**QA-20 (Medium):** every `False` rendered as *Index not found.*, so lifecycle
+contention was indistinguishable from a missing index and an agent would RE-INDEX
+— the duplicate creation this whole arc exists to prevent. Added `reason_code` +
+`retryable` (`index_deleted` / `index_not_found` / `index_lifecycle_busy`) via an
+`outcome` OUT-PARAM so the bool return and every existing caller are untouched.
+
+**QA-21 (Low, POSIX-only):** `delete_index` no longer unlinks the lockfile it
+holds. On POSIX the unlink succeeded mid-critical-section and a newcomer created a
+fresh inode and ran concurrently; the QA-15 recheck CANNOT catch it (nothing about
+the new inode is stale). ⚠ **`_index_write_lock`'s own docstring cites that unlink
+as the reason QA-15's retry exists — this fix demotes that retry from load-bearing
+to defensive.**
+
+**Also (suite parity with jcm 1.108.169/.170):** the `repo_group` fan-out built its
+verdict with NO `index_changed`, so a zero-result GROUP search could mint a citable
+absence ref while ANY member index was rebuilding. No single index to re-stat, so
+the group now INHERITS its members' detection (their sub-verdicts were already
+correctly wired and were simply being discarded).
+
+**Validation.** His design-neutral harness `test_v1_115_0_lifecycle_v2.py` (committed
+verbatim) went **4 failed/1 passed → 5 passed/3 skipped**; Windows suite **1813
+passed, 3 skipped** (all 3 are the harness's own conditional skips: 2 Path-B-only,
+1 Linux-only). New **`tests/test_posix_lock_semantics.py`** covers what Windows
+STRUCTURALLY CANNOT: the `fcntl` `LOCK_EX|LOCK_NB` branch (never executed anywhere
+before), cross-PROCESS refusal, and inode stability. **It SKIPS on win32 rather than
+passing vacuously — a vacuous pass is exactly QA-24's objection.** Verified on
+Ubuntu/WSL, py3.12.3, `/tmp` on **ext4** (NOT the DrvFs mount, where inode semantics
+don't apply); **non-vacuous — reintroducing the unlink flips QA-21 to FAIL.** Runs
+standalone too (`python3 tests/...`), since a POSIX box often has no pytest — its
+`import pytest` is deliberately optional.
+
+⚠ **STILL OPEN, not mine to close:** QA-22 applies only to Path B (not built).
+**QA-24 is a DOCUMENTATION requirement — SPEC/CHANGELOG claims must match what each
+platform actually proves.** rknighton re-verifies against a pinned SHA, as every
+round of this arc has closed. Branch pushed for that purpose; PR #92 stays DRAFT,
+master untouched, nothing released.
+
+⚠ **CI note (corrected):** jdoc DOES get `ubuntu-latest` × py3.10-3.13 on
+`pull_request` — verified by a successful run on `e1ca39e`, PR #92's previous head.
+An earlier claim in-session that "CI won't run on this PR" was WRONG, inferred from
+two new SHAs showing no runs. There is no `workflow_dispatch`, so a stuck head is
+nudged with an empty commit rather than dispatched.
+
 ## v1.115.0 addendum — #89 pre-production corrections (QA-06..QA-11, QA-15)
 rknighton's branch QA (#89) found the QA-01 coordination still had a
 proof-to-capture gap + unverified recovery records. Fixes, all on the same
