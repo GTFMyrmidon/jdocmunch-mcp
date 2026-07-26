@@ -1,6 +1,9 @@
 """Issue #95 retirement coordination specification contract."""
 
+import inspect
 from pathlib import Path
+
+from jdocmunch_mcp.storage.doc_store import RetirementConflict
 
 
 SPEC_PATH = Path(__file__).parents[1] / "SPEC.md"
@@ -61,3 +64,10 @@ def _assert_retirement_contract(spec_path=SPEC_PATH):
 
 def test_retirement_coordination_spec_matches_commit_contract():
     _assert_retirement_contract()
+
+
+def test_retirement_conflict_docstring_scopes_availability_to_retiring_primary():
+    docstring = " ".join(inspect.getdoc(RetirementConflict).split()).lower()
+
+    assert "the retiring primary remains loadable" in docstring
+    assert "every participating index remains loadable" not in docstring

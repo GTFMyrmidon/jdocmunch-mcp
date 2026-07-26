@@ -46,13 +46,14 @@ class RetirementConflict(Exception):
     its retirement was approved. Raised at the entry check (nothing touched)
     or at the final recheck after the retained-handle gate is acquired and
     immediately before the primary record would be unlinked (jdoc#89 QA-06).
-    In both cases every participating index
-    remains loadable; at worst rebuildable auxiliary artifacts of the
-    retiring handle are gone. ``changed`` lists the ``owner/name`` handles
+    In both entry and final conflicts, the retiring primary remains loadable
+    because its primary unlink did not commit; at worst rebuildable auxiliary
+    artifacts of the retiring handle are gone. A retained peer that changed or
+    disappeared is not restored. ``changed`` lists the ``owner/name`` handles
     that no longer match their proof-time fingerprints (an expected value of
-    None always conflicts; missing state never authorizes removal). Only
-    ever raised when the caller passed ``expected_fingerprints``; unguarded
-    deletes are unaffected."""
+    None always conflicts; missing state never authorizes removal). Only ever
+    raised when the caller passed ``expected_fingerprints``; unguarded deletes
+    are unaffected."""
 
     def __init__(self, changed: list):
         self.changed = list(changed)
