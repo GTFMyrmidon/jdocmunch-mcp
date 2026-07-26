@@ -208,19 +208,42 @@ def _assert_cleanup_incomplete_accounted(section):
     prose = "\n".join(
         line for line in section.splitlines() if not line.startswith("|")
     )
-    paragraphs = [
-        paragraph.strip()
-        for paragraph in re.split(r"\n\s*\n", prose)
-        if CLEANUP_INCOMPLETE_PATTERN.search(paragraph)
-    ]
-    for paragraph in paragraphs:
-        normalized = " ".join(paragraph.split()).lower()
-        assert "pre-commit" in normalized, (
-            "cleanup-incomplete prose is not explicitly pre-commit"
+    matching_units = []
+    for paragraph in re.split(r"\n\s*\n", prose):
+        normalized_paragraph = " ".join(paragraph.split())
+        sentences = re.split(r"(?<=[.!?])\s+", normalized_paragraph)
+        for sentence in sentences:
+            clauses = re.split(
+                r";\s+|:\s+|,\s+(?=(?:and|but|yet|or)\b)",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+            matching_units.extend(
+                clause.strip()
+                for clause in clauses
+                if CLEANUP_INCOMPLETE_PATTERN.search(clause)
+            )
+    assert matching_units, "SPEC.md must publish cleanup-incomplete prose"
+    for unit in matching_units:
+        normalized = unit.lower()
+        precommit_only = "pre-commit" in normalized and bool(
+            re.search(
+                r"\b(?:only|before|without|prevent(?:ed|s|ing)?)\b",
+                normalized,
+            )
         )
-        assert (
-            "never follows a committed primary unlink" in normalized
-        ), "cleanup-incomplete prose permits a committed unlink"
+        committed_unlink_prohibited = (
+            "committed primary unlink" in normalized
+            and re.search(
+                r"\b(?:never|cannot|can't|must not|may not|does not|do not)\b",
+                normalized,
+            )
+            is not None
+        )
+        assert precommit_only or committed_unlink_prohibited, (
+            "cleanup-incomplete prose occurrence is not independently "
+            f"accounted: {unit!r}"
+        )
 
 
 def _assert_retirement_contract(spec_path=SPEC_PATH):
@@ -291,6 +314,26 @@ def test_retirement_spec_rejects_explicit_contradictions(claim):
     _assert_retirement_contract()
     with pytest.raises(AssertionError, match="contains contradictions"):
         _assert_no_contradictions(_retirement_section_raw() + "\n" + claim)
+
+
+def test_retirement_spec_rejects_same_paragraph_cleanup_contradiction():
+    section = _retirement_section_raw()
+    paragraph = next(
+        value
+        for value in re.split(r"\n\s*\n", section)
+        if "cleanup-incomplete reason codes"
+        in " ".join(value.split()).lower()
+        and "never follows a committed primary unlink"
+        in " ".join(value.split()).lower()
+    )
+    contradiction = (
+        "Nevertheless, after a committed primary unlink, the operation may "
+        "return cleanup_incomplete."
+    )
+    mutated = section.replace(paragraph, f"{paragraph} {contradiction}")
+
+    with pytest.raises(AssertionError, match="contains contradictions"):
+        _assert_no_contradictions(mutated)
 
 
 def test_retirement_conflict_docstring_scopes_availability_to_retiring_primary():
