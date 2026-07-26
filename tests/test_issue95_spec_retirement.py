@@ -114,7 +114,9 @@ CLEANUP_INCOMPLETE_PATTERN = re.compile(
 CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN = re.compile(
     r"""
     \bcleanup[-_]incomplete\b
-    [^.!?;:]{0,160}?
+    (?:\s+(?:outcome|reason\s+codes?))?
+    \s+(?:occur(?:s|red|ring)?|return(?:s|ed|ing)?|describe(?:s|d)?)
+    [^.!?;:]{0,40}?
     (?:
         \bonly\s+(?:a\s+)?pre-commit\b
         |
@@ -129,7 +131,8 @@ CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN = re.compile(
 CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN = re.compile(
     r"""
     \bcleanup[-_]incomplete\b
-    [^.!?;:]{0,160}?
+    (?:\s+(?:outcome|response|reason\s+codes?))?
+    \s+
     \b(?:never|cannot|can't|must\s+not|may\s+not|does\s+not|do\s+not)\b
     \s+(?:be\s+)?
     (?:
@@ -139,6 +142,59 @@ CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN = re.compile(
         [^.!?;:]{0,80}?
         \b(?:after|following)\s+(?:a\s+)?committed\s+primary\s+unlink
     )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+CLEANUP_INCOMPLETE_LEADING_PRECOMMIT_ONLY_PATTERN = re.compile(
+    r"""
+    (?:
+        \bonly\s+(?:a\s+)?pre-commit\b
+        |
+        \bpre-commit[- ]only\b
+        |
+        \bonly\s+before\s+(?:the\s+)?primary\s+unlink\b
+    )
+    \s*,?\s+
+    (?:(?:may|can|does)\s+)?
+    \bcleanup[-_]incomplete\b
+    (?:\s+(?:outcome|response))?
+    \s+(?:(?:may|can|does)\s+)?
+    (?:occur(?:s|red|ring)?|return(?:s|ed|ing)?)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+CLEANUP_INCOMPLETE_LEADING_COMMITTED_UNLINK_PROHIBITION_PATTERN = re.compile(
+    r"""
+    \b(?:after|following)\s+(?:a\s+)?committed\s+primary\s+unlink\b
+    \s*,?\s+
+    \bcleanup[-_]incomplete\b
+    (?:\s+(?:outcome|response))?
+    \s+
+    \b(?:never|cannot|can't|must\s+not|may\s+not|does\s+not|do\s+not)\b
+    \s+(?:be\s+)?
+    (?:follow(?:s|ed|ing)?|occur(?:s|red|ring)?|return(?:s|ed|ing)?)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+CLEANUP_INCOMPLETE_RELATIONSHIP_PATTERNS = (
+    CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN,
+    CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN,
+    CLEANUP_INCOMPLETE_LEADING_PRECOMMIT_ONLY_PATTERN,
+    CLEANUP_INCOMPLETE_LEADING_COMMITTED_UNLINK_PROHIBITION_PATTERN,
+)
+
+CLEANUP_INCOMPLETE_RELATIONSHIP_BOUNDARY_PATTERN = re.compile(
+    r"""
+    ;\s+
+    |
+    :\s+
+    |
+    ,\s+(?=(?:and|yet|or)\b)
+    |
+    (?:,\s*|\s+)(?:but|while|because)\s+
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -245,10 +301,8 @@ def _assert_cleanup_incomplete_accounted(section):
         normalized_paragraph = " ".join(paragraph.split())
         sentences = re.split(r"(?<=[.!?])\s+", normalized_paragraph)
         for sentence in sentences:
-            clauses = re.split(
-                r";\s+|:\s+|,\s+(?=(?:and|but|yet|or)\b)",
-                sentence,
-                flags=re.IGNORECASE,
+            clauses = CLEANUP_INCOMPLETE_RELATIONSHIP_BOUNDARY_PATTERN.split(
+                sentence
             )
             matching_units.extend(
                 clause.strip()
@@ -257,16 +311,20 @@ def _assert_cleanup_incomplete_accounted(section):
             )
     assert matching_units, "SPEC.md must publish cleanup-incomplete prose"
     for unit in matching_units:
-        relationship_is_bound = bool(
-            CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN.search(unit)
-            or CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN.search(
-                unit
+        allowed_spans = [
+            match.span()
+            for pattern in CLEANUP_INCOMPLETE_RELATIONSHIP_PATTERNS
+            for match in pattern.finditer(unit)
+        ]
+        for occurrence in CLEANUP_INCOMPLETE_PATTERN.finditer(unit):
+            occurrence_is_bound = any(
+                start <= occurrence.start() and occurrence.end() <= end
+                for start, end in allowed_spans
             )
-        )
-        assert relationship_is_bound, (
-            "cleanup-incomplete prose occurrence is not independently "
-            f"accounted: {unit!r}"
-        )
+            assert occurrence_is_bound, (
+                "cleanup-incomplete prose occurrence is not independently "
+                f"accounted: {unit!r}"
+            )
 
 
 def _assert_retirement_contract(spec_path=SPEC_PATH):
@@ -385,6 +443,39 @@ def test_retirement_spec_accepts_only_before_primary_unlink():
     _assert_cleanup_incomplete_accounted(
         "Cleanup-incomplete occurs only before the primary unlink."
     )
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    (
+        (
+            "Cleanup_incomplete never follows a committed primary unlink but "
+            "cleanup_incomplete may return after a committed primary unlink."
+        ),
+        (
+            "Cleanup_incomplete may follow a committed primary unlink while "
+            "monitoring runs only before the primary unlink."
+        ),
+    ),
+)
+def test_retirement_spec_rejects_cross_occurrence_qualifiers(
+    contradiction,
+):
+    with pytest.raises(AssertionError, match="contains contradictions"):
+        _assert_no_contradictions(
+            _retirement_section_raw() + "\n" + contradiction
+        )
+
+
+@pytest.mark.parametrize(
+    "valid_claim",
+    (
+        "Only before the primary unlink may cleanup-incomplete occur.",
+        "After a committed primary unlink, cleanup_incomplete cannot occur.",
+    ),
+)
+def test_retirement_spec_accepts_leading_cleanup_qualifiers(valid_claim):
+    _assert_cleanup_incomplete_accounted(valid_claim)
 
 
 def test_retirement_conflict_docstring_scopes_availability_to_retiring_primary():
