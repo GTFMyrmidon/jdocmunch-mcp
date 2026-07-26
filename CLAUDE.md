@@ -1,6 +1,8 @@
 # jdocmunch-mcp
 
-**Version:** 1.119.0 + unreleased branch `coordinated-retirement` (#93 arc, NOT published; master merged up through 1.119.0) | **Tests:** `pytest tests/ -q`
+**Version:** 1.119.0 + unreleased branch `coordinated-retirement` @ `8d15897`
+(#93 arc, NOT published; master merged up through 1.119.0; all 8 CI jobs green,
+head HELD for rknighton's PR) | **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ## v1.119.0 — 5th absence refusal rule: a rebuild underneath a scan cannot prove absence
 
@@ -139,17 +141,57 @@ is pre-registration, so the gate cannot be reshaped to fit the fix. What is lost
 is his adversarial pass on the new code; **that role moves to US, and the release
 notes must SAY so** rather than let the record imply author-verification.
 
-**QA-25 accepted — it retires the `lock_wait` question we deliberately refused to
-guess at a third time.** Callers state wait-vs-refuse explicitly; the lock does
-NOT infer intent from surrounding state. `lock_wait=True` internal blocking,
-`False` immediate refusal, **low-level default left at `False`**, plus a
-default-drift assertion. ⚠ **Simpler than our proposed retirement-record
-inference, and it dissolves a constraint that was OURS: we were trying to satisfy
-both conflicting tests WITHOUT editing either — their author has now authorized
-editing them.** The `⚠ UNRESOLVED` block in `delete_index`'s docstring comes out
-in the same change. PR scope requested: QA-19 + QA-23 + QA-25 + QA-21 + the
-`reason_code` vocabulary w/ SPEC.md drift guard, Path A. Follow-ons: process-
-interruption durability, installed-wheel matrix, frozen-SHA run.
+PR scope requested: QA-19 + QA-23 + QA-21 + the `reason_code` vocabulary w/
+SPEC.md drift guard, Path A. Follow-ons: process-interruption durability,
+installed-wheel matrix, frozen-SHA run. **QA-25 was in that scope and we then
+took it — see below. Disclosed on #95 rather than left for him to find, with an
+offer to revert if his local version differs, since he owns the contract.**
+
+## QA-25 SHIPPED by us 2026-07-26 (`8d15897`): intent is stated, never inferred
+
+Closes the branch's single known red test, Linux-only
+`test_v1_115_0_lifecycle_v2.py::test_three_processes_keep_one_lock_inode`
+("DID NOT RAISE Empty"). ⚠ **Root cause is NOT the default's value — it is that
+two tests asked the default to arbitrate a question it cannot answer.** Both
+production callers were ALREADY explicit (`tools/delete_index.py:36` `False`,
+`tools/index_local.py:231` `True`), so **those two tests were the only implicit
+callers in the entire repo**, requiring OPPOSITE behavior on the SAME lock. No
+default could satisfy both. At `False` the QA-15 deleter returned instead of
+blocking, so nothing reached the queue and `pytest.raises(queue.Empty)` got a
+value.
+
+Fix is the reviewer's rule, verbatim: every contention-sensitive caller states
+whether it waits or refuses; the lock never infers intent from surrounding
+state. QA-15 deleter → `lock_wait=True`; QA-17 gate contender →
+`lock_wait=False`; `⚠ UNRESOLVED` docstring block replaced with the resolution.
+⚠ **This SUPERSEDES our proposed retirement-record inference — do not resurrect
+it.** It also dissolved a constraint that was OURS, not his: we were trying to
+satisfy both tests WITHOUT editing either, and their author told us to edit them.
+
+⚠ **The default STAYS `False`, and that is a data-loss argument, not a
+preference:** a caller that forgets to say gets the REFUSING behavior, which
+preserves the QA-17 guarantee that both participating indexes are never
+simultaneously absent. Defaulting to blocking would make forgetting cost an
+index. New `tests/test_v1_115_0_qa25.py` pins it by signature inspection.
+
+⚠ **The second guard is a PRESENCE check, deliberately, and its docstring says
+so.** It asserts each contention-sensitive function contains a
+`delete_index(..., lock_wait=<expected>)` call and says nothing about its other
+calls. **Our first version demanded EVERY call be explicit and produced 8
+findings that were all noise** — two of those functions also delete uncontended,
+as first acquirers where the flag cannot change the outcome. It is a
+signature-level assertion on purpose: it runs on BOTH platforms, whereas the
+behavioral test that would catch the loss SKIPS on Windows, which is exactly how
+this regressed unnoticed. Both guards proven non-vacuous (remove the argument →
+guard fails naming function+line; flip the default → drift assertion fails).
+
+Receipts, all 8 jobs green at `8d158975ad2b515289c8ad524f3e2b971d397dbe`
+([run 30204690565](https://github.com/jgravelle/jdocmunch-mcp/actions/runs/30204690565)):
+Linux 1875 passed / 9 skipped ×4, Windows 1870 passed / 14 skipped ×4. Against
+`69c91c4`, Linux went 1 failed / 1872 passed → 0 failed / 1875 passed.
+⚠ **The 1875/1870 split is 5 POSIX-only tests (9 vs 14 skips, identical 1884
+totals) and QA-15 is one of them — that number IS the QA-24 mechanism**, so
+never read a Windows pass as verifying a locking contract.
 
 **CI: `fail-fast: false` added to the Tests matrix (`69c91c4`).** One ubuntu-3.10
 failure was cancelling all four Windows jobs, so the frozen review SHA carried
@@ -175,6 +217,34 @@ Maintain CHANGELOG by hand-appending entries in the established format, and
 keep new entry wording clear of fixture query phrases
 ([[feedback_fixture_query_corpus_pollution]] class).
 
+
+## Replay-corpus warning: trimming CLAUDE.md can break the replay gate
+
+Same class as the CHANGELOG incident above, hit 2026-07-26 while tracking
+`docs/CLAUDE-history.md`. ⚠ **The replay self-fixture indexes `repo_path: "."` —
+the WHOLE REPO — so any large markdown file added to the tree joins the retrieval
+corpus and competes with the goldens.** Tracking 115 KB of trimmed release-brief
+prose dropped nDCG to **0.906 against a 0.95 gate with recall still 1.0** (every
+golden found, just outranked), failing
+`test_replay_metrics.py::TestGate::test_pass_when_within_gate` and
+`TestBaselineLock::test_self_fixture_meets_lock`.
+
+⚠ **It was INVISIBLE to CI because the file was UNTRACKED — a fresh clone did not
+have it.** Local runs were red while all 8 CI jobs at `69c91c4` were green. Any
+"CI is green at the frozen SHA" claim is blind to untracked working-tree files.
+
+Fix was not a new judgment: **`CLAUDE.md` is ALREADY in the fixture's
+`extra_ignore_patterns`** for precisely this reason (recorded there: its
+tool-keyword-dense entries shadow stable CHANGELOG goldens, e.g. 'broken links'
+demoted by the #47-50 release notes at v1.77.0). `docs/CLAUDE-history.md` **IS
+that content**, so trimming into it moved the shadowing prose out from under its
+own exclusion; the archive inherits the pattern. Goldens and the 0.95 gate
+UNTOUCHED — ⚠ **never fix this class by moving a golden or lowering the gate; the
+signal is correct, the corpus scope was wrong.**
+
+Every future batch trimmed into `docs/CLAUDE-history.md` stays excluded, so this
+will not recur for that file. It WILL recur for any new large doc added at a new
+path ([[feedback_fixture_query_corpus_pollution]]).
 
 ## Release history
 Versions 1.115.0 and earlier: see `docs/CLAUDE-history.md` (moved out of this file
