@@ -111,92 +111,18 @@ CLEANUP_INCOMPLETE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN = re.compile(
-    r"""
-    \bcleanup[-_]incomplete\b
-    (?:\s+(?:outcome|reason\s+codes?))?
-    \s+(?:occur(?:s|red|ring)?|return(?:s|ed|ing)?|describe(?:s|d)?)
-    [^.!?;:]{0,40}?
-    (?:
-        \bonly\s+(?:a\s+)?pre-commit\b
-        |
-        \bpre-commit[- ]only\b
-        |
-        \bonly\s+before\s+(?:the\s+)?primary\s+unlink\b
-    )
-    """,
-    re.IGNORECASE | re.VERBOSE,
+CLEANUP_INCOMPLETE_PROSE_INVENTORY = (
+    (
+        "cleanup-incomplete reason codes describe only a pre-commit failure, "
+        "and a cleanup-incomplete outcome never follows a committed primary "
+        "unlink."
+    ),
 )
 
-CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN = re.compile(
-    r"""
-    \bcleanup[-_]incomplete\b
-    (?:\s+(?:outcome|response|reason\s+codes?))?
-    \s+
-    \b(?:never|cannot|can't|must\s+not|may\s+not|does\s+not|do\s+not)\b
-    \s+(?:be\s+)?
-    (?:
-        follow(?:s|ed|ing)?\s+(?:a\s+)?committed\s+primary\s+unlink
-        |
-        (?:occur(?:s|red|ring)?|return(?:s|ed|ing)?)
-        [^.!?;:]{0,80}?
-        \b(?:after|following)\s+(?:a\s+)?committed\s+primary\s+unlink
-    )
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-CLEANUP_INCOMPLETE_LEADING_PRECOMMIT_ONLY_PATTERN = re.compile(
-    r"""
-    (?:
-        \bonly\s+(?:a\s+)?pre-commit\b
-        |
-        \bpre-commit[- ]only\b
-        |
-        \bonly\s+before\s+(?:the\s+)?primary\s+unlink\b
-    )
-    \s*,?\s+
-    (?:(?:may|can|does)\s+)?
-    \bcleanup[-_]incomplete\b
-    (?:\s+(?:outcome|response))?
-    \s+(?:(?:may|can|does)\s+)?
-    (?:occur(?:s|red|ring)?|return(?:s|ed|ing)?)
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-CLEANUP_INCOMPLETE_LEADING_COMMITTED_UNLINK_PROHIBITION_PATTERN = re.compile(
-    r"""
-    \b(?:after|following)\s+(?:a\s+)?committed\s+primary\s+unlink\b
-    \s*,?\s+
-    \bcleanup[-_]incomplete\b
-    (?:\s+(?:outcome|response))?
-    \s+
-    \b(?:never|cannot|can't|must\s+not|may\s+not|does\s+not|do\s+not)\b
-    \s+(?:be\s+)?
-    (?:follow(?:s|ed|ing)?|occur(?:s|red|ring)?|return(?:s|ed|ing)?)
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-CLEANUP_INCOMPLETE_RELATIONSHIP_PATTERNS = (
-    CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN,
-    CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN,
-    CLEANUP_INCOMPLETE_LEADING_PRECOMMIT_ONLY_PATTERN,
-    CLEANUP_INCOMPLETE_LEADING_COMMITTED_UNLINK_PROHIBITION_PATTERN,
-)
-
-CLEANUP_INCOMPLETE_RELATIONSHIP_BOUNDARY_PATTERN = re.compile(
-    r"""
-    ;\s+
-    |
-    :\s+
-    |
-    ,\s+(?=(?:and|yet|or)\b)
-    |
-    (?:,\s*|\s+)(?:but|while|because)\s+
-    """,
-    re.IGNORECASE | re.VERBOSE,
+CLEANUP_INCOMPLETE_REASON_CODE_INVENTORY = (
+    "supersession_cleanup_incomplete",
+    "graduation_cleanup_incomplete",
+    "legacy_reconcile_cleanup_incomplete",
 )
 
 
@@ -263,72 +189,66 @@ def _assert_no_contradictions(section):
         "SPEC.md retirement coordination contains contradictions: "
         + ", ".join(contradictions)
     )
-    try:
-        _assert_cleanup_incomplete_accounted(section)
-    except AssertionError as exc:
-        raise AssertionError(
-            "SPEC.md retirement coordination contains contradictions: "
-            f"{exc}"
-        ) from exc
+    actual_inventory = _cleanup_incomplete_prose_inventory(section)
+    assert actual_inventory == CLEANUP_INCOMPLETE_PROSE_INVENTORY, (
+        "SPEC.md retirement coordination contains contradictions: "
+        "cleanup-incomplete prose inventory differs from the canonical "
+        f"contract: {actual_inventory!r}"
+    )
 
 
-def _assert_cleanup_incomplete_accounted(section):
-    matching_lines = [
-        line
-        for line in section.splitlines()
-        if CLEANUP_INCOMPLETE_PATTERN.search(line)
-    ]
-    assert matching_lines, "SPEC.md must publish cleanup-incomplete semantics"
-    for row in (line for line in matching_lines if line.startswith("|")):
-        cells = [
-            cell.strip().replace("`", "").lower()
-            for cell in row.strip("|").split("|")
-        ]
-        assert cells[0].endswith("cleanup_incomplete"), (
-            "cleanup-incomplete table occurrence is not a reason code"
-        )
-        assert "pre-commit" in cells[-1], (
-            "cleanup-incomplete table row is not pre-commit"
-        )
-        assert "prevented the primary unlink" in cells[-1], (
-            "cleanup-incomplete table row does not prevent unlink"
-        )
+def _normalize_cleanup_incomplete_sentence(sentence):
+    without_backticks = sentence.replace("`", "")
+    canonical_spelling = CLEANUP_INCOMPLETE_PATTERN.sub(
+        "cleanup-incomplete",
+        without_backticks,
+    )
+    return " ".join(canonical_spelling.split()).lower()
+
+
+def _cleanup_incomplete_prose_inventory(section):
     prose = "\n".join(
         line for line in section.splitlines() if not line.startswith("|")
     )
-    matching_units = []
-    for paragraph in re.split(r"\n\s*\n", prose):
-        normalized_paragraph = " ".join(paragraph.split())
-        sentences = re.split(r"(?<=[.!?])\s+", normalized_paragraph)
-        for sentence in sentences:
-            clauses = CLEANUP_INCOMPLETE_RELATIONSHIP_BOUNDARY_PATTERN.split(
-                sentence
-            )
-            matching_units.extend(
-                clause.strip()
-                for clause in clauses
-                if CLEANUP_INCOMPLETE_PATTERN.search(clause)
-            )
-    assert matching_units, "SPEC.md must publish cleanup-incomplete prose"
-    for unit in matching_units:
-        allowed_spans = [
-            match.span()
-            for pattern in CLEANUP_INCOMPLETE_RELATIONSHIP_PATTERNS
-            for match in pattern.finditer(unit)
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(prose.split()))
+    return tuple(
+        _normalize_cleanup_incomplete_sentence(sentence)
+        for sentence in sentences
+        if CLEANUP_INCOMPLETE_PATTERN.search(sentence)
+    )
+
+
+def _cleanup_incomplete_reason_code_rows(spec_path=SPEC_PATH):
+    rows = []
+    for line in spec_path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [
+            cell.strip().replace("`", "").lower()
+            for cell in line.strip("|").split("|")
         ]
-        for occurrence in CLEANUP_INCOMPLETE_PATTERN.finditer(unit):
-            occurrence_is_bound = any(
-                start <= occurrence.start() and occurrence.end() <= end
-                for start, end in allowed_spans
-            )
-            assert occurrence_is_bound, (
-                "cleanup-incomplete prose occurrence is not independently "
-                f"accounted: {unit!r}"
-            )
+        if cells[0].endswith("_cleanup_incomplete"):
+            rows.append((cells[0], cells[-1]))
+    return tuple(rows)
+
+
+def _assert_cleanup_incomplete_table_inventory(spec_path=SPEC_PATH):
+    rows = _cleanup_incomplete_reason_code_rows(spec_path)
+    assert tuple(reason_code for reason_code, _ in rows) == (
+        CLEANUP_INCOMPLETE_REASON_CODE_INVENTORY
+    )
+    for reason_code, meaning in rows:
+        assert "pre-commit" in meaning, (
+            f"{reason_code} table row is not pre-commit"
+        )
+        assert "prevented the primary unlink" in meaning, (
+            f"{reason_code} table row does not prevent unlink"
+        )
 
 
 def _assert_retirement_contract(spec_path=SPEC_PATH):
-    section = _retirement_section(spec_path)
+    raw_section = _retirement_section_raw(spec_path)
+    section = " ".join(raw_section.split()).lower()
     missing = [
         name
         for name, statement in REQUIRED_CONTRACTS.items()
@@ -338,27 +258,23 @@ def _assert_retirement_contract(spec_path=SPEC_PATH):
         "SPEC.md retirement coordination is missing contracts: "
         + ", ".join(missing)
     )
-    _assert_no_contradictions(section)
-    _assert_cleanup_incomplete_accounted(
-        spec_path.read_text(encoding="utf-8")
-    )
+    _assert_no_contradictions(raw_section)
+    _assert_cleanup_incomplete_table_inventory(spec_path)
 
 
 def test_retirement_coordination_spec_matches_commit_contract():
     _assert_retirement_contract()
 
 
-def test_cleanup_incomplete_vocabulary_is_precommit_only():
-    section = _retirement_section()
-
-    assert (
-        "cleanup-incomplete reason codes describe only a pre-commit failure"
-        in section
+def test_cleanup_incomplete_inventories_are_canonical():
+    assert _cleanup_incomplete_prose_inventory(
+        _retirement_section_raw()
+    ) == CLEANUP_INCOMPLETE_PROSE_INVENTORY
+    rows = _cleanup_incomplete_reason_code_rows()
+    assert tuple(reason_code for reason_code, _ in rows) == (
+        CLEANUP_INCOMPLETE_REASON_CODE_INVENTORY
     )
-    assert (
-        "a cleanup-incomplete outcome never follows a committed primary unlink"
-        in section
-    )
+    _assert_cleanup_incomplete_table_inventory()
 
 
 def test_cleanup_disclosure_schema_matches_storage_emitter():
@@ -439,12 +355,6 @@ def test_retirement_spec_rejects_unrelated_cleanup_qualifiers(
         )
 
 
-def test_retirement_spec_accepts_only_before_primary_unlink():
-    _assert_cleanup_incomplete_accounted(
-        "Cleanup-incomplete occurs only before the primary unlink."
-    )
-
-
 @pytest.mark.parametrize(
     "contradiction",
     (
@@ -468,14 +378,33 @@ def test_retirement_spec_rejects_cross_occurrence_qualifiers(
 
 
 @pytest.mark.parametrize(
-    "valid_claim",
+    "contradiction",
     (
-        "Only before the primary unlink may cleanup-incomplete occur.",
-        "After a committed primary unlink, cleanup_incomplete cannot occur.",
+        (
+            "Cleanup_incomplete never follows a committed primary unlink and "
+            "may return after a committed primary unlink."
+        ),
+        (
+            "Cleanup_incomplete occurs only before the primary unlink and may "
+            "return after a committed primary unlink."
+        ),
+        (
+            "Only before the primary unlink may cleanup-incomplete occur after "
+            "a committed primary unlink."
+        ),
+        (
+            "After a committed primary unlink, cleanup_incomplete cannot occur "
+            "but may return after a committed primary unlink."
+        ),
     ),
 )
-def test_retirement_spec_accepts_leading_cleanup_qualifiers(valid_claim):
-    _assert_cleanup_incomplete_accounted(valid_claim)
+def test_retirement_spec_rejects_noncanonical_cleanup_claims(
+    contradiction,
+):
+    with pytest.raises(AssertionError, match="contains contradictions"):
+        _assert_no_contradictions(
+            _retirement_section_raw() + "\n" + contradiction
+        )
 
 
 def test_retirement_conflict_docstring_scopes_availability_to_retiring_primary():
