@@ -31,6 +31,15 @@ INDEX_VERSION = 3
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _UNSET = object()
 
+# Authoritative storage outcomes for delete_index. The semantic keys are
+# internal; the values are the stable public reason codes emitted by storage
+# and interpreted by the public tool.
+DELETE_REASON_CODES = {
+    "deleted": "index_deleted",
+    "not_found": "index_not_found",
+    "lifecycle_busy": "index_lifecycle_busy",
+}
+
 
 class RetirementConflict(Exception):
     """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
@@ -101,7 +110,9 @@ def _with_index_lock(method):
                 if not acquired:
                     outcome = kwargs.get("outcome")
                     if outcome is not None:
-                        outcome["reason_code"] = "index_lifecycle_busy"
+                        outcome["reason_code"] = DELETE_REASON_CODES[
+                            "lifecycle_busy"
+                        ]
                     return False
                 return method(self, owner, name, *args, **kwargs)
         with self._index_write_lock(owner, name):
@@ -1694,7 +1705,7 @@ class DocStore:
             index_path = self._index_path(owner, name)
             content_dir = self._content_dir(owner, name)
         except ValueError:
-            _out("index_not_found")
+            _out(DELETE_REASON_CODES["not_found"])
             return False
 
         guarded_retirement = expected_fingerprints is not None
@@ -1725,7 +1736,7 @@ class DocStore:
         ):
             # A retirement owning this handle as its retained peer is inside
             # its destructive step right now. Retryable, and NOT missing.
-            _out("index_lifecycle_busy")
+            _out(DELETE_REASON_CODES["lifecycle_busy"])
             return False
 
         # jdoc#90 QA-17: note whether a durable record backs THIS guarded
@@ -1929,7 +1940,11 @@ class DocStore:
             pass
         if retirement_completion_failed:
             return False
-        _out("index_deleted" if deleted else "index_not_found")
+        _out(
+            DELETE_REASON_CODES["deleted"]
+            if deleted
+            else DELETE_REASON_CODES["not_found"]
+        )
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:
