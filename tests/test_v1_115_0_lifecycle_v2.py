@@ -92,7 +92,14 @@ def _process_hold_lock(base_path, locked, release, output):
 
 
 def _process_blocking_delete(base_path, output):
-    output.put(DocStore(base_path=base_path).delete_index("local", "qa15"))
+    # jdoc#95 QA-25: state the intent rather than relying on the default.
+    # This is the internal blocking deleter; contention here is an ordinary
+    # cross-process writer that will release, so waiting is correct.
+    output.put(
+        DocStore(base_path=base_path).delete_index(
+            "local", "qa15", lock_wait=True
+        )
+    )
 
 
 def _process_public_try_delete(base_path, output):

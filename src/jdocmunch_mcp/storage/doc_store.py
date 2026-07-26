@@ -1651,10 +1651,10 @@ class DocStore:
         immediately rather than wait. The public tool passes False explicitly
         (fast ``index_lifecycle_busy`` refusal); retirement passes True.
 
-        ⚠ UNRESOLVED (#93): this default is contested by two of the reviewer's
-        own tests, which both call ``delete_index(owner, name)`` with no
-        lock_wait and require OPPOSITE behavior on the SAME lock, the target
-        handle's write lock taken by ``_with_index_lock``:
+        jdoc#95 QA-25 (RESOLVED, was UNRESOLVED): two tests once called
+        ``delete_index(owner, name)`` with no lock_wait while requiring
+        OPPOSITE behavior on the SAME lock — the target handle's write lock
+        taken by ``_with_index_lock``:
 
         * ``test_v1_115_0_qa90.py::test_qa17_retained_delete_refused_inside_final_gate``
           needs an immediate False. A retirement is paused mid-unlink holding
@@ -1664,14 +1664,20 @@ class DocStore:
           (Linux-only, SKIPS on Windows) needs a block. Contention there is an
           ordinary cross-process writer that will release.
 
-        Neither is wrong. The lock does not record WHY it is held, and that is
-        the actual gap: in the QA-17 case a retirement record names this handle
-        as the retained peer, in the QA-15 case no record exists. Refusing when
-        such a record names this handle and otherwise honoring lock_wait would
-        satisfy both, and is the proposed fix. Left at False for now because
-        that preserves the QA-17 guarantee that both indexes are never absent,
-        which is a data-loss property; the QA-15 cost is coordination
-        semantics. Do not flip this default without reading both tests."""
+        Neither is wrong, and no default satisfies both. We proposed inferring
+        intent from surrounding state (refuse when a pending retirement record
+        names this handle as retained, else honor lock_wait). The reviewer, who
+        authored both tests, rejected that in favour of the simpler rule:
+        **every contention-sensitive caller states whether it waits or
+        refuses, and the lock never deduces it.** Both tests now pass the flag
+        explicitly, so this default arbitrates nothing.
+
+        ⚠ The default stays False, and ``test_v1_115_0_qa25.py`` asserts that
+        by signature inspection. It is not a preference: a caller that forgot
+        to say gets the refusing behavior, which preserves the QA-17 guarantee
+        that both participating indexes are never simultaneously absent — a
+        data-loss property. Defaulting to blocking would make forgetting cost
+        an index. Do not flip it; add an explicit argument at the call site."""
         def _out(code: str) -> None:
             if outcome is not None:
                 outcome["reason_code"] = code

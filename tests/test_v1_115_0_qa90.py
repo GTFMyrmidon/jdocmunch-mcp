@@ -70,8 +70,11 @@ def test_qa17_retained_delete_refused_inside_final_gate(
     try:
         assert reached.wait(10)
         # The gate is closed: the retained-peer delete must be refused.
+        # jdoc#95 QA-25: state the intent rather than relying on the default.
+        # The gate holds this handle through work that cannot finish until the
+        # test releases it, so this caller must refuse rather than wait.
         refused = DocStore(base_path=str(store)).delete_index(
-            "local", "modern"
+            "local", "modern", lock_wait=False
         )
         assert refused is False
         assert ds.load_index("local", "modern") is not None
