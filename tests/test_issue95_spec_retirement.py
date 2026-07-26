@@ -111,6 +111,38 @@ CLEANUP_INCOMPLETE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN = re.compile(
+    r"""
+    \bcleanup[-_]incomplete\b
+    [^.!?;:]{0,160}?
+    (?:
+        \bonly\s+(?:a\s+)?pre-commit\b
+        |
+        \bpre-commit[- ]only\b
+        |
+        \bonly\s+before\s+(?:the\s+)?primary\s+unlink\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN = re.compile(
+    r"""
+    \bcleanup[-_]incomplete\b
+    [^.!?;:]{0,160}?
+    \b(?:never|cannot|can't|must\s+not|may\s+not|does\s+not|do\s+not)\b
+    \s+(?:be\s+)?
+    (?:
+        follow(?:s|ed|ing)?\s+(?:a\s+)?committed\s+primary\s+unlink
+        |
+        (?:occur(?:s|red|ring)?|return(?:s|ed|ing)?)
+        [^.!?;:]{0,80}?
+        \b(?:after|following)\s+(?:a\s+)?committed\s+primary\s+unlink
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 def _retirement_section_raw(spec_path=SPEC_PATH):
     text = spec_path.read_text(encoding="utf-8")
@@ -225,22 +257,13 @@ def _assert_cleanup_incomplete_accounted(section):
             )
     assert matching_units, "SPEC.md must publish cleanup-incomplete prose"
     for unit in matching_units:
-        normalized = unit.lower()
-        precommit_only = "pre-commit" in normalized and bool(
-            re.search(
-                r"\b(?:only|before|without|prevent(?:ed|s|ing)?)\b",
-                normalized,
+        relationship_is_bound = bool(
+            CLEANUP_INCOMPLETE_PRECOMMIT_ONLY_PATTERN.search(unit)
+            or CLEANUP_INCOMPLETE_COMMITTED_UNLINK_PROHIBITION_PATTERN.search(
+                unit
             )
         )
-        committed_unlink_prohibited = (
-            "committed primary unlink" in normalized
-            and re.search(
-                r"\b(?:never|cannot|can't|must not|may not|does not|do not)\b",
-                normalized,
-            )
-            is not None
-        )
-        assert precommit_only or committed_unlink_prohibited, (
+        assert relationship_is_bound, (
             "cleanup-incomplete prose occurrence is not independently "
             f"accounted: {unit!r}"
         )
@@ -334,6 +357,34 @@ def test_retirement_spec_rejects_same_paragraph_cleanup_contradiction():
 
     with pytest.raises(AssertionError, match="contains contradictions"):
         _assert_no_contradictions(mutated)
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    (
+        (
+            "Cleanup_incomplete may follow a committed primary unlink and "
+            "never requires manual repair."
+        ),
+        (
+            "Cleanup_incomplete may follow a committed primary unlink, "
+            "because a pre-commit check only records diagnostics."
+        ),
+    ),
+)
+def test_retirement_spec_rejects_unrelated_cleanup_qualifiers(
+    contradiction,
+):
+    with pytest.raises(AssertionError, match="contains contradictions"):
+        _assert_no_contradictions(
+            _retirement_section_raw() + "\n" + contradiction
+        )
+
+
+def test_retirement_spec_accepts_only_before_primary_unlink():
+    _assert_cleanup_incomplete_accounted(
+        "Cleanup-incomplete occurs only before the primary unlink."
+    )
 
 
 def test_retirement_conflict_docstring_scopes_availability_to_retiring_primary():
