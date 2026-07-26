@@ -1,6 +1,7 @@
 """Issue #95 retirement coordination specification contract."""
 
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,9 @@ REQUIRED_CONTRACTS = {
         "public deletion uses zero-wait coordination, while internal "
         "retirement uses its bounded wait"
     ),
+    "pre-commit pending signal": (
+        "durable pre-commit recovery signal"
+    ),
 }
 
 EXPECTED_OUTCOME_MATRIX = {
@@ -86,11 +90,25 @@ EXPECTED_OUTCOME_MATRIX = {
     },
 }
 
-FORBIDDEN_CONTRADICTIONS = (
-    "cleanup-incomplete may follow a committed primary unlink",
-    "cleanup-incomplete after committed unlink",
+ABSENT_MONOLITH_CONTRADICTIONS = (
     "a non-retired result may have an absent retiring monolith",
     "non-retired result with an absent monolith",
+)
+
+CLEANUP_INCOMPLETE_CONTRADICTIONS = (
+    (
+        "Following a successful primary unlink, the operation can still "
+        "return cleanup_incomplete."
+    ),
+    (
+        "The primary index can be unlinked before a cleanup-incomplete "
+        "response is returned."
+    ),
+)
+
+CLEANUP_INCOMPLETE_PATTERN = re.compile(
+    r"\bcleanup[-_]incomplete\b",
+    re.IGNORECASE,
 )
 
 
@@ -149,12 +167,60 @@ def _published_cleanup_schema():
 def _assert_no_contradictions(section):
     normalized = " ".join(section.split()).lower()
     contradictions = [
-        claim for claim in FORBIDDEN_CONTRADICTIONS if claim in normalized
+        claim
+        for claim in ABSENT_MONOLITH_CONTRADICTIONS
+        if claim in normalized
     ]
     assert not contradictions, (
         "SPEC.md retirement coordination contains contradictions: "
         + ", ".join(contradictions)
     )
+    try:
+        _assert_cleanup_incomplete_accounted(section)
+    except AssertionError as exc:
+        raise AssertionError(
+            "SPEC.md retirement coordination contains contradictions: "
+            f"{exc}"
+        ) from exc
+
+
+def _assert_cleanup_incomplete_accounted(section):
+    matching_lines = [
+        line
+        for line in section.splitlines()
+        if CLEANUP_INCOMPLETE_PATTERN.search(line)
+    ]
+    assert matching_lines, "SPEC.md must publish cleanup-incomplete semantics"
+    for row in (line for line in matching_lines if line.startswith("|")):
+        cells = [
+            cell.strip().replace("`", "").lower()
+            for cell in row.strip("|").split("|")
+        ]
+        assert cells[0].endswith("cleanup_incomplete"), (
+            "cleanup-incomplete table occurrence is not a reason code"
+        )
+        assert "pre-commit" in cells[-1], (
+            "cleanup-incomplete table row is not pre-commit"
+        )
+        assert "prevented the primary unlink" in cells[-1], (
+            "cleanup-incomplete table row does not prevent unlink"
+        )
+    prose = "\n".join(
+        line for line in section.splitlines() if not line.startswith("|")
+    )
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", prose)
+        if CLEANUP_INCOMPLETE_PATTERN.search(paragraph)
+    ]
+    for paragraph in paragraphs:
+        normalized = " ".join(paragraph.split()).lower()
+        assert "pre-commit" in normalized, (
+            "cleanup-incomplete prose is not explicitly pre-commit"
+        )
+        assert (
+            "never follows a committed primary unlink" in normalized
+        ), "cleanup-incomplete prose permits a committed unlink"
 
 
 def _assert_retirement_contract(spec_path=SPEC_PATH):
@@ -169,6 +235,9 @@ def _assert_retirement_contract(spec_path=SPEC_PATH):
         + ", ".join(missing)
     )
     _assert_no_contradictions(section)
+    _assert_cleanup_incomplete_accounted(
+        spec_path.read_text(encoding="utf-8")
+    )
 
 
 def test_retirement_coordination_spec_matches_commit_contract():
@@ -211,8 +280,15 @@ def test_retirement_commit_outcome_matrix_is_complete_and_consistent():
             assert row["Retiring monolith"] == "loadable"
 
 
-@pytest.mark.parametrize("claim", FORBIDDEN_CONTRADICTIONS)
+@pytest.mark.parametrize(
+    "claim",
+    (
+        *ABSENT_MONOLITH_CONTRADICTIONS,
+        *CLEANUP_INCOMPLETE_CONTRADICTIONS,
+    ),
+)
 def test_retirement_spec_rejects_explicit_contradictions(claim):
+    _assert_retirement_contract()
     with pytest.raises(AssertionError, match="contains contradictions"):
         _assert_no_contradictions(_retirement_section_raw() + "\n" + claim)
 

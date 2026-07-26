@@ -247,7 +247,7 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
                 store.base_path, owner, repo_name
             )
             if pending is not None:
-                info["retirement_cleanup_pending"] = True
+                info["pending_retirement"] = True
         return "conflict", info
     except Exception:
         removed = bool(delete_outcome.get("_primary_unlink_committed"))

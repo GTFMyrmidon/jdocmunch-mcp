@@ -453,6 +453,10 @@ the existing record.
 
 These fields are additive and appear together only on a retired result when
 the primary unlink committed but exact-publication record completion failed.
+They never describe a pre-commit conflict. If exact-publication record cleanup
+fails while a conflict has kept the retiring monolith loadable, the response
+instead reports `pending_retirement: true` as the durable pre-commit recovery
+signal and emits none of the four `retirement_cleanup_*` fields.
 
 | Field | JSON type | Allowed values | Meaning |
 |---|---|---|---|

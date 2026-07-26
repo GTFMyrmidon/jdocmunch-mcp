@@ -361,6 +361,61 @@ def test_completion_unlink_failure_reports_retired_with_pending_cleanup(
     assert store.load_index("local", "modern") is not None
 
 
+def test_conflict_cleanup_failure_uses_precommit_pending_signal(
+    tmp_path, monkeypatch
+):
+    _, worktree, _, store_path = legacy._standard_pair(
+        tmp_path, monkeypatch
+    )
+    record_path = (
+        store_path / "local" / ".retirements" / "old.json"
+    )
+    real_unlink = type(record_path).unlink
+
+    def refuse_guarded_delete(self, *args, **kwargs):
+        raise RetirementConflict(["local/modern"])
+
+    def fail_record_unlink(path, *args, **kwargs):
+        if path == record_path:
+            raise OSError("injected pre-commit record cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(DocStore, "delete_index", refuse_guarded_delete)
+    monkeypatch.setattr(type(record_path), "unlink", fail_record_unlink)
+
+    result = legacy._index(
+        worktree / "docs",
+        "old",
+        store_path,
+        legacy_reconcile="apply",
+    )
+
+    block = result["legacy_reconciliation"]
+    assert set(block) == {
+        "state",
+        "reason_code",
+        "detail",
+        "established_handle",
+        "changed_handles",
+        "pending_retirement",
+    }
+    assert block["reason_code"] == wc.REASON_LEGACY_CONFLICT
+    assert block["pending_retirement"] is True
+    cleanup_schema = getattr(
+        storage_module, "RETIREMENT_CLEANUP_OUTCOME_SCHEMA", {}
+    )
+    assert set(block).isdisjoint(cleanup_schema)
+    record = retirements.pending_retirement(
+        str(store_path), "local", "old"
+    )
+    assert record is not None
+    assert isinstance(record.get("publication_id"), str)
+    assert record_path.exists()
+    store = DocStore(base_path=str(store_path))
+    assert store.load_index("local", "old") is not None
+    assert store.load_index("local", "modern") is not None
+
+
 def test_marker_persistence_failure_is_disclosed_from_durable_state(
     tmp_path, monkeypatch
 ):
