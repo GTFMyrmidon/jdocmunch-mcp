@@ -1697,7 +1697,8 @@ class DocStore:
             _out("index_not_found")
             return False
 
-        if expected_fingerprints:
+        guarded_retirement = expected_fingerprints is not None
+        if guarded_retirement:
             changed = self._verify_expected_fingerprints(expected_fingerprints)
             if changed:
                 raise RetirementConflict(changed)
@@ -1713,7 +1714,6 @@ class DocStore:
         # interleaving can end with both participating indexes absent.
         from .retirements import (
             hold_record_lock,
-            pending_retirement,
             retirement_record,
             RetirementRecordLockError,
             try_void_retirements_referencing,
@@ -1735,11 +1735,17 @@ class DocStore:
         # completed retirement against a vanished peer.
         entry_record = (
             retirement_record(self.base_path, owner, name)
-            if expected_fingerprints else None
+            if guarded_retirement else None
         )
-        if retirement_publication is not None and (
+        expected_publication = (
+            retirement_publication
+            or (entry_record or {}).get("publication_id")
+        )
+        if guarded_retirement and (
             entry_record is None
-            or entry_record.get("publication_id") != retirement_publication
+            or not isinstance(expected_publication, str)
+            or not expected_publication
+            or entry_record.get("publication_id") != expected_publication
         ):
             raise RetirementConflict([f"{owner}/{name}"])
 
@@ -1751,6 +1757,7 @@ class DocStore:
         # previous order unlinked the primary first, so a mid-cleanup failure
         # left an un-loadable, un-retryable half-deleted index.
         deleted = False
+        retirement_completion_failed = False
         if content_dir.exists():
             shutil.rmtree(content_dir)
             deleted = True
@@ -1803,7 +1810,7 @@ class DocStore:
         # jdoc#88 QA-02: primary record removed LAST — once this succeeds the
         # index is gone; until then a failed earlier step leaves it loadable.
         if index_path.exists():
-            if expected_fingerprints:
+            if guarded_retirement:
                 # jdoc#89 QA-06 / jdoc#90 QA-17: the final gate. Everything
                 # inside the record lock is ONE destructive step: re-verify
                 # every proof-time fingerprint, require the durable record
@@ -1824,31 +1831,14 @@ class DocStore:
                         current_record = retirement_record(
                             self.base_path, owner, name
                         )
-                        expected_publication = (
-                            retirement_publication
-                            or (entry_record or {}).get("publication_id")
-                        )
                         if (
-                            expected_publication is not None
-                            and (
-                                current_record is None
-                                or current_record.get("publication_id")
-                                != expected_publication
-                            )
+                            current_record is None
+                            or current_record.get("publication_id")
+                            != expected_publication
                         ):
                             raise RetirementConflict(
                                 [
                                     (entry_record or {}).get("retained")
-                                    or f"{owner}/{name}"
-                                ]
-                            )
-                        if (
-                            entry_record is not None
-                            and current_record is None
-                        ):
-                            raise RetirementConflict(
-                                [
-                                    entry_record.get("retained")
                                     or f"{owner}/{name}"
                                 ]
                             )
@@ -1878,12 +1868,9 @@ class DocStore:
                             if changed:
                                 raise RetirementConflict(changed)
                             if (
-                                expected_publication is not None
-                                and (
-                                    current_record is None
-                                    or current_record.get("publication_id")
-                                    != expected_publication
-                                )
+                                current_record is None
+                                or current_record.get("publication_id")
+                                != expected_publication
                             ):
                                 raise RetirementConflict(
                                     [
@@ -1891,27 +1878,28 @@ class DocStore:
                                         or f"{owner}/{name}"
                                     ]
                                 )
-                            if (
-                                current_record is None
-                                and (
-                                    expected_publication is not None
-                                    or entry_record is not None
-                                )
-                            ):
-                                raise RetirementConflict(
-                                    [_retained or f"{owner}/{name}"]
-                                )
                             _evict_index_cache(index_path)
                             index_path.unlink()
                             deleted = True
-                            from .retirements import finish_retirement
-                            finish_retirement(
+                            from .retirements import (
+                                finish_retirement,
+                                mark_retirement_completion_pending,
+                            )
+                            retirement_completion_failed = not finish_retirement(
                                 self.base_path,
                                 owner,
                                 name,
                                 publication_id=expected_publication,
                                 _lock_held=True,
                             )
+                            if retirement_completion_failed:
+                                mark_retirement_completion_pending(
+                                    self.base_path,
+                                    owner,
+                                    name,
+                                    publication_id=expected_publication,
+                                    _lock_held=True,
+                                )
                 except RetirementRecordLockError:
                     raise RetirementConflict([f"{owner}/{name}"])
             else:
@@ -1930,12 +1918,17 @@ class DocStore:
             from .retirements import (
                 void_retirement_if_stale, void_retirements_referencing,
             )
-            void_retirement_if_stale(
-                self.base_path, owner, name, current_fingerprint=None
+            if not retirement_completion_failed:
+                void_retirement_if_stale(
+                    self.base_path, owner, name, current_fingerprint=None
+                )
+            void_retirements_referencing(
+                self.base_path, f"{owner}/{name}"
             )
-            void_retirements_referencing(self.base_path, f"{owner}/{name}")
         except Exception:
             pass
+        if retirement_completion_failed:
+            return False
         _out("index_deleted" if deleted else "index_not_found")
         return deleted
 

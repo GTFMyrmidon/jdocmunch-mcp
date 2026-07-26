@@ -190,8 +190,9 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
     ``"record_unavailable"`` (record publication failed; nothing destructive
     was attempted); ``"cleanup_incomplete"`` (``info`` carries
     ``pending_retirement: True`` only when the durable record actually
-    exists — QA-07 truthfulness). Every non-``retired`` outcome leaves both
-    handles loadable."""
+    exists; QA-07 truthfulness). A completion failure after the primary
+    unlink leaves the retiring handle absent and its exact publication
+    pending; other non-``retired`` outcomes leave both handles loadable."""
     from ..storage.doc_store import RetirementConflict
     from ..storage.retirements import (
         begin_retirement,
@@ -247,12 +248,6 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
         if pending_retirement(store.base_path, owner, repo_name) is not None:
             info["pending_retirement"] = True
         return "cleanup_incomplete", info
-    finish_retirement(
-        store.base_path,
-        owner,
-        repo_name,
-        publication_id=publication_id,
-    )
     return "retired", {}
 
 

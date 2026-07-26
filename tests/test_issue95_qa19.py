@@ -10,6 +10,7 @@ import pytest
 
 from jdocmunch_mcp.storage import retirements
 from jdocmunch_mcp.storage.doc_store import DocStore, RetirementConflict
+from jdocmunch_mcp.tools import _worktree_corpus as wc
 from tests import test_v1_110_0 as legacy
 
 
@@ -187,6 +188,78 @@ def test_final_gate_requires_the_exact_current_publication(tmp_path, monkeypatch
     assert store.load_index("local", "old") is not None
     record = retirements.pending_retirement(str(store_path), "local", "old")
     assert record["publication_id"] == second
+
+
+def test_guarded_delete_requires_a_current_publication(tmp_path, monkeypatch):
+    store_path, store = _pair(tmp_path, monkeypatch)
+
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local",
+            "old",
+            expected_fingerprints=_fingerprints(store),
+            lock_wait=True,
+        )
+
+    assert store.load_index("local", "old") is not None
+    assert retirements.retirement_record(
+        str(store_path), "local", "old"
+    ) is None
+
+
+def test_guarded_delete_rejects_an_unreadable_publication(
+    tmp_path, monkeypatch
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    record_path = store_path / "local" / ".retirements" / "old.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local",
+            "old",
+            expected_fingerprints=_fingerprints(store),
+            lock_wait=True,
+        )
+
+    assert store.load_index("local", "old") is not None
+    assert record_path.read_text(encoding="utf-8") == "{not-json"
+
+
+def test_completion_unlink_failure_reports_pending_cleanup(
+    tmp_path, monkeypatch
+):
+    _, worktree, _, store_path = legacy._standard_pair(
+        tmp_path, monkeypatch
+    )
+    record_path = store_path / "local" / ".retirements" / "old.json"
+    real_unlink = type(record_path).unlink
+
+    def fail_record_unlink(path, *args, **kwargs):
+        if path == record_path:
+            raise OSError("injected publication completion failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(record_path), "unlink", fail_record_unlink)
+    result = legacy._index(
+        worktree / "docs",
+        "old",
+        store_path,
+        legacy_reconcile="apply",
+    )
+
+    block = result["legacy_reconciliation"]
+    assert block["reason_code"] == wc.REASON_LEGACY_CLEANUP_INCOMPLETE
+    assert block["pending_retirement"] is True
+    record = retirements.pending_retirement(
+        str(store_path), "local", "old"
+    )
+    assert isinstance(record["publication_id"], str)
+    assert record["publication_id"]
+    store = DocStore(base_path=str(store_path))
+    assert store.load_index("local", "old") is None
+    assert store.load_index("local", "modern") is not None
 
 
 def test_fingerprints_are_reproved_after_the_retained_gate(

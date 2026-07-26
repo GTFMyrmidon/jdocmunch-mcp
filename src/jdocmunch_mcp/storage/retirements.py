@@ -25,9 +25,11 @@ Durability (jdoc#89 QA-11): the record is fsync'd before the atomic replace
 (and the directory entry flushed where the platform supports it), so a
 returned receipt survives sudden power loss.
 
-Truthfulness (jdoc#89 QA-08): a record whose retiring index no longer
-exists describes a COMPLETED retirement whose finalization was interrupted,
-not pending work — ``pending_retirement`` self-heals it and reports None.
+Truthfulness (jdoc#89 QA-08): an unmarked record whose retiring index no
+longer exists describes a completed retirement whose finalization was
+interrupted, so ``pending_retirement`` self-heals it and reports None. A
+publication whose completion unlink explicitly failed is marked before the
+record lock is released and remains pending even though its primary is gone.
 """
 
 from __future__ import annotations
@@ -306,6 +308,59 @@ def finish_retirement(
         return False
 
 
+def mark_retirement_completion_pending(
+    base_path,
+    owner: str,
+    name: str,
+    *,
+    publication_id: str,
+    _lock_held: bool = False,
+) -> bool:
+    """Durably mark the exact publication whose final unlink failed."""
+    path = _record_path(base_path, owner, name)
+
+    def _mark_locked() -> bool:
+        current = _read_record(path)
+        if (
+            current is None
+            or current.get("publication_id") != publication_id
+        ):
+            return False
+        payload = dict(current)
+        payload["completion_pending"] = True
+        tmp = path.with_name(
+            f"{path.name}.{os.getpid()}.{threading.get_ident()}."
+            f"{next(_tmp_counter)}.tmp"
+        )
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            _fsync_dir(path.parent)
+            marked = _read_record(path)
+            return (
+                marked is not None
+                and marked.get("publication_id") == publication_id
+                and marked.get("completion_pending") is True
+            )
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+    if _lock_held:
+        return _mark_locked()
+    try:
+        with hold_record_lock(base_path, owner, name):
+            return _mark_locked()
+    except RetirementRecordLockError:
+        return False
+
+
 def void_retirement_if_stale(
     base_path, owner: str, name: str, current_fingerprint: Optional[str]
 ) -> bool:
@@ -441,9 +496,12 @@ def pending_retirement(base_path, owner: str, name: str) -> Optional[dict]:
                     current = _read_record(path)
                     if current is None:
                         return None
-                    if _retiring_index_path(
-                        base_path, owner, name
-                    ).is_file():
+                    if (
+                        _retiring_index_path(
+                            base_path, owner, name
+                        ).is_file()
+                        or current.get("completion_pending") is True
+                    ):
                         return current
                     _remove_publication_locked(
                         path, current.get("publication_id")
