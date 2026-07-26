@@ -169,6 +169,11 @@ def test_qa07_failed_save_preserves_record(tmp_path, monkeypatch):
 def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
     """Two same-process publishers of one record both succeed — the temp
     name is unique per publication, not per PID."""
+    owner_dir = tmp_path / "local"
+    owner_dir.mkdir()
+    for name in ("same", "first", "second"):
+        (owner_dir / f"{name}.json").write_text("{}", encoding="utf-8")
+    store = DocStore(base_path=str(tmp_path))
     results = []
     barrier = threading.Barrier(2)
 
@@ -176,7 +181,11 @@ def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
         barrier.wait(timeout=10)
         results.append(retirements.begin_retirement(
             str(tmp_path), "local", "same",
-            retained=f"local/{label}", fingerprints={f"local/{label}": label},
+            retained=f"local/{label}",
+            fingerprints={
+                "local/same": store.index_fingerprint("local", "same"),
+                f"local/{label}": store.index_fingerprint("local", label),
+            },
             family=label,
         ))
 
@@ -188,7 +197,12 @@ def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
         t.start()
     for t in threads:
         t.join(timeout=15)
-    assert results == [True, True]
+    assert len(results) == 2
+    assert all(
+        isinstance(publication, str) and publication
+        for publication in results
+    )
+    assert results[0] != results[1]
 
 
 # --- QA-08..QA-11 ------------------------------------------------------------

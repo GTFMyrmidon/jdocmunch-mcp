@@ -179,9 +179,10 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
       3. Publish the durable retiring record and REQUIRE the receipt:
          cleanup never starts without authoritative recovery state on disk
          (QA-07).
-      4. Guarded delete: ``delete_index`` re-verifies the fingerprints
-         inside the deletion boundary at entry AND again immediately before
-         the primary record is removed, under the handle's write lock.
+      4. Guarded delete: ``delete_index`` re-verifies the exact publication
+         and fingerprints after nonblocking retained-handle coordination,
+         then holds those authorities through primary removal and conditional
+         completion.
 
     Returns ``(outcome, info)``. Outcomes: ``"retired"``; ``"conflict"``
     (an index changed or vanished — ``info`` may carry ``changed_handles``);
@@ -214,11 +215,11 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
         ]}
     if not reverify(sel, peer):
         return "unproven", {}
-    published = begin_retirement(
+    publication_id = begin_retirement(
         store.base_path, owner, repo_name,
         retained=target, fingerprints=fingerprints, family=family,
     )
-    if not published:
+    if not publication_id:
         return "record_unavailable", {}
     try:
         # jdoc#93 QA-23: this is the INTERNAL coordinated operation, already
@@ -229,9 +230,15 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
         removed = store.delete_index(
             owner, repo_name, expected_fingerprints=fingerprints,
             lock_wait=True,
+            retirement_publication=publication_id,
         )
     except RetirementConflict as conflict:
-        finish_retirement(store.base_path, owner, repo_name)  # voided
+        finish_retirement(
+            store.base_path,
+            owner,
+            repo_name,
+            publication_id=publication_id,
+        )
         return "conflict", {"changed_handles": conflict.changed}
     except Exception:
         removed = False
@@ -240,7 +247,12 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
         if pending_retirement(store.base_path, owner, repo_name) is not None:
             info["pending_retirement"] = True
         return "cleanup_incomplete", info
-    finish_retirement(store.base_path, owner, repo_name)
+    finish_retirement(
+        store.base_path,
+        owner,
+        repo_name,
+        publication_id=publication_id,
+    )
     return "retired", {}
 
 
