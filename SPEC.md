@@ -380,8 +380,8 @@ supersession; jdoc#80 Parts B/C, #85, #86):
 | `superseded_by_established` | Git proved the provisional snapshot a strict ancestor of the established one (both certified clean); the older provisional was retired. |
 | `provisional_newer_than_established` | Git proved the provisional snapshot strictly newer; the established index is never replaced automatically — both kept, explicit refresh path reported. |
 | `supersession_conflict` | The target or candidate set changed before retirement; nothing removed, retry safe. |
-| `supersession_cleanup_incomplete` | Supersession proven but retirement did not complete; the provisional remains discoverable, retry idempotent. |
-| `graduation_cleanup_incomplete` | Exact-duplicate graduation proven but removing the provisional did not complete; nothing reconciled, the provisional remains discoverable, retry idempotent. |
+| `supersession_cleanup_incomplete` | Supersession was proven, but a pre-commit publication or cleanup failure prevented the primary unlink; the provisional remains discoverable and retry is idempotent. |
+| `graduation_cleanup_incomplete` | Exact-duplicate graduation was proven, but a pre-commit publication or cleanup failure prevented the primary unlink; nothing was reconciled, the provisional remains discoverable, and retry is idempotent. |
 | `graduation_conflict` | An index changed between the exact-duplicate proof and physical removal; the guarded delete voided the retirement before touching anything — both indexes kept, retry safe. |
 
 **`legacy_reconciliation.reason_code`** (Part C.2 — explicit-intent
@@ -398,15 +398,17 @@ ordinary refresh stays backfill-only and never retires anything):
 | `legacy_reconcile_ready` | Report mode: proof passed (single peer, same clean certified commit, full path-and-hash coverage); nothing was changed. |
 | `legacy_reconciled_to_established` | Apply mode: proof repeated immediately before retirement; the selected legacy handle was retired, the peer is unchanged and its handle returned. |
 | `legacy_reconcile_conflict` | The peer or candidate set changed between proof and retirement; nothing removed, retry safe. |
-| `legacy_reconcile_cleanup_incomplete` | Retirement proven but removal did not complete; the legacy index remains discoverable, retry idempotent. |
+| `legacy_reconcile_cleanup_incomplete` | Retirement was proven, but a pre-commit publication or cleanup failure prevented the primary unlink; the legacy index remains discoverable and retry is idempotent. |
 
 **Retirement coordination** (jdoc#88 QA-01/QA-02 + jdoc#89 QA-06..QA-11,
 v1.115.0): every retirement path (legacy apply, supersession, exact-dedup
 graduation) runs one coordinated destructive step. A guarded retirement
-requires a readable current retirement record with the exact current
-publication identity; record-path existence alone is not destructive
-authority. Missing or unreadable fingerprints, a missing or unreadable record,
-or a publication mismatch fail closed. `None` never authorizes removal.
+requires the explicit publication receipt created by its caller and a readable
+current retirement record with that exact current publication identity;
+record-path existence or a receiptless read of the current slot is not
+destructive authority. Missing or unreadable fingerprints, a missing or
+unreadable record, an omitted receipt, or a publication mismatch fail closed.
+`None` never authorizes removal.
 Monolith fingerprints for the retiring and retained handles may be checked
 earlier for fast rejection, but final authorization is proved only after the
 retained-handle gate is acquired and immediately before the primary
@@ -433,14 +435,19 @@ retirement before anything is removed. Completion, conflict cleanup, reverse
 scans, and stale repair acquire the record lock and revalidate the current
 record before unlinking it: stale or older cleanup cannot remove a newer
 publication. Each operation completes or cleans up only its exact publication.
-If record removal fails after the primary index is unlinked, failure after the
-primary unlink remains truthfully recoverable: the calling reconciliation
-family reports its cleanup-incomplete or pending outcome and the durable record
-remains. A fresh pending-state read self-heals the completed deletion instead
-of reporting false pending work, after rechecking under the record lock that
-the retiring monolith is still absent. A rewrite of either participant voids
-only the publication it revalidated; a failed save preserves the existing
-record.
+Every non-retired outcome occurs before the primary unlink and leaves the
+retiring monolith loadable. Cleanup-incomplete reason codes describe only a
+pre-commit failure, and a cleanup-incomplete outcome never follows a committed
+primary unlink. After the primary unlink commits, the retirement result is
+retired. If exact-publication record removal then fails, record cleanup failure
+is disclosed additively on that retired result, including whether the durable
+completion marker was persisted and whether a record remains. A fresh
+pending-state read rechecks under the record lock that the retiring monolith is
+still absent and self-heals the completed deletion when it can. A fresh
+pending-state read returns the durable record when self-healing cannot remove
+it, rather than falsely reporting no pending record. A rewrite of either
+participant voids only the publication it revalidated; a failed save preserves
+the existing record.
 
 Availability is commit-scoped. At the protected A-to-B commit, B is loadable
 and matches A's final authoritative proof. A change or removal of B before that

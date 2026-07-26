@@ -12,7 +12,8 @@ SECTION_END = '`legacy_reconcile="report"`'
 
 REQUIRED_CONTRACTS = {
     "exact publication authority": (
-        "a readable current retirement record with the exact current "
+        "requires the explicit publication receipt created by its caller and "
+        "a readable current retirement record with that exact current "
         "publication identity"
     ),
     "post-retained-gate proof": (
@@ -23,10 +24,18 @@ REQUIRED_CONTRACTS = {
         "stale or older cleanup cannot remove a newer publication"
     ),
     "truthful completion recovery": (
-        "failure after the primary unlink remains truthfully recoverable"
+        "after the primary unlink commits, the retirement result is retired"
     ),
-    "fresh-read self-healing": (
-        "a fresh pending-state read self-heals the completed deletion"
+    "additive cleanup disclosure": (
+        "record cleanup failure is disclosed additively on that retired result"
+    ),
+    "truthful self-healing": (
+        "a fresh pending-state read returns the durable record when self-healing "
+        "cannot remove it"
+    ),
+    "non-retired availability": (
+        "every non-retired outcome occurs before the primary unlink and leaves "
+        "the retiring monolith loadable"
     ),
     "commit-scoped availability": (
         "at the protected A-to-B commit, B is loadable"
@@ -64,6 +73,19 @@ def _assert_retirement_contract(spec_path=SPEC_PATH):
 
 def test_retirement_coordination_spec_matches_commit_contract():
     _assert_retirement_contract()
+
+
+def test_cleanup_incomplete_vocabulary_is_precommit_only():
+    section = _retirement_section()
+
+    assert (
+        "cleanup-incomplete reason codes describe only a pre-commit failure"
+        in section
+    )
+    assert (
+        "a cleanup-incomplete outcome never follows a committed primary unlink"
+        in section
+    )
 
 
 def test_retirement_conflict_docstring_scopes_availability_to_retiring_primary():
