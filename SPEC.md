@@ -65,6 +65,17 @@ Fetches documentation files via the GitHub API, parses sections, and saves to lo
 
 Deletes both the index JSON and the raw content cache directory.
 
+##### Public result vocabulary
+
+| Outcome | `success` | `reason_code` | `retryable` |
+|---|---:|---|---:|
+| Deleted | `true` | `index_deleted` | `false` |
+| Missing | `false` | `index_not_found` | `false` |
+| Lifecycle contention | `false` | `index_lifecycle_busy` | `true` |
+
+Lifecycle contention returns promptly after one immediate coordination attempt,
+without a retry sleep. Internal retirement cleanup retains its bounded wait.
+
 ---
 
 ### Discovery Tools

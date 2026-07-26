@@ -10,7 +10,23 @@ from ..storage import DocStore
 # both arrived as success:false, "Index not found.", so a caller that hit a
 # retirement mid-flight concluded the index never existed and re-indexed. That
 # duplicate creation is the exact failure this arc exists to prevent.
-_RETRYABLE_REASONS = frozenset({"index_lifecycle_busy"})
+DELETE_RESULT_VOCABULARY = {
+    "index_deleted": {
+        "outcome": "Deleted",
+        "success": True,
+        "retryable": False,
+    },
+    "index_not_found": {
+        "outcome": "Missing",
+        "success": False,
+        "retryable": False,
+    },
+    "index_lifecycle_busy": {
+        "outcome": "Lifecycle contention",
+        "success": False,
+        "retryable": True,
+    },
+}
 
 _MESSAGES = {
     "index_deleted": "Index deleted.",
@@ -40,11 +56,18 @@ def delete_index(repo: str, storage_path: Optional[str] = None) -> dict:
     reason_code = outcome.get(
         "reason_code", "index_deleted" if deleted else "index_not_found"
     )
+    result_contract = DELETE_RESULT_VOCABULARY.get(reason_code)
     return {
-        "success": deleted,
+        "success": (
+            result_contract["success"] if result_contract is not None else deleted
+        ),
         "repo": f"{owner}/{name}",
         "reason_code": reason_code,
-        "retryable": reason_code in _RETRYABLE_REASONS,
+        "retryable": (
+            result_contract["retryable"]
+            if result_contract is not None
+            else False
+        ),
         "message": _MESSAGES.get(
             reason_code, "Index deleted." if deleted else "Index not found."
         ),
