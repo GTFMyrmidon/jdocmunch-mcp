@@ -1719,7 +1719,9 @@ class DocStore:
             try_void_retirements_referencing,
         )
         if not try_void_retirements_referencing(
-            self.base_path, f"{owner}/{name}"
+            self.base_path,
+            f"{owner}/{name}",
+            timeout_seconds=1.0 if lock_wait else 0.0,
         ):
             # A retirement owning this handle as its retained peer is inside
             # its destructive step right now. Retryable, and NOT missing.
