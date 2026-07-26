@@ -190,6 +190,29 @@ def test_final_gate_requires_the_exact_current_publication(tmp_path, monkeypatch
     assert record["publication_id"] == second
 
 
+def test_guarded_delete_cannot_adopt_a_replacement_publication(
+    tmp_path, monkeypatch
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    first = _publish(store_path, store)
+    second = _publish(store_path, store)
+    assert first != second
+
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local",
+            "old",
+            expected_fingerprints=_fingerprints(store),
+            lock_wait=True,
+        )
+
+    assert store.load_index("local", "old") is not None
+    record = retirements.retirement_record(
+        str(store_path), "local", "old"
+    )
+    assert record["publication_id"] == second
+
+
 def test_guarded_delete_requires_a_current_publication(tmp_path, monkeypatch):
     store_path, store = _pair(tmp_path, monkeypatch)
 
@@ -227,7 +250,7 @@ def test_guarded_delete_rejects_an_unreadable_publication(
     assert record_path.read_text(encoding="utf-8") == "{not-json"
 
 
-def test_completion_unlink_failure_reports_pending_cleanup(
+def test_completion_unlink_failure_reports_retired_with_pending_cleanup(
     tmp_path, monkeypatch
 ):
     _, worktree, _, store_path = legacy._standard_pair(
@@ -250,8 +273,9 @@ def test_completion_unlink_failure_reports_pending_cleanup(
     )
 
     block = result["legacy_reconciliation"]
-    assert block["reason_code"] == wc.REASON_LEGACY_CLEANUP_INCOMPLETE
-    assert block["pending_retirement"] is True
+    assert block["reason_code"] == wc.REASON_LEGACY_RECONCILED
+    assert block["retirement_cleanup_pending"] is True
+    assert block["retirement_completion_marker_persisted"] is True
     record = retirements.pending_retirement(
         str(store_path), "local", "old"
     )
@@ -260,6 +284,78 @@ def test_completion_unlink_failure_reports_pending_cleanup(
     store = DocStore(base_path=str(store_path))
     assert store.load_index("local", "old") is None
     assert store.load_index("local", "modern") is not None
+
+
+def test_marker_persistence_failure_is_disclosed_from_durable_state(
+    tmp_path, monkeypatch
+):
+    _, worktree, _, store_path = legacy._standard_pair(
+        tmp_path, monkeypatch
+    )
+    record_path = store_path / "local" / ".retirements" / "old.json"
+    real_unlink = type(record_path).unlink
+    real_replace = retirements.os.replace
+    record_replacements = 0
+
+    def fail_record_unlink(path, *args, **kwargs):
+        if path == record_path:
+            raise OSError("injected publication completion failure")
+        return real_unlink(path, *args, **kwargs)
+
+    def fail_marker_replace(source, destination, *args, **kwargs):
+        nonlocal record_replacements
+        if destination == record_path:
+            record_replacements += 1
+            if record_replacements > 1:
+                raise OSError("injected completion marker failure")
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(type(record_path), "unlink", fail_record_unlink)
+    monkeypatch.setattr(retirements.os, "replace", fail_marker_replace)
+
+    result = legacy._index(
+        worktree / "docs",
+        "old",
+        store_path,
+        legacy_reconcile="apply",
+    )
+
+    block = result["legacy_reconciliation"]
+    assert block["reason_code"] == wc.REASON_LEGACY_RECONCILED
+    assert block["retirement_cleanup_pending"] is True
+    assert block["retirement_completion_marker_persisted"] is False
+    record = retirements.pending_retirement(
+        str(store_path), "local", "old"
+    )
+    assert record is not None
+    assert record.get("completion_pending") is not True
+    store = DocStore(base_path=str(store_path))
+    assert store.load_index("local", "old") is None
+    assert store.load_index("local", "modern") is not None
+
+
+def test_pending_read_reports_record_when_stale_cleanup_unlink_fails(
+    tmp_path, monkeypatch
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    publication = _publish(store_path, store)
+    record_path = store_path / "local" / ".retirements" / "old.json"
+    store._index_path("local", "old").unlink()
+    real_unlink = type(record_path).unlink
+
+    def fail_record_unlink(path, *args, **kwargs):
+        if path == record_path:
+            raise OSError("injected stale-record cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(record_path), "unlink", fail_record_unlink)
+
+    record = retirements.pending_retirement(
+        str(store_path), "local", "old"
+    )
+    assert record is not None
+    assert record["publication_id"] == publication
+    assert record_path.exists()
 
 
 def test_fingerprints_are_reproved_after_the_retained_gate(

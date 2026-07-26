@@ -85,7 +85,12 @@ def test_guarded_delete_match_deletes(tmp_path, monkeypatch):
         family="guarded-delete-unit",
     )
     assert publication
-    assert ds.delete_index("local", "old", expected_fingerprints=fps) is True
+    assert ds.delete_index(
+        "local",
+        "old",
+        expected_fingerprints=fps,
+        retirement_publication=publication,
+    ) is True
     assert ds.load_index("local", "old") is None
 
 

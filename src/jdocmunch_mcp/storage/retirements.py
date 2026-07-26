@@ -268,6 +268,22 @@ def retirement_record(base_path, owner: str, name: str) -> Optional[dict]:
     return _read_record(_record_path(base_path, owner, name))
 
 
+def _retirement_record_state(
+    base_path, owner: str, name: str
+) -> tuple[str, Optional[dict]]:
+    """Return the durable slot state without treating unreadable as absent."""
+    path = _record_path(base_path, owner, name)
+    current = _read_record(path)
+    if current is not None:
+        return "readable", current
+    try:
+        if path.is_file():
+            return "unreadable", None
+    except OSError:
+        return "unreadable", None
+    return "absent", None
+
+
 def _remove_publication_locked(
     path: Path, publication_id: Optional[str]
 ) -> bool:
@@ -478,37 +494,51 @@ def try_void_retirements_referencing(
 def pending_retirement(base_path, owner: str, name: str) -> Optional[dict]:
     """The pending record for ``owner/name``, or None.
 
-    jdoc#89 QA-08: a record whose retiring index no longer exists is a
-    COMPLETED retirement whose record finalization was interrupted — not
-    pending work. It is self-healed (best-effort unlink) and reported None,
-    so completed deletions are never claimed as pending.
+    jdoc#89 QA-08: a record whose retiring index no longer exists represents
+    cleanup after a completed retirement, not another destructive attempt.
+    It is removed and reported None when self-healing succeeds. If removal
+    fails, the durable record is returned so recovery state is not hidden.
     """
     try:
         path = _record_path(base_path, owner, name)
-        current = _read_record(path)
-        if current is None:
+        state, current = _retirement_record_state(base_path, owner, name)
+        if state == "absent":
             return None
+        if state == "unreadable":
+            return {"record_state": "unreadable"}
         if not _retiring_index_path(base_path, owner, name).is_file():
             try:
                 with hold_record_lock(
                     base_path, owner, name, blocking=False
                 ):
-                    current = _read_record(path)
-                    if current is None:
+                    state, current = _retirement_record_state(
+                        base_path, owner, name
+                    )
+                    if state == "absent":
                         return None
+                    if state == "unreadable":
+                        return {"record_state": "unreadable"}
                     if (
                         _retiring_index_path(
                             base_path, owner, name
                         ).is_file()
-                        or current.get("completion_pending") is True
                     ):
                         return current
-                    _remove_publication_locked(
+                    removed = _remove_publication_locked(
                         path, current.get("publication_id")
                     )
+                    if removed:
+                        return None
+                    state, current = _retirement_record_state(
+                        base_path, owner, name
+                    )
+                    if state == "readable":
+                        return current
+                    if state == "unreadable":
+                        return {"record_state": "unreadable"}
                     return None
             except RetirementRecordLockError:
                 return current
         return current
     except OSError:
-        return None
+        return {"record_state": "unreadable"}

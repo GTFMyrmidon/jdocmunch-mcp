@@ -1660,8 +1660,10 @@ class DocStore:
         Omitted → the pre-existing unguarded behavior.
 
         jdoc#93 QA-20: ``outcome`` is an optional caller-supplied dict that
-        receives ``{"reason_code": ...}``. The bool return cannot distinguish
-        "no such index" from "lifecycle contention, try again", and the public
+        receives ``{"reason_code": ...}`` and, for guarded post-commit record
+        cleanup failure, additive durable cleanup state. The bool return cannot
+        distinguish "no such index" from "lifecycle contention, try again",
+        and the public
         tool rendered both as *Index not found.* — so an agent hitting a busy
         retirement concluded the index never existed and re-indexed, which is
         the duplicate-creation failure this arc exists to prevent. Out-param
@@ -1715,6 +1717,12 @@ class DocStore:
             changed = self._verify_expected_fingerprints(expected_fingerprints)
             if changed:
                 raise RetirementConflict(changed)
+            if (
+                not isinstance(retirement_publication, str)
+                or not retirement_publication
+            ):
+                raise RetirementConflict([f"{owner}/{name}"])
+        expected_publication = retirement_publication
 
         # jdoc#90 QA-17: this handle may be the RETAINED peer of a pending
         # retirement. Coordinate through the retirement record's lock BEFORE
@@ -1750,14 +1758,8 @@ class DocStore:
             retirement_record(self.base_path, owner, name)
             if guarded_retirement else None
         )
-        expected_publication = (
-            retirement_publication
-            or (entry_record or {}).get("publication_id")
-        )
         if guarded_retirement and (
             entry_record is None
-            or not isinstance(expected_publication, str)
-            or not expected_publication
             or entry_record.get("publication_id") != expected_publication
         ):
             raise RetirementConflict([f"{owner}/{name}"])
@@ -1894,7 +1896,10 @@ class DocStore:
                             _evict_index_cache(index_path)
                             index_path.unlink()
                             deleted = True
+                            if outcome is not None:
+                                outcome["_primary_unlink_committed"] = True
                             from .retirements import (
+                                _retirement_record_state,
                                 finish_retirement,
                                 mark_retirement_completion_pending,
                             )
@@ -1906,13 +1911,35 @@ class DocStore:
                                 _lock_held=True,
                             )
                             if retirement_completion_failed:
-                                mark_retirement_completion_pending(
-                                    self.base_path,
-                                    owner,
-                                    name,
-                                    publication_id=expected_publication,
-                                    _lock_held=True,
+                                marker_persisted = (
+                                    mark_retirement_completion_pending(
+                                        self.base_path,
+                                        owner,
+                                        name,
+                                        publication_id=expected_publication,
+                                        _lock_held=True,
+                                    )
                                 )
+                                record_state, durable_record = (
+                                    _retirement_record_state(
+                                        self.base_path, owner, name
+                                    )
+                                )
+                                if outcome is not None:
+                                    outcome["retirement_cleanup_pending"] = (
+                                        record_state != "absent"
+                                    )
+                                    outcome[
+                                        "retirement_completion_marker_persisted"
+                                    ] = marker_persisted
+                                    outcome["retirement_cleanup_record_state"] = (
+                                        record_state
+                                    )
+                                    outcome["retirement_cleanup_owned"] = (
+                                        durable_record is not None
+                                        and durable_record.get("publication_id")
+                                        == expected_publication
+                                    )
                 except RetirementRecordLockError:
                     raise RetirementConflict([f"{owner}/{name}"])
             else:
@@ -1940,8 +1967,6 @@ class DocStore:
             )
         except Exception:
             pass
-        if retirement_completion_failed:
-            return False
         _out(
             DELETE_REASON_CODES["deleted"]
             if deleted

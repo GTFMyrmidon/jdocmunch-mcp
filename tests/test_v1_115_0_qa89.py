@@ -208,8 +208,7 @@ def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
 # --- QA-08..QA-11 ------------------------------------------------------------
 
 def test_qa08_completed_deletion_never_reported_pending(tmp_path, monkeypatch):
-    """A record whose retiring index no longer exists is a completed
-    retirement — self-healed, never claimed pending."""
+    """Failed cleanup stays visible, then a fresh read self-heals it."""
     from pathlib import Path
 
     _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
@@ -222,9 +221,17 @@ def test_qa08_completed_deletion_never_reported_pending(tmp_path, monkeypatch):
             raise OSError("injected finalization failure")
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", fail_record_unlink)
-    assert ds.delete_index("local", "old") is True
-    assert ds.load_index("local", "old") is None
+    with monkeypatch.context() as cleanup_failure:
+        cleanup_failure.setattr(Path, "unlink", fail_record_unlink)
+        assert ds.delete_index("local", "old") is True
+        assert ds.load_index("local", "old") is None
+        pending = retirements.pending_retirement(
+            str(store), "local", "old"
+        )
+        assert pending is not None
+        assert pending["publication_id"]
+
+    # A fresh recovery read self-heals once record cleanup is available.
     assert retirements.pending_retirement(str(store), "local", "old") is None
 
 

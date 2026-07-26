@@ -26,10 +26,10 @@ def _fingerprints(store: DocStore, retiring: str, retained: str) -> dict:
 
 def _publish(
     store_path: Path, store: DocStore, retiring: str, retained: str
-) -> dict:
+) -> tuple[dict, str]:
     fingerprints = _fingerprints(store, retiring, retained)
     owner, name = retiring.split("/", 1)
-    assert retirements.begin_retirement(
+    publication = retirements.begin_retirement(
         str(store_path),
         owner,
         name,
@@ -37,7 +37,8 @@ def _publish(
         fingerprints=fingerprints,
         family="qa19-process",
     )
-    return fingerprints
+    assert publication
+    return fingerprints, publication
 
 
 def _trio(tmp_path, monkeypatch) -> tuple[Path, DocStore]:
@@ -66,6 +67,7 @@ def _guarded_delete_worker(
     store_path: str,
     retiring: str,
     fingerprints: dict,
+    publication: str,
     output,
 ) -> None:
     owner, name = retiring.split("/", 1)
@@ -75,6 +77,7 @@ def _guarded_delete_worker(
             owner,
             name,
             expected_fingerprints=fingerprints,
+            retirement_publication=publication,
             lock_wait=True,
         )
     except RetirementConflict as exc:
@@ -132,6 +135,7 @@ def _retained_writer_at_gate_worker(
 def _guarded_delete_paused_at_retained_gate_worker(
     store_path: str,
     fingerprints: dict,
+    publication: str,
     at_gate,
     changed,
     output,
@@ -153,6 +157,7 @@ def _guarded_delete_paused_at_retained_gate_worker(
             store_path,
             "local/old",
             fingerprints,
+            publication,
             output,
         )
     finally:
@@ -162,6 +167,7 @@ def _guarded_delete_paused_at_retained_gate_worker(
 def _guarded_delete_paused_before_gate_worker(
     store_path: str,
     fingerprints: dict,
+    publication: str,
     before_gate,
     resume,
     output,
@@ -184,6 +190,7 @@ def _guarded_delete_paused_before_gate_worker(
             store_path,
             "local/old",
             fingerprints,
+            publication,
             output,
         )
     finally:
@@ -193,7 +200,7 @@ def _guarded_delete_paused_before_gate_worker(
 def test_spawn_retained_writer_gate_refuses_promptly(tmp_path, monkeypatch):
     """An in-flight retained writer makes final authorization fail closed."""
     store_path, store = _trio(tmp_path, monkeypatch)
-    fingerprints = _publish(
+    fingerprints, publication = _publish(
         store_path, store, "local/old", "local/modern"
     )
     context = multiprocessing.get_context("spawn")
@@ -211,6 +218,7 @@ def test_spawn_retained_writer_gate_refuses_promptly(tmp_path, monkeypatch):
             str(store_path),
             "local/old",
             fingerprints,
+            publication,
             delete_output,
         ),
     )
@@ -237,7 +245,7 @@ def test_spawn_writer_change_is_reproved_after_retained_gate(
 ):
     """A retained write landing before gate acquisition invalidates authority."""
     store_path, store = _trio(tmp_path, monkeypatch)
-    fingerprints = _publish(
+    fingerprints, publication = _publish(
         store_path, store, "local/old", "local/modern"
     )
     context = multiprocessing.get_context("spawn")
@@ -254,6 +262,7 @@ def test_spawn_writer_change_is_reproved_after_retained_gate(
         args=(
             str(store_path),
             fingerprints,
+            publication,
             at_gate,
             changed,
             delete_output,
@@ -277,10 +286,10 @@ def test_spawn_overlapping_chain_fails_closed_before_a_commit(
 ):
     """B-to-C removing B before A's commit invalidates A-to-B."""
     store_path, store = _trio(tmp_path, monkeypatch)
-    a_fingerprints = _publish(
+    a_fingerprints, a_publication = _publish(
         store_path, store, "local/old", "local/modern"
     )
-    b_fingerprints = _publish(
+    b_fingerprints, b_publication = _publish(
         store_path, store, "local/modern", "local/next"
     )
     context = multiprocessing.get_context("spawn")
@@ -293,6 +302,7 @@ def test_spawn_overlapping_chain_fails_closed_before_a_commit(
         args=(
             str(store_path),
             a_fingerprints,
+            a_publication,
             before_gate,
             resume,
             a_output,
@@ -304,6 +314,7 @@ def test_spawn_overlapping_chain_fails_closed_before_a_commit(
             str(store_path),
             "local/modern",
             b_fingerprints,
+            b_publication,
             b_output,
         ),
     )
@@ -329,7 +340,7 @@ def test_spawn_sequential_chain_allows_later_retirement(
     store_path, store = _trio(tmp_path, monkeypatch)
     context = multiprocessing.get_context("spawn")
     a_output = context.Queue()
-    a_fingerprints = _publish(
+    a_fingerprints, a_publication = _publish(
         store_path, store, "local/old", "local/modern"
     )
     retiring_a = context.Process(
@@ -338,6 +349,7 @@ def test_spawn_sequential_chain_allows_later_retirement(
             str(store_path),
             "local/old",
             a_fingerprints,
+            a_publication,
             a_output,
         ),
     )
@@ -349,7 +361,7 @@ def test_spawn_sequential_chain_allows_later_retirement(
     assert store.load_index("local", "modern") is not None
 
     b_output = context.Queue()
-    b_fingerprints = _publish(
+    b_fingerprints, b_publication = _publish(
         store_path, store, "local/modern", "local/next"
     )
     retiring_b = context.Process(
@@ -358,6 +370,7 @@ def test_spawn_sequential_chain_allows_later_retirement(
             str(store_path),
             "local/modern",
             b_fingerprints,
+            b_publication,
             b_output,
         ),
     )
