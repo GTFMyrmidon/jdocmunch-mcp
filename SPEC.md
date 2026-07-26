@@ -449,6 +449,33 @@ it, rather than falsely reporting no pending record. A rewrite of either
 participant voids only the publication it revalidated; a failed save preserves
 the existing record.
 
+##### Retirement cleanup disclosure schema
+
+These fields are additive and appear together only on a retired result when
+the primary unlink committed but exact-publication record completion failed.
+
+| Field | JSON type | Allowed values | Meaning |
+|---|---|---|---|
+| `retirement_cleanup_pending` | `boolean` | `false`, `true` | True when durable record state remains readable or unreadable; false only when it is absent. |
+| `retirement_completion_marker_persisted` | `boolean` | `false`, `true` | True only when the exact publication durably records `completion_pending=true`; false otherwise. |
+| `retirement_cleanup_record_state` | `string` | `absent`, `readable`, `unreadable` | Observed durable retirement-record state after the completion and marker attempts. |
+| `retirement_cleanup_owned` | `boolean` | `false`, `true` | True only for a readable record whose `publication_id` equals the exact completing publication; false for absent, unreadable, or replacement state. |
+
+`retirement_cleanup_pending` is derived from
+`retirement_cleanup_record_state`: it is false for `absent` and true for
+`readable` or `unreadable`. `retirement_cleanup_owned` is false when the record
+is absent, unreadable, or belongs to a replacement publication. A true
+`retirement_completion_marker_persisted` describes only the exact completing
+publication.
+
+##### Retirement commit outcome matrix
+
+| Scenario | Primary unlink committed | Returned retirement status | Retiring monolith | Cleanup fields | Durable recovery |
+|---|---|---|---|---|---|
+| Pre-commit refusal | `false` | non-retired | loadable | absent | Retry starts from the still-loadable retiring monolith. |
+| Committed with complete record cleanup | `true` | retired | absent | absent | No retirement cleanup remains for that exact publication. |
+| Committed with incomplete record cleanup | `true` | retired | absent | present | The four fields report durable state; a fresh pending read self-heals or returns the record. |
+
 Availability is commit-scoped. At the protected A-to-B commit, B is loadable
 and matches A's final authoritative proof. A change or removal of B before that
 commit forces A to re-prove or fail closed. After A commits and releases

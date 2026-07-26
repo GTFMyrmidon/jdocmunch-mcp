@@ -40,6 +40,46 @@ DELETE_REASON_CODES = {
     "lifecycle_busy": "index_lifecycle_busy",
 }
 
+# Additive disclosure emitted only when a guarded retirement committed its
+# primary unlink but exact-publication record completion did not finish.
+# Field order is stable so the emitter can derive every public field name from
+# this lower-layer authority.
+RETIREMENT_CLEANUP_OUTCOME_SCHEMA = {
+    "retirement_cleanup_pending": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True when durable record state remains readable or unreadable; "
+            "false only when it is absent."
+        ),
+    },
+    "retirement_completion_marker_persisted": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True only when the exact publication durably records "
+            "completion_pending=true; false otherwise."
+        ),
+    },
+    "retirement_cleanup_record_state": {
+        "json_type": "string",
+        "allowed_values": ("absent", "readable", "unreadable"),
+        "meaning": (
+            "Observed durable retirement-record state after the completion "
+            "and marker attempts."
+        ),
+    },
+    "retirement_cleanup_owned": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True only for a readable record whose publication_id equals the "
+            "exact completing publication; false for absent, unreadable, or "
+            "replacement state."
+        ),
+    },
+}
+
 
 class RetirementConflict(Exception):
     """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
@@ -1926,19 +1966,20 @@ class DocStore:
                                     )
                                 )
                                 if outcome is not None:
-                                    outcome["retirement_cleanup_pending"] = (
-                                        record_state != "absent"
-                                    )
-                                    outcome[
-                                        "retirement_completion_marker_persisted"
-                                    ] = marker_persisted
-                                    outcome["retirement_cleanup_record_state"] = (
-                                        record_state
-                                    )
-                                    outcome["retirement_cleanup_owned"] = (
+                                    cleanup_values = (
+                                        record_state != "absent",
+                                        marker_persisted,
+                                        record_state,
                                         durable_record is not None
                                         and durable_record.get("publication_id")
-                                        == expected_publication
+                                        == expected_publication,
+                                    )
+                                    outcome.update(
+                                        zip(
+                                            RETIREMENT_CLEANUP_OUTCOME_SCHEMA,
+                                            cleanup_values,
+                                            strict=True,
+                                        )
                                     )
                 except RetirementRecordLockError:
                     raise RetirementConflict([f"{owner}/{name}"])
@@ -1946,14 +1987,13 @@ class DocStore:
                 _evict_index_cache(index_path)
                 index_path.unlink()
                 deleted = True
-        # jdoc#88 QA-01/QA-02: once the primary record is gone the index has
-        # no pending retirement — the retirement completed, or a direct user
-        # delete of a retiring handle mooted it. Runs AFTER the primary
-        # removal so a failure part-way keeps the durable record (pending
-        # cleanup stays a discoverable fact). jdoc#89 QA-10: a direct delete
-        # also voids any record naming this handle as the RETAINED peer —
-        # that retirement can no longer complete as recorded. Best-effort,
-        # like claims.
+        # jdoc#88 QA-01/QA-02: after the primary commit the result is retired,
+        # but failed exact-publication completion can leave a durable cleanup
+        # record. Preserve that discoverable state for a fresh pending read;
+        # otherwise remove stale retiring records after the primary removal.
+        # jdoc#89 QA-10: a direct delete also voids records naming this handle
+        # as the retained peer. Both cleanup paths revalidate ownership and
+        # remain best-effort, like claims.
         try:
             from .retirements import (
                 void_retirement_if_stale, void_retirements_referencing,

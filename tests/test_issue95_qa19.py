@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import pytest
 
 from jdocmunch_mcp.storage import retirements
+from jdocmunch_mcp.storage import doc_store as storage_module
 from jdocmunch_mcp.storage.doc_store import DocStore, RetirementConflict
 from jdocmunch_mcp.tools import _worktree_corpus as wc
 from tests import test_v1_110_0 as legacy
@@ -302,8 +303,21 @@ def test_completion_unlink_failure_reports_retired_with_pending_cleanup(
 
     block = result["legacy_reconciliation"]
     assert block["reason_code"] == wc.REASON_LEGACY_RECONCILED
-    assert block["retirement_cleanup_pending"] is True
-    assert block["retirement_completion_marker_persisted"] is True
+    cleanup_schema = getattr(
+        storage_module, "RETIREMENT_CLEANUP_OUTCOME_SCHEMA", {}
+    )
+    assert set(cleanup_schema) == {
+        "retirement_cleanup_pending",
+        "retirement_completion_marker_persisted",
+        "retirement_cleanup_record_state",
+        "retirement_cleanup_owned",
+    }
+    assert {field: block[field] for field in cleanup_schema} == {
+        "retirement_cleanup_pending": True,
+        "retirement_completion_marker_persisted": True,
+        "retirement_cleanup_record_state": "readable",
+        "retirement_cleanup_owned": True,
+    }
     record = retirements.pending_retirement(
         str(store_path), "local", "old"
     )
@@ -350,8 +364,8 @@ def test_marker_persistence_failure_is_disclosed_from_durable_state(
 
     block = result["legacy_reconciliation"]
     assert block["reason_code"] == wc.REASON_LEGACY_RECONCILED
-    assert block["retirement_cleanup_pending"] is True
-    assert block["retirement_completion_marker_persisted"] is False
+    assert block.get("retirement_cleanup_pending") is True
+    assert block.get("retirement_completion_marker_persisted") is False
     record = retirements.pending_retirement(
         str(store_path), "local", "old"
     )
@@ -441,6 +455,9 @@ def test_reverse_scan_revalidates_candidate_under_its_lock(tmp_path, monkeypatch
     )
 
     assert replaced is True
+    assert record_path.exists(), (
+        "reverse scan removed a replacement retirement publication"
+    )
     current = json.loads(record_path.read_text(encoding="utf-8"))
     assert current["publication_id"] == replacement["publication_id"]
 
