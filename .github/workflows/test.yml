@@ -16,6 +16,13 @@ on:
 jobs:
   test:
     strategy:
+      # jdoc#95 QA-24: without this, the first failing job cancels every other
+      # one. A single ubuntu-3.10 failure cancelled all four Windows jobs, so
+      # the frozen SHA carried no Windows result at all and the checks panel
+      # showed eight failures where there was one. An external reviewer cannot
+      # verify a per-platform claim against a cancellation, and this arc has
+      # already mistaken a Windows pass for proof of a POSIX contract once.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
