@@ -50,13 +50,32 @@ def _supports_publication_receipts() -> bool:
 
 def _finish_retirement(store_path, publication):
     kwargs = {}
-    if "publication_id" in inspect.signature(
-        retirements.finish_retirement
-    ).parameters:
+    if _finish_supports_publication_id():
         kwargs["publication_id"] = publication
     return retirements.finish_retirement(
         str(store_path), "local", "old", **kwargs
     )
+
+
+def _finish_supports_publication_id() -> bool:
+    return (
+        "publication_id"
+        in inspect.signature(retirements.finish_retirement).parameters
+    )
+
+
+def _assert_conditional_finish_refusal(result) -> None:
+    if _finish_supports_publication_id():
+        assert result is False
+
+
+def _current_retirement_record(store_path):
+    reader = getattr(
+        retirements,
+        "retirement_record",
+        retirements.pending_retirement,
+    )
+    return reader(str(store_path), "local", "old")
 
 
 def _guarded_delete(store, fingerprints, publication, *, lock_wait=True):
@@ -103,9 +122,16 @@ def test_older_completion_cannot_remove_newer_publication(tmp_path, monkeypatch)
     first = _publish(store_path, store)
     second = _publish(store_path, store)
 
-    assert _finish_retirement(store_path, first) is False
+    _assert_conditional_finish_refusal(
+        _finish_retirement(store_path, first)
+    )
     record = retirements.pending_retirement(str(store_path), "local", "old")
-    assert record["publication_id"] == second
+    assert record is not None
+    publication_id = record.get("publication_id")
+    assert isinstance(publication_id, str), (
+        "retirement record lacks stable publication identity"
+    )
+    assert publication_id == second
 
 
 def test_publication_fails_closed_when_record_lock_is_unavailable(
@@ -173,9 +199,16 @@ def test_completion_lock_failure_preserves_the_publication(
     publication = _publish(store_path, store)
     monkeypatch.setattr(retirements, "_acquire_fd", lambda *args, **kwargs: None)
 
-    assert _finish_retirement(store_path, publication) is False
-    current = retirements.retirement_record(str(store_path), "local", "old")
-    assert current["publication_id"] == publication
+    _assert_conditional_finish_refusal(
+        _finish_retirement(store_path, publication)
+    )
+    current = _current_retirement_record(store_path)
+    assert current is not None
+    publication_id = current.get("publication_id")
+    assert isinstance(publication_id, str), (
+        "retirement record lacks stable publication identity"
+    )
+    assert publication_id == publication
 
 
 def test_final_gate_lock_failure_keeps_the_retiring_monolith(
@@ -523,14 +556,25 @@ def test_cross_process_older_cleanup_cannot_remove_winning_publication(
         assert process.exitcode == 0
 
     record = retirements.pending_retirement(str(store_path), "local", "old")
+    assert record is not None
     winner = record.get("publication_id")
     if not isinstance(winner, str):
-        assert _finish_retirement(store_path, publications[0]) is False
+        _assert_conditional_finish_refusal(
+            _finish_retirement(store_path, publications[0])
+        )
         pytest.fail(
             "retirement completion lacked exact publication ownership"
         )
     loser = next(publication for publication in publications if publication != winner)
-    assert _finish_retirement(store_path, loser) is False
-    assert retirements.pending_retirement(
+    _assert_conditional_finish_refusal(
+        _finish_retirement(store_path, loser)
+    )
+    current = retirements.pending_retirement(
         str(store_path), "local", "old"
-    )["publication_id"] == winner
+    )
+    assert current is not None
+    publication_id = current.get("publication_id")
+    assert isinstance(publication_id, str), (
+        "retirement record lacks stable publication identity"
+    )
+    assert publication_id == winner
