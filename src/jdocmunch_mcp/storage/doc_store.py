@@ -44,12 +44,13 @@ DELETE_REASON_CODES = {
 class RetirementConflict(Exception):
     """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
     its retirement was approved. Raised at the entry check (nothing touched)
-    or at the pre-removal recheck immediately before the primary record would
-    be unlinked (jdoc#89 QA-06) — in both cases every participating index
+    or at the final recheck after the retained-handle gate is acquired and
+    immediately before the primary record would be unlinked (jdoc#89 QA-06).
+    In both cases every participating index
     remains loadable; at worst rebuildable auxiliary artifacts of the
     retiring handle are gone. ``changed`` lists the ``owner/name`` handles
     that no longer match their proof-time fingerprints (an expected value of
-    None always conflicts — missing state never authorizes removal). Only
+    None always conflicts; missing state never authorizes removal). Only
     ever raised when the caller passed ``expected_fingerprints``; unguarded
     deletes are unaffected."""
 

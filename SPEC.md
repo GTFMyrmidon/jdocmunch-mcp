@@ -402,51 +402,53 @@ ordinary refresh stays backfill-only and never retires anything):
 
 **Retirement coordination** (jdoc#88 QA-01/QA-02 + jdoc#89 QA-06..QA-11,
 v1.115.0): every retirement path (legacy apply, supersession, exact-dedup
-graduation) runs one coordinated destructive step. Monolith fingerprints for
-the retiring AND retained handles are captured FIRST; the decisive proof
-predicates are then re-run on a reload the token covers, so a change landing
-around capture is re-proved rather than absorbed into the accepted token. A
-missing or unreadable fingerprint fails closed — `None` never authorizes a
-removal. The guarded `delete_index` (which holds the same cross-process
-write lock as the save paths) re-verifies the fingerprints twice inside the
-deletion boundary: at entry before any removal, and again immediately
-before the primary `<name>.json` record is removed — so a concurrent save or
-direct delete of either handle voids the retirement with every participating
-index still loadable. A mismatch fires the conflict reason codes above with
-a `changed_handles` list, both indexes kept. No successful retirement can
-remove the last surviving snapshot or return a retained handle that no
-longer exists.
+graduation) runs one coordinated destructive step. A guarded retirement
+requires a readable current retirement record with the exact current
+publication identity; record-path existence alone is not destructive
+authority. Missing or unreadable fingerprints, a missing or unreadable record,
+or a publication mismatch fail closed. `None` never authorizes removal.
+Monolith fingerprints for the retiring and retained handles may be checked
+earlier for fast rejection, but final authorization is proved only after the
+retained-handle gate is acquired and immediately before the primary
+`<name>.json` commit. At that point the guarded `delete_index` re-verifies
+every expected fingerprint and re-reads the exact publication while the
+retiring-handle lock, record lock, and retained gate remain held through the
+primary unlink and publication-scoped completion.
 
 The retirement record is the PAIR coordination point (jdoc#90 QA-17): the
-guarded delete executes its final gate — fingerprint re-verify, a check
-that its own durable record still exists, the primary unlink, and record
-removal — as one destructive step under a lock on that record. Any delete
-first voids the records naming its target as retained through the same
-lock, with a bounded wait, before its own destructive steps: a void landing
-before the gate makes the gate conflict (record gone, retiring handle
-kept); a delete arriving while the gate is closed is refused (returns
-False) and succeeds on retry once the gate opens. A completed retirement
-therefore always leaves the retained index in place at completion, and no
-interleaving of retirement with saves or deletes of either handle can end
-with both participating indexes absent. No caller ever blocks on two locks
-(handle locks and record locks are acquired in a fixed handle-then-record
-order, record locks non-blocking on the delete side), so the cross-handle
-deadlock surface stays closed.
+final step combines record coordination with a nonblocking retained-handle
+gate. Public deletion uses zero-wait coordination, while internal retirement
+uses its bounded wait where record voiding or cleanup must coordinate. A delete
+first revalidates and voids records naming its target as retained before its
+own destructive steps. A void landing before the final gate makes that gate
+conflict and keeps the retiring handle; a delete arriving while the gate is
+closed is refused and can succeed on retry. Path A keeps fixed
+handle-then-record ordering and never blocks on the retained gate, so it does
+not introduce pair locks, a second coordinator, or a cross-handle lock cycle.
 
 A durable retiring record (`<owner>/.retirements/<name>.json`) is published
-BEFORE the destructive step, fsync'd, with a per-publication-unique temp
-name, and the publication receipt is required — a failed publication stops
-the retirement before anything is removed (reported as the family's
-cleanup-incomplete code without a `pending_retirement` claim). The record is
-removed on success and on conflict, and kept when cleanup fails — responses
-then carry `pending_retirement: true` only when the record actually exists.
-A record whose retiring index no longer exists describes a completed
-retirement and is self-healed, never reported pending. A rewrite of the
-retiring handle cancels the pending retirement (only after the rewrite has
-durably landed — a failed save preserves the record); a rewrite or direct
-delete of the RETAINED handle likewise voids any record naming it as the
-retained peer. Fail-visible throughout: writes go where the caller aimed
-them, and the next reconcile re-proves against the current state.
+before the destructive step, fsync'd, with a per-publication-unique temp name,
+and the publication receipt is required. A failed publication stops the
+retirement before anything is removed. Completion, conflict cleanup, reverse
+scans, and stale repair acquire the record lock and revalidate the current
+record before unlinking it: stale or older cleanup cannot remove a newer
+publication. Each operation completes or cleans up only its exact publication.
+If record removal fails after the primary index is unlinked, failure after the
+primary unlink remains truthfully recoverable: the calling reconciliation
+family reports its cleanup-incomplete or pending outcome and the durable record
+remains. A fresh pending-state read self-heals the completed deletion instead
+of reporting false pending work, after rechecking under the record lock that
+the retiring monolith is still absent. A rewrite of either participant voids
+only the publication it revalidated; a failed save preserves the existing
+record.
+
+Availability is commit-scoped. At the protected A-to-B commit, B is loadable
+and matches A's final authoritative proof. A change or removal of B before that
+commit forces A to re-prove or fail closed. After A commits and releases
+coordination, a later separately authorized B-to-C retirement may legitimately
+remove B. No perpetual availability guarantee applies to historical A or B;
+each successful commit guarantees only that its retained successor is loadable
+at that protected commit.
 
 `legacy_reconcile="report"` performs no writes on any outcome: it proves
 from stored snapshots plus live Git evidence (both indexes certified clean
