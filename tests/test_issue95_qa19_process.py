@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import multiprocessing
 import os
@@ -72,14 +73,16 @@ def _guarded_delete_worker(
 ) -> None:
     owner, name = retiring.split("/", 1)
     store = DocStore(base_path=store_path)
+    kwargs = {
+        "expected_fingerprints": fingerprints,
+        "lock_wait": True,
+    }
+    if "retirement_publication" in inspect.signature(
+        DocStore.delete_index
+    ).parameters:
+        kwargs["retirement_publication"] = publication
     try:
-        removed = store.delete_index(
-            owner,
-            name,
-            expected_fingerprints=fingerprints,
-            retirement_publication=publication,
-            lock_wait=True,
-        )
+        removed = store.delete_index(owner, name, **kwargs)
     except RetirementConflict as exc:
         output.put(("conflict", str(exc)))
     else:

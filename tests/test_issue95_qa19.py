@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import multiprocessing
 from contextlib import contextmanager
@@ -39,6 +40,34 @@ def _publish(store_path, store, retained="local/modern"):
     )
 
 
+def _supports_publication_receipts() -> bool:
+    return (
+        "retirement_publication"
+        in inspect.signature(DocStore.delete_index).parameters
+    )
+
+
+def _finish_retirement(store_path, publication):
+    kwargs = {}
+    if "publication_id" in inspect.signature(
+        retirements.finish_retirement
+    ).parameters:
+        kwargs["publication_id"] = publication
+    return retirements.finish_retirement(
+        str(store_path), "local", "old", **kwargs
+    )
+
+
+def _guarded_delete(store, fingerprints, publication, *, lock_wait=True):
+    kwargs = {
+        "expected_fingerprints": fingerprints,
+        "lock_wait": lock_wait,
+    }
+    if _supports_publication_receipts():
+        kwargs["retirement_publication"] = publication
+    return store.delete_index("local", "old", **kwargs)
+
+
 def _publication_worker(store_path, retained, ready, start, output):
     store = DocStore(base_path=store_path)
     ready.set()
@@ -73,9 +102,7 @@ def test_older_completion_cannot_remove_newer_publication(tmp_path, monkeypatch)
     first = _publish(store_path, store)
     second = _publish(store_path, store)
 
-    assert retirements.finish_retirement(
-        str(store_path), "local", "old", publication_id=first
-    ) is False
+    assert _finish_retirement(store_path, first) is False
     record = retirements.pending_retirement(str(store_path), "local", "old")
     assert record["publication_id"] == second
 
@@ -145,9 +172,7 @@ def test_completion_lock_failure_preserves_the_publication(
     publication = _publish(store_path, store)
     monkeypatch.setattr(retirements, "_acquire_fd", lambda *args, **kwargs: None)
 
-    assert retirements.finish_retirement(
-        str(store_path), "local", "old", publication_id=publication
-    ) is False
+    assert _finish_retirement(store_path, publication) is False
     current = retirements.retirement_record(str(store_path), "local", "old")
     assert current["publication_id"] == publication
 
@@ -160,12 +185,10 @@ def test_final_gate_lock_failure_keeps_the_retiring_monolith(
     monkeypatch.setattr(retirements, "_acquire_fd", lambda *args, **kwargs: None)
 
     with pytest.raises(RetirementConflict):
-        store.delete_index(
-            "local",
-            "old",
-            expected_fingerprints=_fingerprints(store),
-            retirement_publication=publication,
-            lock_wait=True,
+        _guarded_delete(
+            store,
+            _fingerprints(store),
+            publication,
         )
 
     assert store.load_index("local", "old") is not None
@@ -177,12 +200,10 @@ def test_final_gate_requires_the_exact_current_publication(tmp_path, monkeypatch
     second = _publish(store_path, store)
 
     with pytest.raises(RetirementConflict):
-        store.delete_index(
-            "local",
-            "old",
-            expected_fingerprints=_fingerprints(store),
-            retirement_publication=first,
-            lock_wait=True,
+        _guarded_delete(
+            store,
+            _fingerprints(store),
+            first,
         )
 
     assert store.load_index("local", "old") is not None
@@ -194,23 +215,30 @@ def test_guarded_delete_cannot_adopt_a_replacement_publication(
     tmp_path, monkeypatch
 ):
     store_path, store = _pair(tmp_path, monkeypatch)
-    first = _publish(store_path, store)
-    second = _publish(store_path, store)
-    assert first != second
+    _publish(store_path, store)
+    current_publication = _publish(store_path, store)
 
-    with pytest.raises(RetirementConflict):
+    try:
         store.delete_index(
             "local",
             "old",
             expected_fingerprints=_fingerprints(store),
             lock_wait=True,
         )
+    except RetirementConflict:
+        assert _supports_publication_receipts()
+    else:
+        assert not _supports_publication_receipts()
+        assert store.load_index("local", "old") is None
+        pytest.fail(
+            "receiptless guarded deletion adopted the replacement publication"
+        )
 
     assert store.load_index("local", "old") is not None
     record = retirements.retirement_record(
         str(store_path), "local", "old"
     )
-    assert record["publication_id"] == second
+    assert record["publication_id"] == current_publication
 
 
 def test_guarded_delete_requires_a_current_publication(tmp_path, monkeypatch):
@@ -378,12 +406,10 @@ def test_fingerprints_are_reproved_after_the_retained_gate(
     monkeypatch.setattr(store, "_gate_retained_handle", mutate_after_gate)
 
     with pytest.raises(RetirementConflict):
-        store.delete_index(
-            "local",
-            "old",
-            expected_fingerprints=fingerprints,
-            retirement_publication=publication,
-            lock_wait=True,
+        _guarded_delete(
+            store,
+            fingerprints,
+            publication,
         )
 
     assert store.load_index("local", "old") is not None
@@ -480,11 +506,14 @@ def test_cross_process_older_cleanup_cannot_remove_winning_publication(
         assert process.exitcode == 0
 
     record = retirements.pending_retirement(str(store_path), "local", "old")
-    winner = record["publication_id"]
+    winner = record.get("publication_id")
+    if not isinstance(winner, str):
+        assert _finish_retirement(store_path, publications[0]) is False
+        pytest.fail(
+            "retirement completion lacked exact publication ownership"
+        )
     loser = next(publication for publication in publications if publication != winner)
-    assert retirements.finish_retirement(
-        str(store_path), "local", "old", publication_id=loser
-    ) is False
+    assert _finish_retirement(store_path, loser) is False
     assert retirements.pending_retirement(
         str(store_path), "local", "old"
     )["publication_id"] == winner

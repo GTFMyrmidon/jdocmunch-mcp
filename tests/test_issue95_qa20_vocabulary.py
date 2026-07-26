@@ -132,14 +132,21 @@ def _published_vocabulary():
 
 
 def test_runtime_vocabulary_is_complete_and_exact():
-    assert delete_tool.DELETE_RESULT_VOCABULARY == EXPECTED_VOCABULARY
+    assert (
+        getattr(delete_tool, "DELETE_RESULT_VOCABULARY", None)
+        == EXPECTED_VOCABULARY
+    )
 
 
 def test_storage_reason_codes_are_the_public_source_of_truth():
-    assert storage_module.DELETE_REASON_CODES == EXPECTED_STORAGE_CODES
-    assert delete_tool.DELETE_REASON_CODES is storage_module.DELETE_REASON_CODES
-    assert set(delete_tool.DELETE_RESULT_VOCABULARY) == set(
-        storage_module.DELETE_REASON_CODES.values()
+    storage_codes = getattr(storage_module, "DELETE_REASON_CODES", None)
+    tool_codes = getattr(delete_tool, "DELETE_REASON_CODES", None)
+    vocabulary = getattr(delete_tool, "DELETE_RESULT_VOCABULARY", None)
+
+    assert storage_codes == EXPECTED_STORAGE_CODES
+    assert tool_codes is storage_codes
+    assert set(vocabulary) == set(
+        storage_codes.values()
     )
 
 
