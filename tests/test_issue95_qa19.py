@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import multiprocessing
 from contextlib import contextmanager
@@ -41,51 +40,25 @@ def _publish(store_path, store, retained="local/modern"):
     )
 
 
-def _supports_publication_receipts() -> bool:
-    return (
-        "retirement_publication"
-        in inspect.signature(DocStore.delete_index).parameters
-    )
-
-
 def _finish_retirement(store_path, publication):
-    kwargs = {}
-    if _finish_supports_publication_id():
-        kwargs["publication_id"] = publication
+    """Complete exactly ``publication`` — refused unless it is still current."""
     return retirements.finish_retirement(
-        str(store_path), "local", "old", **kwargs
+        str(store_path), "local", "old", publication_id=publication
     )
-
-
-def _finish_supports_publication_id() -> bool:
-    return (
-        "publication_id"
-        in inspect.signature(retirements.finish_retirement).parameters
-    )
-
-
-def _assert_conditional_finish_refusal(result) -> None:
-    if _finish_supports_publication_id():
-        assert result is False
 
 
 def _current_retirement_record(store_path):
-    reader = getattr(
-        retirements,
-        "retirement_record",
-        retirements.pending_retirement,
-    )
-    return reader(str(store_path), "local", "old")
+    return retirements.retirement_record(str(store_path), "local", "old")
 
 
 def _guarded_delete(store, fingerprints, publication, *, lock_wait=True):
-    kwargs = {
-        "expected_fingerprints": fingerprints,
-        "lock_wait": lock_wait,
-    }
-    if _supports_publication_receipts():
-        kwargs["retirement_publication"] = publication
-    return store.delete_index("local", "old", **kwargs)
+    return store.delete_index(
+        "local",
+        "old",
+        expected_fingerprints=fingerprints,
+        retirement_publication=publication,
+        lock_wait=lock_wait,
+    )
 
 
 def _publication_worker(store_path, retained, ready, start, output):
@@ -158,9 +131,7 @@ def test_older_completion_cannot_remove_newer_publication(tmp_path, monkeypatch)
     first = _publish(store_path, store)
     second = _publish(store_path, store)
 
-    _assert_conditional_finish_refusal(
-        _finish_retirement(store_path, first)
-    )
+    assert _finish_retirement(store_path, first) is False
     record = retirements.pending_retirement(str(store_path), "local", "old")
     assert record is not None
     publication_id = record.get("publication_id")
@@ -235,9 +206,7 @@ def test_completion_lock_failure_preserves_the_publication(
     publication = _publish(store_path, store)
     monkeypatch.setattr(retirements, "_acquire_fd", lambda *args, **kwargs: None)
 
-    _assert_conditional_finish_refusal(
-        _finish_retirement(store_path, publication)
-    )
+    assert _finish_retirement(store_path, publication) is False
     current = _current_retirement_record(store_path)
     assert current is not None
     publication_id = current.get("publication_id")
@@ -284,24 +253,25 @@ def test_final_gate_requires_the_exact_current_publication(tmp_path, monkeypatch
 def test_guarded_delete_cannot_adopt_a_replacement_publication(
     tmp_path, monkeypatch
 ):
+    """A receiptless guarded delete cannot borrow the slot's current authority.
+
+    Two publications land for the same retiring handle, so the slot holds the
+    replacement. A delete naming no receipt has no authority of its own and
+    must not adopt the one it happens to find: it conflicts, and the newer
+    publication survives untouched. Distinct from
+    ``test_guarded_delete_requires_a_current_publication``, where the slot is
+    empty and there is nothing to adopt.
+    """
     store_path, store = _pair(tmp_path, monkeypatch)
     _publish(store_path, store)
     current_publication = _publish(store_path, store)
 
-    try:
+    with pytest.raises(RetirementConflict):
         store.delete_index(
             "local",
             "old",
             expected_fingerprints=_fingerprints(store),
             lock_wait=True,
-        )
-    except RetirementConflict:
-        assert _supports_publication_receipts()
-    else:
-        assert not _supports_publication_receipts()
-        assert store.load_index("local", "old") is None
-        pytest.fail(
-            "receiptless guarded deletion adopted the replacement publication"
         )
 
     assert store.load_index("local", "old") is not None
@@ -394,9 +364,7 @@ def test_completion_unlink_failure_reports_retired_with_pending_cleanup(
 
     block = result["legacy_reconciliation"]
     assert block["reason_code"] == wc.REASON_LEGACY_RECONCILED
-    cleanup_schema = getattr(
-        storage_module, "RETIREMENT_CLEANUP_OUTCOME_SCHEMA", {}
-    )
+    cleanup_schema = storage_module.RETIREMENT_CLEANUP_OUTCOME_SCHEMA
     assert set(cleanup_schema) == {
         "retirement_cleanup_pending",
         "retirement_cleanup_record_state",
@@ -457,9 +425,7 @@ def test_conflict_cleanup_failure_uses_precommit_pending_signal(
     }
     assert block["reason_code"] == wc.REASON_LEGACY_CONFLICT
     assert block["pending_retirement"] is True
-    cleanup_schema = getattr(
-        storage_module, "RETIREMENT_CLEANUP_OUTCOME_SCHEMA", {}
-    )
+    cleanup_schema = storage_module.RETIREMENT_CLEANUP_OUTCOME_SCHEMA
     assert set(block).isdisjoint(cleanup_schema)
     record = retirements.pending_retirement(
         str(store_path), "local", "old"
@@ -664,16 +630,12 @@ def test_cross_process_older_cleanup_cannot_remove_winning_publication(
     assert record is not None
     winner = record.get("publication_id")
     if not isinstance(winner, str):
-        _assert_conditional_finish_refusal(
-            _finish_retirement(store_path, publications[0])
-        )
+        assert _finish_retirement(store_path, publications[0]) is False
         pytest.fail(
             "retirement completion lacked exact publication ownership"
         )
     loser = next(publication for publication in publications if publication != winner)
-    _assert_conditional_finish_refusal(
-        _finish_retirement(store_path, loser)
-    )
+    assert _finish_retirement(store_path, loser) is False
     current = retirements.pending_retirement(
         str(store_path), "local", "old"
     )
