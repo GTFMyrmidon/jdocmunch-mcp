@@ -103,12 +103,33 @@ def test_proof_and_record_side_fingerprints_are_one_implementation(
     assert store.index_fingerprint("local", "absent") is None
 
 
+def test_traversing_handle_never_hashes_a_file_outside_the_store(
+    tmp_path, monkeypatch
+):
+    """An escaping handle must not be hashed from wherever it points.
+
+    Without component validation, ``../escape`` joins to a path OUTSIDE the
+    store and the fingerprint is computed from that file — a retirement proof
+    token derived from something the store does not own. The planted file and
+    the path assertion below keep this from passing vacuously: the naive join
+    really does reach it.
+    """
+    store_path, _ = _pair(tmp_path, monkeypatch)
+    outside = store_path.parent / "escape.json"
+    outside.write_text("not part of this store", encoding="utf-8")
+    assert (store_path / ".." / "escape.json").resolve() == outside.resolve()
+
+    assert retirements._fingerprint_handle(
+        str(store_path), "../escape"
+    ) is None
+
+
 @pytest.mark.parametrize(
     "handle",
-    ["../escape", "local/../../escape", "./local", "local/.", "noslash", ""],
+    ["local/../../escape", "./local", "local/.", "noslash", ""],
 )
-def test_unsafe_handles_never_reach_the_filesystem(tmp_path, monkeypatch, handle):
-    """A handle that could traverse out of the store fails closed."""
+def test_unsafe_handles_fail_closed(tmp_path, monkeypatch, handle):
+    """The remaining malformed shapes never produce a proof token."""
     store_path, _ = _pair(tmp_path, monkeypatch)
     assert retirements._fingerprint_handle(str(store_path), handle) is None
 
