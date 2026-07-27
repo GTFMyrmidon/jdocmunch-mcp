@@ -458,7 +458,7 @@ the primary unlink committed but exact-publication record completion failed.
 They never describe a pre-commit conflict. If exact-publication record cleanup
 fails while a conflict has kept the retiring monolith loadable, the response
 instead reports `pending_retirement: true` as the durable pre-commit recovery
-signal and emits none of the four `retirement_cleanup_*` fields.
+signal and emits none of the `retirement_cleanup_*` fields.
 
 | Field | JSON type | Allowed values | Meaning |
 |---|---|---|---|
@@ -479,7 +479,7 @@ durable write while the record lock and retained gate are still held.
 |---|---|---|---|---|---|
 | Pre-commit refusal | `false` | non-retired | loadable | absent | Retry starts from the still-loadable retiring monolith. |
 | Committed with complete record cleanup | `true` | retired | absent | absent | No retirement cleanup remains for that exact publication. |
-| Committed with incomplete record cleanup | `true` | retired | absent | present | The four fields report durable state; a fresh pending read self-heals or returns the record. |
+| Committed with incomplete record cleanup | `true` | retired | absent | present | The cleanup fields report durable state; a fresh pending read self-heals or returns the record. |
 
 Availability is commit-scoped. At the protected A-to-B commit, B is loadable
 and matches A's final authoritative proof. A change or removal of B before that

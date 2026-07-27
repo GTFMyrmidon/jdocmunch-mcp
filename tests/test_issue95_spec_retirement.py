@@ -84,7 +84,7 @@ EXPECTED_OUTCOME_MATRIX = {
         "Retiring monolith": "absent",
         "Cleanup fields": "present",
         "Durable recovery": (
-            "The four fields report durable state; a fresh pending read "
+            "The cleanup fields report durable state; a fresh pending read "
             "self-heals or returns the record."
         ),
     },
@@ -426,6 +426,34 @@ def test_cleanup_incomplete_inventories_are_canonical():
         ),
     }
     _assert_cleanup_incomplete_table_inventory()
+
+
+NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+}
+COUNTED_FIELDS_PATTERN = re.compile(
+    r"\b(one|two|three|four|five|six)\b\s+(?:[^\s]*\s+)?fields",
+    re.IGNORECASE,
+)
+
+
+def test_spec_never_hardcodes_a_stale_cleanup_field_count():
+    """Prose that counts the cleanup fields must agree with the schema.
+
+    Removing the write-only completion marker left SPEC.md saying "four" in
+    two places while three fields remained, and the guard did not notice
+    because it pinned the sentence verbatim -- a pinned string is only as
+    current as the last person who remembered to update both copies. This
+    derives the count from the runtime schema instead.
+    """
+    section = _retirement_section_raw()
+    expected = len(storage_module.RETIREMENT_CLEANUP_OUTCOME_SCHEMA)
+
+    for match in COUNTED_FIELDS_PATTERN.finditer(section):
+        assert NUMBER_WORDS[match.group(1).lower()] == expected, (
+            f"SPEC.md says {match.group(0)!r} but the runtime schema "
+            f"publishes {expected} cleanup fields"
+        )
 
 
 def test_cleanup_disclosure_schema_matches_storage_emitter():
