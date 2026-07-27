@@ -1664,6 +1664,112 @@ class DocStore:
                 changed.append(handle)
         return changed
 
+    def _commit_guarded_retirement(
+        self, owner: str, name: str, index_path: Path, *,
+        expected_fingerprints: dict,
+        expected_publication: str,
+        entry_record: Optional[dict],
+        outcome: Optional[dict],
+    ) -> bool:
+        """The final authorization gate — the ONE destructive step.
+
+        jdoc#89 QA-06 / jdoc#90 QA-17 / jdoc#93 QA-19. Called holding this
+        handle's write lock, with every auxiliary artifact already removed and
+        the primary ``<name>.json`` still in place. Acquires the record lock,
+        then the retained peer's gate NONBLOCKINGLY, and holds both through
+        the unlink and publication-scoped completion.
+
+        Everything before the retained gate is fast rejection only. A
+        fingerprint read before that gate cannot see a writer already in
+        flight on the retained handle — one that passed its own void scan
+        before our record existed, or a save paused an instruction short of
+        ``_atomic_replace``. Both hold the retained handle's write lock, so
+        only the proof repeated AFTER the gate closes can authorize the
+        commit.
+
+        Returns True when exact-publication record completion also succeeded,
+        False when the primary unlink committed but that completion did not —
+        the caller must then leave the durable record alone as recoverable
+        state. Raises :class:`RetirementConflict` on any refusal, always
+        before the unlink, so the retiring monolith stays loadable; only
+        rebuildable auxiliary artifacts may already be gone.
+        """
+        from .retirements import (
+            _retirement_record_state, finish_retirement, hold_record_lock,
+            retirement_record, RetirementRecordLockError,
+        )
+
+        def _publication_conflict() -> RetirementConflict:
+            """Name the peer this retirement can no longer speak for."""
+            return RetirementConflict(
+                [(entry_record or {}).get("retained") or f"{owner}/{name}"]
+            )
+
+        def _authorized() -> bool:
+            current = retirement_record(self.base_path, owner, name)
+            return (
+                current is not None
+                and current.get("publication_id") == expected_publication
+            )
+
+        try:
+            with hold_record_lock(self.base_path, owner, name):
+                record = retirement_record(self.base_path, owner, name)
+                if (
+                    record is None
+                    or record.get("publication_id") != expected_publication
+                ):
+                    raise _publication_conflict()
+                retained = record.get("retained")
+                with self._gate_retained_handle(
+                    retained, owner, name
+                ) as gate_ok:
+                    if not gate_ok:
+                        raise RetirementConflict(
+                            [retained or f"{owner}/{name}"]
+                        )
+                    changed = self._verify_expected_fingerprints(
+                        expected_fingerprints
+                    )
+                    if changed:
+                        raise RetirementConflict(changed)
+                    if not _authorized():
+                        raise _publication_conflict()
+
+                    _evict_index_cache(index_path)
+                    index_path.unlink()
+                    if outcome is not None:
+                        outcome["_primary_unlink_committed"] = True
+
+                    # Past this point the retirement HAS committed. Add no
+                    # durable write to a critical section that still holds
+                    # both the record lock and the retained gate — a failed
+                    # completion is already evidence the store is unhealthy.
+                    # Read the durable state, disclose it, and get out.
+                    if finish_retirement(
+                        self.base_path, owner, name,
+                        publication_id=expected_publication,
+                        _lock_held=True,
+                    ):
+                        return True
+                    if outcome is not None:
+                        state, record = _retirement_record_state(
+                            self.base_path, owner, name
+                        )
+                        outcome.update(
+                            retirement_cleanup_pending=state != "absent",
+                            retirement_cleanup_record_state=state,
+                            retirement_cleanup_owned=(
+                                record is not None
+                                and record.get("publication_id")
+                                == expected_publication
+                            ),
+                        )
+                    return False
+        except RetirementRecordLockError:
+            # jdoc#95 AC-06: no authoritative lock, no critical section.
+            raise RetirementConflict([f"{owner}/{name}"])
+
     @_with_index_lock
     def delete_index(
         self,
@@ -1775,9 +1881,7 @@ class DocStore:
         # refuse the delete (retry succeeds as soon as the gate closes) so no
         # interleaving can end with both participating indexes absent.
         from .retirements import (
-            hold_record_lock,
             retirement_record,
-            RetirementRecordLockError,
             try_void_retirements_referencing,
         )
         if not try_void_retirements_referencing(
@@ -1867,113 +1971,16 @@ class DocStore:
         # index is gone; until then a failed earlier step leaves it loadable.
         if index_path.exists():
             if guarded_retirement:
-                # jdoc#89 QA-06 / jdoc#90 QA-17: the final gate. Everything
-                # inside the record lock is ONE destructive step: re-verify
-                # every proof-time fingerprint, require the durable record
-                # this retirement published to still exist, then unlink. A
-                # concurrent delete of the retained peer must first void that
-                # record through this same lock (try_void_retirements_
-                # referencing), so it either lands before the gate — record
-                # gone, conflict raised, this handle kept — or is refused
-                # until the gate closes. No interleaving finishes with both
-                # participating indexes absent. A conflict here leaves this
-                # handle loadable; only rebuildable auxiliary artifacts may
-                # already be gone (a refresh rebuilds them).
-                try:
-                    record_lock = hold_record_lock(
-                        self.base_path, owner, name
+                retirement_completion_failed = (
+                    not self._commit_guarded_retirement(
+                        owner, name, index_path,
+                        expected_fingerprints=expected_fingerprints,
+                        expected_publication=expected_publication,
+                        entry_record=entry_record,
+                        outcome=outcome,
                     )
-                    with record_lock:
-                        current_record = retirement_record(
-                            self.base_path, owner, name
-                        )
-                        if (
-                            current_record is None
-                            or current_record.get("publication_id")
-                            != expected_publication
-                        ):
-                            raise RetirementConflict(
-                                [
-                                    (entry_record or {}).get("retained")
-                                    or f"{owner}/{name}"
-                                ]
-                            )
-                        # jdoc#93 QA-19 (Path A): record identity is checked
-                        # above, but an early fingerprint cannot see work
-                        # already in flight on the retained handle. Take that
-                        # handle's gate nonblockingly, then repeat fingerprint
-                        # and record proof while both locks remain held through
-                        # unlink and publication-scoped completion.
-                        _retained = (current_record or {}).get("retained")
-                        with self._gate_retained_handle(
-                            _retained, owner, name
-                        ) as _gate_ok:
-                            if not _gate_ok:
-                                raise RetirementConflict(
-                                    [_retained or f"{owner}/{name}"]
-                                )
-                            # QA-19: retained coordination closes the in-flight
-                            # writer gap. Only proof performed after this point
-                            # can authorize the destructive commit.
-                            changed = self._verify_expected_fingerprints(
-                                expected_fingerprints
-                            )
-                            current_record = retirement_record(
-                                self.base_path, owner, name
-                            )
-                            if changed:
-                                raise RetirementConflict(changed)
-                            if (
-                                current_record is None
-                                or current_record.get("publication_id")
-                                != expected_publication
-                            ):
-                                raise RetirementConflict(
-                                    [
-                                        (entry_record or {}).get("retained")
-                                        or f"{owner}/{name}"
-                                    ]
-                                )
-                            _evict_index_cache(index_path)
-                            index_path.unlink()
-                            deleted = True
-                            if outcome is not None:
-                                outcome["_primary_unlink_committed"] = True
-                            from .retirements import (
-                                _retirement_record_state, finish_retirement,
-                            )
-                            # Nothing after the unlink may add durable writes
-                            # to this critical section: the record lock and
-                            # the retained gate are both still held, and the
-                            # unlink that just failed is evidence the store is
-                            # already unhealthy. Read the durable state, tell
-                            # the caller, and get out.
-                            retirement_completion_failed = (
-                                not finish_retirement(
-                                    self.base_path, owner, name,
-                                    publication_id=expected_publication,
-                                    _lock_held=True,
-                                )
-                            )
-                            if retirement_completion_failed and (
-                                outcome is not None
-                            ):
-                                state, record = _retirement_record_state(
-                                    self.base_path, owner, name
-                                )
-                                outcome.update(
-                                    retirement_cleanup_pending=(
-                                        state != "absent"
-                                    ),
-                                    retirement_cleanup_record_state=state,
-                                    retirement_cleanup_owned=(
-                                        record is not None
-                                        and record.get("publication_id")
-                                        == expected_publication
-                                    ),
-                                )
-                except RetirementRecordLockError:
-                    raise RetirementConflict([f"{owner}/{name}"])
+                )
+                deleted = True
             else:
                 _evict_index_cache(index_path)
                 index_path.unlink()
