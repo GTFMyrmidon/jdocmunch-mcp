@@ -113,6 +113,60 @@ def is_safe_path_component(value) -> bool:
     )
 
 
+def _valid_retirement_pair(
+    retiring: str, retained: str, fingerprints: dict
+) -> bool:
+    """Whether one proof map describes exactly one distinct retirement pair."""
+    if (
+        not isinstance(retiring, str)
+        or not isinstance(retained, str)
+        or retiring == retained
+        or retiring.count("/") != 1
+        or retained.count("/") != 1
+    ):
+        return False
+    retiring_owner, retiring_name = retiring.split("/", 1)
+    retained_owner, retained_name = retained.split("/", 1)
+    if not all(
+        is_safe_path_component(component)
+        for component in (
+            retiring_owner,
+            retiring_name,
+            retained_owner,
+            retained_name,
+        )
+    ):
+        return False
+    if (
+        not isinstance(fingerprints, dict)
+        or set(fingerprints) != {retiring, retained}
+    ):
+        return False
+    return all(
+        isinstance(fingerprints[handle], str) and fingerprints[handle]
+        for handle in (retiring, retained)
+    )
+
+
+def _valid_retirement_record(record, owner: str, name: str) -> bool:
+    """Whether a durable record is structurally bound to its retirement slot."""
+    if (
+        not isinstance(record, dict)
+        or not is_safe_path_component(owner)
+        or not is_safe_path_component(name)
+    ):
+        return False
+    retiring = f"{owner}/{name}"
+    return (
+        record.get("retiring") == retiring
+        and _valid_retirement_pair(
+            retiring,
+            record.get("retained"),
+            record.get("fingerprints"),
+        )
+    )
+
+
 def _fingerprint_handle(base_path, handle: str) -> Optional[str]:
     if not isinstance(handle, str) or "/" not in handle:
         return None
@@ -147,11 +201,19 @@ def begin_retirement(
     """
     tmp = None
     try:
+        if (
+            not is_safe_path_component(owner)
+            or not is_safe_path_component(name)
+        ):
+            return None
+        retiring = f"{owner}/{name}"
+        if not _valid_retirement_pair(retiring, retained, fingerprints):
+            return None
         path = _record_path(base_path, owner, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         publication_id = secrets.token_hex(16)
         payload = {
-            "retiring": f"{owner}/{name}",
+            "retiring": retiring,
             "retained": retained,
             "fingerprints": fingerprints,
             "family": family,

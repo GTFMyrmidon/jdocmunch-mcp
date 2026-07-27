@@ -247,6 +247,133 @@ def test_publication_revalidates_fingerprints_after_lock_acquisition(
     ) is None
 
 
+@pytest.mark.parametrize("omitted", ["local/old", "local/modern"])
+def test_publication_requires_both_retirement_pair_fingerprints(
+    tmp_path, monkeypatch, omitted
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    fingerprints = _fingerprints(store)
+    fingerprints.pop(omitted)
+
+    publication = retirements.begin_retirement(
+        str(store_path),
+        "local",
+        "old",
+        retained="local/modern",
+        fingerprints=fingerprints,
+        family="qa19",
+    )
+
+    assert publication is None
+    assert retirements.retirement_record(
+        str(store_path), "local", "old"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "retained", ["local/absent", "local/old", "../escape"]
+)
+def test_publication_requires_a_distinct_retained_handle_bound_to_the_proof(
+    tmp_path, monkeypatch, retained
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+
+    publication = retirements.begin_retirement(
+        str(store_path),
+        "local",
+        "old",
+        retained=retained,
+        fingerprints=_fingerprints(store),
+        family="qa19",
+    )
+
+    assert publication is None
+    assert retirements.retirement_record(
+        str(store_path), "local", "old"
+    ) is None
+
+
+def test_publication_rejects_fingerprints_outside_the_retirement_pair(
+    tmp_path, monkeypatch
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    other_path = store._index_path("local", "other")
+    other_path.write_bytes(store._index_path("local", "modern").read_bytes())
+    fingerprints = _fingerprints(store)
+    fingerprints["local/other"] = store.index_fingerprint("local", "other")
+    assert fingerprints["local/other"]
+
+    publication = retirements.begin_retirement(
+        str(store_path),
+        "local",
+        "old",
+        retained="local/modern",
+        fingerprints=fingerprints,
+        family="qa19",
+    )
+
+    assert publication is None
+    assert retirements.retirement_record(
+        str(store_path), "local", "old"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("owner", "name", "escaped_record"),
+    [
+        ("../escape", "old", "outside-owner"),
+        ("local", "../escape", "outside-name"),
+    ],
+)
+def test_publication_rejects_an_unsafe_record_slot_before_path_creation(
+    tmp_path, monkeypatch, owner, name, escaped_record
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    if escaped_record == "outside-owner":
+        escaped_path = store_path.parent / "escape" / ".retirements" / "old.json"
+    else:
+        escaped_path = store_path / "local" / "escape.json"
+
+    publication = retirements.begin_retirement(
+        str(store_path),
+        owner,
+        name,
+        retained="local/modern",
+        fingerprints=_fingerprints(store),
+        family="qa19",
+    )
+
+    assert publication is None
+    assert escaped_path.exists() is False
+
+
+def test_final_gate_rejects_a_malformed_durable_retirement_pair(
+    tmp_path, monkeypatch
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    fingerprints = _fingerprints(store)
+    publication = _publish(store_path, store)
+    record_path = store_path / "local" / ".retirements" / "old.json"
+    real_commit = store._commit_guarded_retirement
+
+    def corrupt_pair_before_final_gate(*args, **kwargs):
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["retained"] = "local/absent"
+        record_path.write_text(
+            json.dumps(record, separators=(",", ":")), encoding="utf-8"
+        )
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        store, "_commit_guarded_retirement", corrupt_pair_before_final_gate
+    )
+
+    with pytest.raises(RetirementConflict):
+        _guarded_delete(store, fingerprints, publication)
+
+    assert store.load_index("local", "old") is not None
+
+
 def test_authoritative_record_lock_never_yields_without_a_lock(
     tmp_path, monkeypatch
 ):
@@ -341,16 +468,24 @@ def test_guarded_delete_cannot_adopt_a_replacement_publication(
 
 def test_guarded_delete_requires_a_current_publication(tmp_path, monkeypatch):
     store_path, store = _pair(tmp_path, monkeypatch)
+    fingerprints = _fingerprints(store)
+    publication = _publish(store_path, store)
+    record_path = store_path / "local" / ".retirements" / "old.json"
+    record_path.unlink()
+    outcome = {}
 
     with pytest.raises(RetirementConflict):
         store.delete_index(
             "local",
             "old",
-            expected_fingerprints=_fingerprints(store),
+            expected_fingerprints=fingerprints,
+            retirement_publication=publication,
+            outcome=outcome,
             lock_wait=True,
         )
 
     assert store.load_index("local", "old") is not None
+    assert outcome == {}
     assert retirements.retirement_record(
         str(store_path), "local", "old"
     ) is None
@@ -467,19 +602,24 @@ def test_guarded_delete_rejects_an_unreadable_publication(
     tmp_path, monkeypatch
 ):
     store_path, store = _pair(tmp_path, monkeypatch)
+    fingerprints = _fingerprints(store)
+    publication = _publish(store_path, store)
     record_path = store_path / "local" / ".retirements" / "old.json"
-    record_path.parent.mkdir(parents=True, exist_ok=True)
     record_path.write_text("{not-json", encoding="utf-8")
+    outcome = {}
 
     with pytest.raises(RetirementConflict):
         store.delete_index(
             "local",
             "old",
-            expected_fingerprints=_fingerprints(store),
+            expected_fingerprints=fingerprints,
+            retirement_publication=publication,
+            outcome=outcome,
             lock_wait=True,
         )
 
     assert store.load_index("local", "old") is not None
+    assert outcome == {}
     assert record_path.read_text(encoding="utf-8") == "{not-json"
 
 

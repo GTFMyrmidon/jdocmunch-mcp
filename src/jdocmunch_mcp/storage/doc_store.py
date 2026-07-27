@@ -1695,6 +1695,7 @@ class DocStore:
         from .retirements import (
             _retirement_record_state, finish_retirement, hold_record_lock,
             retirement_record, RetirementRecordLockError,
+            _valid_retirement_record,
         )
 
         def _publication_conflict() -> RetirementConflict:
@@ -1716,6 +1717,7 @@ class DocStore:
             if (
                 current is None
                 or current.get("publication_id") != expected_publication
+                or not _valid_retirement_record(current, owner, name)
             ):
                 raise _publication_conflict()
             published = current.get("fingerprints")
