@@ -514,7 +514,7 @@ def test_any_added_cleanup_incomplete_sentence_fails_the_inventory(sentence):
     """The guard pins the inventory; it does not judge meaning.
 
     Cleanup-incomplete prose is protected by pinning the COMPLETE set of
-    sentences that mention it, so ANY addition fails — contradictory,
+    sentences that mention it, so ANY addition fails, whether contradictory,
     redundant, or merely new. That is what makes the guard sound: scanning for
     specific contradictory phrasings could never be complete, because a
     contradiction can always be reworded. These cases sample the property;
@@ -560,7 +560,7 @@ def _markdown_escaped(text):
 
 
 def _indented_fence(text):
-    """Four spaces open an indented code block, not a fence — still visible."""
+    """Four spaces open an indented code block, not a fence, so it stays visible."""
     return text.replace(
         SECTION_START,
         f"{SECTION_START}\n\n    ```\n{CONTRADICTION}\n    ```",

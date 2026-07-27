@@ -41,7 +41,7 @@ def _publish(store_path, store, retained="local/modern"):
 
 
 def _finish_retirement(store_path, publication):
-    """Complete exactly ``publication`` — refused unless it is still current."""
+    """Complete exactly ``publication``, refused unless it is still current."""
     return retirements.finish_retirement(
         str(store_path), "local", "old", publication_id=publication
     )
@@ -85,7 +85,7 @@ def test_proof_and_record_side_fingerprints_are_one_implementation(
     ``DocStore.index_fingerprint`` captures the token and
     ``begin_retirement`` re-proves it under the record lock. If those ever
     disagreed by a byte, publication would refuse itself and every retirement
-    would silently become ``record_unavailable`` — a failure that no
+    would silently become ``record_unavailable``, a failure that no
     behavioural test reads as a fingerprint bug.
     """
     store_path, store = _pair(tmp_path, monkeypatch)
@@ -109,8 +109,8 @@ def test_traversing_handle_never_hashes_a_file_outside_the_store(
     """An escaping handle must not be hashed from wherever it points.
 
     Without component validation, ``../escape`` joins to a path OUTSIDE the
-    store and the fingerprint is computed from that file — a retirement proof
-    token derived from something the store does not own. The planted file and
+    store and the fingerprint is computed from that file, yielding a retirement
+    proof token derived from something the store does not own. The planted file and
     the path assertion below keep this from passing vacuously: the naive join
     really does reach it.
     """
@@ -138,7 +138,7 @@ def test_drive_relative_handle_never_escapes_the_store(tmp_path, monkeypatch):
     """Windows drive-relative syntax is traversal without a separator.
 
     ``C:..`` contains no separator and is neither ``.`` nor ``..``, so a
-    hand-rolled "no separators, no dots" rule admits it — but Windows resolves
+    hand-rolled "no separators, no dots" rule admits it, but Windows resolves
     it drive-relative, so the join walks out of the store and hashes whatever
     it lands on. Only the canonical component policy rejects it.
     """
@@ -363,7 +363,7 @@ def test_empty_expected_fingerprints_never_authorize_a_delete(
 
     Two distinct refusals, and the second is the one that matters. Without a
     receipt the call is rejected for the missing receipt. WITH a valid
-    receipt, an empty map must still be refused — otherwise the receipt is a
+    receipt, an empty map must still be refused; otherwise the receipt is a
     password rather than a proof, and its holder can authorize a commit while
     asserting nothing about either participant.
     """
@@ -401,7 +401,7 @@ def test_partial_proof_cannot_hide_a_changed_retained_peer(
 
     The publication records fingerprints for both participants. A caller that
     supplies only the retiring handle's fingerprint would, if the gate trusted
-    the argument, commit without ever looking at the retained peer — so a peer
+    the argument, commit without ever looking at the retained peer, so a peer
     that changed after publication goes unnoticed and AC-02 is violated.
 
     The peer is mutated on disk rather than through ``save_index`` so no
@@ -588,7 +588,7 @@ def test_unreadable_record_after_commit_is_disclosed_as_unowned(
 
     The completion unlink fails and the record becomes unparseable in the same
     step, so the emitter cannot confirm the publication it just completed. It
-    must say so — ``unreadable`` and not owned — rather than reporting the
+    must say so, reporting ``unreadable`` and not owned, rather than the
     publication identity it was holding in memory.
     """
     _, worktree, _, store_path = legacy._standard_pair(

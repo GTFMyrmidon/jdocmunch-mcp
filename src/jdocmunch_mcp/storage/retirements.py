@@ -27,8 +27,8 @@ returned receipt survives sudden power loss.
 
 Truthfulness (jdoc#89 QA-08): a record whose retiring index no longer exists
 describes a COMPLETED retirement whose finalization was interrupted, not
-pending work — ``pending_retirement`` self-heals it under the record lock and
-reports None. When that self-heal cannot remove the record, the durable
+pending work. ``pending_retirement`` self-heals it under the record lock
+and reports None. When that self-heal cannot remove the record, the durable
 record is returned instead, so cleanup state that needs recovery is disclosed
 rather than hidden behind a false "nothing pending".
 """
@@ -83,7 +83,7 @@ def fingerprint_index_file(index_path) -> Optional[str]:
 
     The ONE definition of the retirement precondition token (jdoc#88 QA-01).
     ``DocStore.index_fingerprint`` captures it at proof time and this module
-    re-proves it under the record lock, so the two must agree byte for byte —
+    re-proves it under the record lock, so the two must agree byte for byte;
     any divergence would make ``begin_retirement`` refuse every publication.
     They share this implementation rather than keeping two copies in step.
     """

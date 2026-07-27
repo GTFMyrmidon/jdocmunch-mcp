@@ -1669,7 +1669,7 @@ class DocStore:
         entry_record: Optional[dict],
         outcome: Optional[dict],
     ) -> bool:
-        """The final authorization gate — the ONE destructive step.
+        """The final authorization gate: the ONE destructive step.
 
         jdoc#89 QA-06 / jdoc#90 QA-17 / jdoc#93 QA-19. Called holding this
         handle's write lock, with every auxiliary artifact already removed and
@@ -1679,15 +1679,15 @@ class DocStore:
 
         Everything before the retained gate is fast rejection only. A
         fingerprint read before that gate cannot see a writer already in
-        flight on the retained handle — one that passed its own void scan
+        flight on the retained handle: one that passed its own void scan
         before our record existed, or a save paused an instruction short of
         ``_atomic_replace``. Both hold the retained handle's write lock, so
         only the proof repeated AFTER the gate closes can authorize the
         commit.
 
         Returns True when exact-publication record completion also succeeded,
-        False when the primary unlink committed but that completion did not —
-        the caller must then leave the durable record alone as recoverable
+        False when the primary unlink committed but that completion did not.
+        The caller must then leave the durable record alone as recoverable
         state. Raises :class:`RetirementConflict` on any refusal, always
         before the unlink, so the retiring monolith stays loadable; only
         rebuildable auxiliary artifacts may already be gone.
@@ -1756,7 +1756,7 @@ class DocStore:
 
                     # Past this point the retirement HAS committed. Add no
                     # durable write to a critical section that still holds
-                    # both the record lock and the retained gate — a failed
+                    # both the record lock and the retained gate. A failed
                     # completion is already evidence the store is unhealthy.
                     # Read the durable state, disclose it, and get out.
                     if finish_retirement(
