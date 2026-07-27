@@ -1692,7 +1692,13 @@ class DocStore:
         handle still loadable when a concurrent save or direct delete changed
         either participant; auxiliary artifacts may already be gone, and a
         refresh rebuilds them. An expected value of None always conflicts.
-        Omitted → the pre-existing unguarded behavior.
+        Omitted (``None``) → the pre-existing unguarded behavior.
+
+        Passing any dict, INCLUDING an empty one, selects the guarded path and
+        therefore also requires ``retirement_publication``. An empty proof
+        asserting nothing can never authorize a removal, so it conflicts
+        rather than silently degrading to an unguarded delete. Callers that
+        want the unguarded behavior omit the argument.
 
         jdoc#93 QA-20: ``outcome`` is an optional caller-supplied dict that
         receives ``{"reason_code": ...}`` and, for guarded post-commit record

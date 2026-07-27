@@ -328,6 +328,28 @@ def test_guarded_delete_requires_a_current_publication(tmp_path, monkeypatch):
     ) is None
 
 
+def test_empty_expected_fingerprints_never_authorize_a_delete(
+    tmp_path, monkeypatch
+):
+    """An empty proof asserts nothing and must not degrade to unguarded.
+
+    ``expected_fingerprints={}`` selects the guarded path (any dict does), so
+    it needs a publication receipt like every other guarded delete and fails
+    closed without one. Before Issue #95 the emptiness itself was read as
+    "unguarded" and the index was removed with no proof at all.
+    """
+    store_path, store = _pair(tmp_path, monkeypatch)
+
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local", "old", expected_fingerprints={}, lock_wait=False
+        )
+
+    assert store.load_index("local", "old") is not None
+    # Omitting the argument entirely still selects the unguarded path.
+    assert store.delete_index("local", "old", lock_wait=False) is True
+
+
 def test_guarded_delete_rejects_an_unreadable_publication(
     tmp_path, monkeypatch
 ):

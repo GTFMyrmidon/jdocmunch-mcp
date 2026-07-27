@@ -408,7 +408,9 @@ current retirement record with that exact current publication identity;
 record-path existence or a receiptless read of the current slot is not
 destructive authority. Missing or unreadable fingerprints, a missing or
 unreadable record, an omitted receipt, or a publication mismatch fail closed.
-`None` never authorizes removal.
+`None` never authorizes removal, and neither does an empty set of expected
+fingerprints: a proof that asserts nothing is refused rather than treated as
+an unguarded delete.
 Monolith fingerprints for the retiring and retained handles may be checked
 earlier for fast rejection, but final authorization is proved only after the
 retained-handle gate is acquired and immediately before the primary
