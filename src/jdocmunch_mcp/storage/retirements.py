@@ -57,6 +57,7 @@ except ImportError:  # POSIX
     msvcrt = None
 
 _RECORDS_DIR = ".retirements"
+_POSIX_DIRECTORY_FSYNC = os.name != "nt"
 
 # jdoc#89 QA-07: a PID-only temp suffix let two same-process publishers
 # collide on one temporary path (one replace then fails with
@@ -254,16 +255,12 @@ def begin_retirement(
 
 
 def _fsync_dir(directory: Path) -> None:
-    """Flush the directory entry after ``os.replace`` (POSIX; Windows has no
-    directory fsync — NTFS journals the rename). Best-effort."""
-    try:
-        fd = os.open(str(directory), os.O_RDONLY)
-    except OSError:
+    """Flush the directory entry after ``os.replace`` on POSIX."""
+    if not _POSIX_DIRECTORY_FSYNC:
         return
+    fd = os.open(str(directory), os.O_RDONLY)
     try:
         os.fsync(fd)
-    except OSError:
-        pass
     finally:
         os.close(fd)
 
@@ -310,7 +307,10 @@ def _acquire_fd(lock_path: Path, blocking: bool) -> Optional[int]:
                             time.sleep(0.05)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 return fd
-            return fd  # no lock primitive — degrade like the index lock
+            # Guarded retirement is unsupported without a real cross-process
+            # lock primitive. An open descriptor alone is not authority.
+            os.close(fd)
+            return None
         except OSError:
             os.close(fd)
             return None

@@ -15,6 +15,8 @@ direct delete), fsync durability.
 
 from __future__ import annotations
 
+import os
+import stat
 import threading
 
 import pytest
@@ -262,14 +264,54 @@ def test_qa11_record_publication_fsyncs(tmp_path, monkeypatch):
     """The publication receipt promises power-loss durability: the record
     bytes are fsync'd before the atomic replace."""
     _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
-    fsync_calls = []
+    fsync_targets = []
     real_fsync = retirements.os.fsync
 
     def record_fsync(fd):
-        fsync_calls.append(fd)
+        mode = os.fstat(fd).st_mode
+        fsync_targets.append(
+            "directory" if stat.S_ISDIR(mode) else "file"
+        )
         return real_fsync(fd)
 
     monkeypatch.setattr(retirements.os, "fsync", record_fsync)
     ds = _begin_pair_retirement(store)
-    assert fsync_calls
+    assert "file" in fsync_targets
+    if os.name != "nt":
+        assert "directory" in fsync_targets
     assert ds.load_index("local", "old") is not None
+
+
+def test_qa11_directory_fsync_failure_returns_no_receipt(
+    tmp_path, monkeypatch
+):
+    _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
+    ds = DocStore(base_path=str(store))
+    fingerprints = {
+        "local/old": ds.index_fingerprint("local", "old"),
+        "local/modern": ds.index_fingerprint("local", "modern"),
+    }
+    record_dir = store / "local" / ".retirements"
+    real_open = retirements.os.open
+
+    def fail_directory_open(path, flags, *args):
+        if os.fspath(path) == os.fspath(record_dir):
+            raise OSError("injected directory fsync open failure")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(
+        retirements, "_POSIX_DIRECTORY_FSYNC", True, raising=False
+    )
+    monkeypatch.setattr(retirements.os, "open", fail_directory_open)
+    publication = retirements.begin_retirement(
+        str(store),
+        "local",
+        "old",
+        retained="local/modern",
+        fingerprints=fingerprints,
+        family="legacy_reconcile",
+    )
+
+    assert publication is None
+    assert ds.load_index("local", "old") is not None
+    assert ds.load_index("local", "modern") is not None

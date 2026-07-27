@@ -623,6 +623,19 @@ def test_guarded_delete_rejects_an_unreadable_publication(
     assert record_path.read_text(encoding="utf-8") == "{not-json"
 
 
+def test_publication_fails_closed_without_a_supported_lock_primitive(
+    tmp_path, monkeypatch
+):
+    store_path, store = _pair(tmp_path, monkeypatch)
+    monkeypatch.setattr(retirements, "fcntl", None)
+    monkeypatch.setattr(retirements, "msvcrt", None)
+
+    assert _publish(store_path, store) is None
+    assert retirements.retirement_record(
+        str(store_path), "local", "old"
+    ) is None
+
+
 def test_completion_unlink_failure_reports_retired_with_pending_cleanup(
     tmp_path, monkeypatch
 ):
