@@ -77,18 +77,36 @@ def _retiring_index_path(base_path, owner: str, name: str) -> Path:
     return Path(base_path) / owner / f"{name}.json"
 
 
+def fingerprint_index_file(index_path) -> Optional[str]:
+    """sha256 of a stored monolith's bytes, or None when unreadable.
+
+    The ONE definition of the retirement precondition token (jdoc#88 QA-01).
+    ``DocStore.index_fingerprint`` captures it at proof time and this module
+    re-proves it under the record lock, so the two must agree byte for byte —
+    any divergence would make ``begin_retirement`` refuse every publication.
+    They share this implementation rather than keeping two copies in step.
+    """
+    try:
+        return hashlib.sha256(Path(index_path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _fingerprint_handle(base_path, handle: str) -> Optional[str]:
     if not isinstance(handle, str) or "/" not in handle:
         return None
     owner, _, name = handle.partition("/")
-    if not owner or not name:
+    # A handle reaches the path join only as two ordinary directory-level
+    # names. Anything that could traverse out of the store fails closed here
+    # rather than being hashed from wherever it pointed.
+    if not all(
+        part and part not in {".", ".."} and not set(part) & {"/", "\\"}
+        for part in (owner, name)
+    ):
         return None
-    try:
-        return hashlib.sha256(
-            _retiring_index_path(base_path, owner, name).read_bytes()
-        ).hexdigest()
-    except OSError:
-        return None
+    return fingerprint_index_file(
+        _retiring_index_path(base_path, owner, name)
+    )
 
 
 def _fingerprints_match(base_path, fingerprints: dict) -> bool:

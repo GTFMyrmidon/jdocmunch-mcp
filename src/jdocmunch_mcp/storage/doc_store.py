@@ -1638,12 +1638,15 @@ class DocStore:
         The retirement precondition token (jdoc#88 QA-01): captured at proof
         time and re-verified inside :meth:`delete_index`, it detects ANY
         change to the stored index — content, certification, or metadata —
-        between approval and physical removal."""
+        between approval and physical removal.
+
+        Shares :func:`retirements.fingerprint_index_file` with the record-side
+        re-proof: two implementations that drifted by a byte would make every
+        publication refuse itself."""
+        from .retirements import fingerprint_index_file
         try:
-            return hashlib.sha256(
-                self._index_path(owner, name).read_bytes()
-            ).hexdigest()
-        except (OSError, ValueError):
+            return fingerprint_index_file(self._index_path(owner, name))
+        except ValueError:
             return None
 
     def _verify_expected_fingerprints(self, expected_fingerprints: dict) -> list:

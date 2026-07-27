@@ -104,6 +104,42 @@ def _publication_worker(store_path, retained, ready, start, output):
     output.put(publication)
 
 
+def test_proof_and_record_side_fingerprints_are_one_implementation(
+    tmp_path, monkeypatch
+):
+    """Both sides of the proof must compute the identical token.
+
+    ``DocStore.index_fingerprint`` captures the token and
+    ``begin_retirement`` re-proves it under the record lock. If those ever
+    disagreed by a byte, publication would refuse itself and every retirement
+    would silently become ``record_unavailable`` — a failure that no
+    behavioural test reads as a fingerprint bug.
+    """
+    store_path, store = _pair(tmp_path, monkeypatch)
+
+    for owner, name in (("local", "old"), ("local", "modern")):
+        assert retirements._fingerprint_handle(
+            str(store_path), f"{owner}/{name}"
+        ) == store.index_fingerprint(owner, name)
+
+    # Both report None for a handle with no stored monolith, rather than one
+    # raising and the other returning a hash of something else.
+    assert retirements._fingerprint_handle(
+        str(store_path), "local/absent"
+    ) is None
+    assert store.index_fingerprint("local", "absent") is None
+
+
+@pytest.mark.parametrize(
+    "handle",
+    ["../escape", "local/../../escape", "./local", "local/.", "noslash", ""],
+)
+def test_unsafe_handles_never_reach_the_filesystem(tmp_path, monkeypatch, handle):
+    """A handle that could traverse out of the store fails closed."""
+    store_path, _ = _pair(tmp_path, monkeypatch)
+    assert retirements._fingerprint_handle(str(store_path), handle) is None
+
+
 def test_publication_receipt_is_unique_and_persisted(tmp_path, monkeypatch):
     store_path, store = _pair(tmp_path, monkeypatch)
 
