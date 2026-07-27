@@ -754,12 +754,10 @@ class DocStore:
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _safe_repo_component(self, value: str, field_name: str) -> str:
-        import re
-        if not value or value in {".", ".."}:
-            raise ValueError(f"Invalid {field_name}: {value!r}")
-        if "/" in value or "\\" in value:
-            raise ValueError(f"Invalid {field_name}: {value!r}")
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        # Shares retirements.is_safe_path_component so the store side and the
+        # record side cannot drift into two different notions of "safe".
+        from .retirements import is_safe_path_component
+        if not is_safe_path_component(value):
             raise ValueError(f"Invalid {field_name}: {value!r}")
         return value
 

@@ -134,6 +134,43 @@ def test_unsafe_handles_fail_closed(tmp_path, monkeypatch, handle):
     assert retirements._fingerprint_handle(str(store_path), handle) is None
 
 
+def test_drive_relative_handle_never_escapes_the_store(tmp_path, monkeypatch):
+    """Windows drive-relative syntax is traversal without a separator.
+
+    ``C:..`` contains no separator and is neither ``.`` nor ``..``, so a
+    hand-rolled "no separators, no dots" rule admits it — but Windows resolves
+    it drive-relative, so the join walks out of the store and hashes whatever
+    it lands on. Only the canonical component policy rejects it.
+    """
+    store_path, _ = _pair(tmp_path, monkeypatch)
+    outside = store_path.parent / "escape.json"
+    outside.write_text("not part of this store", encoding="utf-8")
+
+    for handle in ("C:../escape", "D:/escape", "C:escape"):
+        assert retirements._fingerprint_handle(
+            str(store_path), handle
+        ) is None, f"{handle!r} produced a proof token"
+
+
+@pytest.mark.parametrize(
+    "component,safe",
+    [
+        ("modern", True), ("my.repo", True), ("a-b_c.1", True),
+        ("C:..", False), ("D:", False), ("..", False), ("."  , False),
+        ("", False), ("a/b", False), ("a\\b", False), (None, False),
+    ],
+)
+def test_component_policy_is_one_shared_rule(component, safe):
+    """Store side and record side must agree on what is safe to join."""
+    store = DocStore(base_path="unused")
+    assert retirements.is_safe_path_component(component) is safe
+    if safe:
+        assert store._safe_repo_component(component, "name") == component
+    else:
+        with pytest.raises(ValueError):
+            store._safe_repo_component(component, "name")
+
+
 def test_publication_receipt_is_unique_and_persisted(tmp_path, monkeypatch):
     store_path, store = _pair(tmp_path, monkeypatch)
 

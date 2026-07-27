@@ -39,6 +39,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -92,17 +93,31 @@ def fingerprint_index_file(index_path) -> Optional[str]:
         return None
 
 
+_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def is_safe_path_component(value) -> bool:
+    """Whether ``value`` may be joined into a store path as one component.
+
+    The single definition of the rule, shared with
+    ``DocStore._safe_repo_component``. A hand-rolled second rule is how
+    ``C:..`` slipped through: it contains no separator and is neither ``.``
+    nor ``..``, but Windows treats it as drive-relative, so joining it walks
+    out of the store. Allowing only ``[A-Za-z0-9._-]`` rejects drive letters,
+    separators, and traversal alike, without enumerating platform syntax.
+    """
+    return (
+        isinstance(value, str)
+        and value not in {".", ".."}
+        and _SAFE_COMPONENT_RE.fullmatch(value) is not None
+    )
+
+
 def _fingerprint_handle(base_path, handle: str) -> Optional[str]:
     if not isinstance(handle, str) or "/" not in handle:
         return None
     owner, _, name = handle.partition("/")
-    # A handle reaches the path join only as two ordinary directory-level
-    # names. Anything that could traverse out of the store fails closed here
-    # rather than being hashed from wherever it pointed.
-    if not all(
-        part and part not in {".", ".."} and not set(part) & {"/", "\\"}
-        for part in (owner, name)
-    ):
+    if not is_safe_path_component(owner) or not is_safe_path_component(name):
         return None
     return fingerprint_index_file(
         _retiring_index_path(base_path, owner, name)
