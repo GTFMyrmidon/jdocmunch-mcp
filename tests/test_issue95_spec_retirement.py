@@ -158,7 +158,7 @@ CANONICAL_CLEANUP_INCOMPLETE_TABLES = {
 }
 
 MARKDOWN_ESCAPE_PATTERN = re.compile(r"\\([\\`*_{}\[\]()#+.!|<>-])")
-FENCE_PATTERN = re.compile(r"^\s*(`{3,}|~{3,})")
+FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def _retirement_section_raw(spec_path=SPEC_PATH):
@@ -343,14 +343,24 @@ def _cleanup_incomplete_rows_for_table(text, label):
         if not line.lstrip().startswith("|"):
             break
         table_lines.append(line)
+    table_rows = _markdown_table_rows("\n".join(table_lines))
+    normalized_headers = tuple(
+        _normalize_markdown_surface(cell) for cell in table_rows[0]
+    )
+    assert normalized_headers.count("outcome") == 1
+    outcome_index = normalized_headers.index("outcome")
+    expected_width = len(normalized_headers)
+    assert all(len(cells) == expected_width for cells in table_rows)
     rows = []
-    for cells in _markdown_table_rows("\n".join(table_lines))[2:]:
+    for cells in table_rows[2:]:
         reason_code = _normalize_reason_code(cells[0])
         if reason_code.endswith("_cleanup_incomplete"):
             rows.append(
                 (
                     reason_code,
-                    _normalize_cleanup_incomplete_sentence(cells[-1]),
+                    _normalize_cleanup_incomplete_sentence(
+                        cells[outcome_index]
+                    ),
                 )
             )
     return tuple(rows)
@@ -647,6 +657,45 @@ def test_retirement_spec_rejects_escaped_shadow_reason_code(tmp_path):
     mutated = text.replace(
         git_table_end,
         f"\n{shadow_row}{git_table_end}",
+        1,
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
+
+
+def test_retirement_spec_rejects_extra_cell_hiding_authoritative_outcome(
+    tmp_path,
+):
+    text = SPEC_PATH.read_text(encoding="utf-8")
+    row = next(
+        line
+        for line in text.splitlines()
+        if line.startswith("| `supersession_cleanup_incomplete` |")
+    )
+    cells = [cell.strip() for cell in row.strip("|").split("|")]
+    contradiction = (
+        "Cleanup_incomplete may return after a committed primary unlink."
+    )
+    mutated_row = (
+        f"| {cells[0]} | {contradiction} | {cells[1]} |"
+    )
+    mutated = text.replace(row, mutated_row, 1)
+
+    with pytest.raises(AssertionError):
+        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
+
+
+def test_retirement_spec_rejects_cleanup_prose_after_four_space_fence_marker(
+    tmp_path,
+):
+    text = SPEC_PATH.read_text(encoding="utf-8")
+    contradiction = (
+        "Cleanup_incomplete may return after a committed primary unlink."
+    )
+    mutated = text.replace(
+        SECTION_START,
+        f"{SECTION_START}\n\n    ```\n{contradiction}\n    ```",
         1,
     )
 
