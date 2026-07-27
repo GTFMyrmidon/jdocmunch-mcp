@@ -115,10 +115,11 @@ counts as a match - the doc-path broadening in `_validate_evidence` means
 citing a whole document still attests when one unrelated section from it was
 served. That is phase 2 (evidence receipts), DEFERRED.
 **Shipped from MASTER as a patch (like 1.114.1 / 1.114.2) while
-`coordinated-retirement` (1.115.0) stays HELD for rknighton's re-verification.
-1.115.0 deliberately SKIPPED so the held branch keeps that number; on merge,
-resolve version conflicts to the higher number and keep all CHANGELOG
-entries.**
+`coordinated-retirement` (CHANGELOG entry `[1.115.0]`) stays HELD for
+rknighton's re-verification. 1.115.0 deliberately SKIPPED on master so the held
+branch keeps that CHANGELOG heading; on merge, resolve version conflicts to the
+higher number and keep all CHANGELOG entries.** ⚠ **The shipped version is
+1.120.0+, NOT 1.115.0 — see the label section below.**
 
 ## #93/#95 contribution path DECIDED 2026-07-26: rknighton implements, via PR
 
@@ -146,6 +147,65 @@ SPEC.md drift guard, Path A. Follow-ons: process-interruption durability,
 installed-wheel matrix, frozen-SHA run. **QA-25 was in that scope and we then
 took it — see below. Disclosed on #95 rather than left for him to find, with an
 offer to revert if his local version differs, since he owns the contract.**
+
+## ⚠ "v1.115.0" IS A LABEL, NOT THE SHIPPED VERSION (clarified 2026-07-27)
+
+⚠ **The retirement release ships as 1.120.0 or later. It can never be 1.115.0,
+and the reservation plan never actually said it would be.** Read this before
+writing "v1.115.0" in another release note or issue comment.
+
+What is TRUE: master deliberately skipped 1.115.0 (1.114.2 -> 1.116.0) to reserve
+the number for the held branch, and `CHANGELOG.md` on `coordinated-retirement`
+carries a `[1.115.0]` entry that master's does not. **That part worked as
+designed and the entry STAYS** as the historical record of this branch's work.
+
+What is ALSO true and was being missed: **the branch's `pyproject.toml` has NEVER
+said 1.115.0 — zero occurrences across its entire history** (`git log -p
+coordinated-retirement -- pyproject.toml`). Master merges carried it forward and
+it currently reads 1.119.0. The plan always said "resolve version conflicts to
+the HIGHER number," so the shipped artifact was ALWAYS going to be >= 1.119.0.
+
+⚠ **Publishing 1.115.0 after 1.119.0 would ALSO be self-defeating even if we
+tried: `pip install jdocmunch-mcp` resolves to the HIGHEST version, so the
+retirement work would ship into a version nobody receives by default.**
+
+**How to say it:** "tracked as the 1.115.0 CHANGELOG entry, shipping as 1.120.0."
+Disclosed to rknighton on
+[#95](https://github.com/jgravelle/jdocmunch-mcp/issues/95) 2026-07-27 rather
+than left for him to notice, since he has been verifying something under a name
+that will never appear in `pip show`. ⚠ **Nothing about the harness, the frozen
+oracle, the acceptance criteria or any receipt depends on the number.**
+
+## ⏰ Retirement release TIME-BOXED through 2026-08-02 (set 2026-07-26)
+
+⚠ **ACTION DUE 2026-08-02.** The release was gated on an unpaid volunteer's
+re-verification with no deadline, holding #80/#89/#90 open indefinitely. That is
+our design error, not his. Posted on
+[#95](https://github.com/jgravelle/jdocmunch-mcp/issues/95#issuecomment-5083861358)
++ [#90](https://github.com/jgravelle/jdocmunch-mcp/issues/90#issuecomment-5083862220).
+
+**If his re-verification/PR lands by 2026-08-02** it is the gate, as agreed.
+**If it does not**, release on his pre-registered harness green at a frozen SHA,
+with the release notes carrying VERBATIM: *"Verified against the reviewer's
+pre-registered lifecycle harness at a frozen SHA. Not independently re-verified
+by its author."* ⚠ **That exact wording is the point** — jjg promised on #90 that
+QA-17 would not be self-certified, and a harness pass is a WEAKER claim than his
+sign-off. Label it as weaker; never let the changelog blur the two.
+
+⚠ **Nothing expires.** Findings stay credited by ID, issues stay open, and a
+re-verification arriving AFTER the box still counts in full — correct anything it
+contradicts, in a follow-up release if needed. He was also told explicitly he may
+hand back QA-19/QA-23/QA-21 at no cost, because a clear no beats an open-ended
+maybe.
+
+**Engagement data behind the decision (2026-07-26):** he is NOT disengaged — his
+median turnaround is **3.1h vs our 6.7h**, his longest self-gap in the arc is
+50.3h and he broke it unprompted, and he filed #95 with 5 attachments 14.4h
+before this was written. ⚠ **His activity clusters at UTC 00-04 and 17-23, so
+posts landing 13:00-14:00 UTC sit in his off-hours** — silence there is his
+normal pattern, not a warning sign. **We have been the slower party**; he had to
+re-raise the contribution-path question in #95 before we answered ~20h later.
+The time-box exists to stop OUR latency becoming HIS obligation.
 
 ## QA-25 SHIPPED by us 2026-07-26 (`8d15897`): intent is stated, never inferred
 
