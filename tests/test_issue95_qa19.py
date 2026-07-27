@@ -322,23 +322,108 @@ def test_guarded_delete_requires_a_current_publication(tmp_path, monkeypatch):
 def test_empty_expected_fingerprints_never_authorize_a_delete(
     tmp_path, monkeypatch
 ):
-    """An empty proof asserts nothing and must not degrade to unguarded.
+    """An empty proof asserts nothing, receipt or no receipt.
 
-    ``expected_fingerprints={}`` selects the guarded path (any dict does), so
-    it needs a publication receipt like every other guarded delete and fails
-    closed without one. Before Issue #95 the emptiness itself was read as
-    "unguarded" and the index was removed with no proof at all.
+    Two distinct refusals, and the second is the one that matters. Without a
+    receipt the call is rejected for the missing receipt. WITH a valid
+    receipt, an empty map must still be refused — otherwise the receipt is a
+    password rather than a proof, and its holder can authorize a commit while
+    asserting nothing about either participant.
     """
     store_path, store = _pair(tmp_path, monkeypatch)
 
+    # No receipt.
     with pytest.raises(RetirementConflict):
         store.delete_index(
             "local", "old", expected_fingerprints={}, lock_wait=False
         )
-
     assert store.load_index("local", "old") is not None
+
+    # Valid receipt, empty proof. Red against 914a285, which returned True
+    # and removed the retiring index.
+    publication = _publish(store_path, store)
+    assert publication
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local", "old",
+            expected_fingerprints={},
+            retirement_publication=publication,
+            lock_wait=True,
+        )
+    assert store.load_index("local", "old") is not None
+    assert store.load_index("local", "modern") is not None
+
     # Omitting the argument entirely still selects the unguarded path.
     assert store.delete_index("local", "old", lock_wait=False) is True
+
+
+def test_partial_proof_cannot_hide_a_changed_retained_peer(
+    tmp_path, monkeypatch
+):
+    """The gate verifies the DURABLE proof, not the caller's copy of it.
+
+    The publication records fingerprints for both participants. A caller that
+    supplies only the retiring handle's fingerprint would, if the gate trusted
+    the argument, commit without ever looking at the retained peer — so a peer
+    that changed after publication goes unnoticed and AC-02 is violated.
+
+    The peer is mutated on disk rather than through ``save_index`` so no
+    record-voiding path runs: the publication stays current and the ONLY thing
+    standing between the caller and an unauthorized commit is proof binding.
+    Red against 914a285, which returned True.
+    """
+    store_path, store = _pair(tmp_path, monkeypatch)
+    fingerprints = _fingerprints(store)
+    publication = retirements.begin_retirement(
+        str(store_path), "local", "old",
+        retained="local/modern", fingerprints=fingerprints, family="qa19",
+    )
+    assert publication
+
+    retained_path = store._index_path("local", "modern")
+    data = json.loads(retained_path.read_text(encoding="utf-8"))
+    data["source_dirty"] = not data.get("source_dirty", False)
+    retained_path.write_text(
+        json.dumps(data, separators=(",", ":")), encoding="utf-8"
+    )
+    assert store.index_fingerprint("local", "modern") != (
+        fingerprints["local/modern"]
+    )
+    assert retirements.retirement_record(
+        str(store_path), "local", "old"
+    )["publication_id"] == publication
+
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local", "old",
+            expected_fingerprints={"local/old": fingerprints["local/old"]},
+            retirement_publication=publication,
+            lock_wait=True,
+        )
+
+    assert store.load_index("local", "old") is not None
+
+
+def test_altered_proof_values_are_refused(tmp_path, monkeypatch):
+    """A map with the right keys but a wrong value is not the published one."""
+    store_path, store = _pair(tmp_path, monkeypatch)
+    fingerprints = _fingerprints(store)
+    publication = _publish(store_path, store)
+    assert publication
+
+    altered = dict(fingerprints)
+    altered["local/modern"] = "0" * 64
+
+    with pytest.raises(RetirementConflict):
+        store.delete_index(
+            "local", "old",
+            expected_fingerprints=altered,
+            retirement_publication=publication,
+            lock_wait=True,
+        )
+
+    assert store.load_index("local", "old") is not None
+    assert store.load_index("local", "modern") is not None
 
 
 def test_guarded_delete_rejects_an_unreadable_publication(

@@ -1705,21 +1705,34 @@ class DocStore:
                 [(entry_record or {}).get("retained") or f"{owner}/{name}"]
             )
 
-        def _authorized() -> bool:
-            current = retirement_record(self.base_path, owner, name)
-            return (
-                current is not None
-                and current.get("publication_id") == expected_publication
-            )
+        def _published_proof(current: Optional[dict]) -> dict:
+            """The durable proof this publication actually authorizes.
+
+            The receipt and the proof travel together or the receipt means
+            nothing: a caller holding a valid publication_id could otherwise
+            hand in an empty or partial map and have the gate verify only the
+            handles it chose to mention, so a changed retained peer would go
+            unnoticed. The record's own map is the authority, and the caller's
+            copy must equal it exactly.
+            """
+            if (
+                current is None
+                or current.get("publication_id") != expected_publication
+            ):
+                raise _publication_conflict()
+            published = current.get("fingerprints")
+            if (
+                not isinstance(published, dict)
+                or not published
+                or published != expected_fingerprints
+            ):
+                raise _publication_conflict()
+            return published
 
         try:
             with hold_record_lock(self.base_path, owner, name):
                 record = retirement_record(self.base_path, owner, name)
-                if (
-                    record is None
-                    or record.get("publication_id") != expected_publication
-                ):
-                    raise _publication_conflict()
+                _published_proof(record)
                 retained = record.get("retained")
                 with self._gate_retained_handle(
                     retained, owner, name
@@ -1728,13 +1741,15 @@ class DocStore:
                         raise RetirementConflict(
                             [retained or f"{owner}/{name}"]
                         )
-                    changed = self._verify_expected_fingerprints(
-                        expected_fingerprints
+                    # Re-read under the gate and verify the DURABLE map, not
+                    # the caller's argument, so the authority that authorizes
+                    # the unlink is the same object that recorded the proof.
+                    published = _published_proof(
+                        retirement_record(self.base_path, owner, name)
                     )
+                    changed = self._verify_expected_fingerprints(published)
                     if changed:
                         raise RetirementConflict(changed)
-                    if not _authorized():
-                        raise _publication_conflict()
 
                     _evict_index_cache(index_path)
                     index_path.unlink()
@@ -1906,6 +1921,13 @@ class DocStore:
         if guarded_retirement and (
             entry_record is None
             or entry_record.get("publication_id") != expected_publication
+            # Fast rejection of a proof this publication does not authorize.
+            # The final gate repeats it under the record lock; refusing here
+            # keeps auxiliary artifacts intact when the mismatch is already
+            # visible.
+            or not isinstance(entry_record.get("fingerprints"), dict)
+            or not entry_record.get("fingerprints")
+            or entry_record.get("fingerprints") != expected_fingerprints
         ):
             raise RetirementConflict([f"{owner}/{name}"])
 
