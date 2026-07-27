@@ -461,16 +461,15 @@ signal and emits none of the four `retirement_cleanup_*` fields.
 | Field | JSON type | Allowed values | Meaning |
 |---|---|---|---|
 | `retirement_cleanup_pending` | `boolean` | `false`, `true` | True when durable record state remains readable or unreadable; false only when it is absent. |
-| `retirement_completion_marker_persisted` | `boolean` | `false`, `true` | True only when the exact publication durably records `completion_pending=true`; false otherwise. |
-| `retirement_cleanup_record_state` | `string` | `absent`, `readable`, `unreadable` | Observed durable retirement-record state after the completion and marker attempts. |
+| `retirement_cleanup_record_state` | `string` | `absent`, `readable`, `unreadable` | Observed durable retirement-record state after the completion attempt. |
 | `retirement_cleanup_owned` | `boolean` | `false`, `true` | True only for a readable record whose `publication_id` equals the exact completing publication; false for absent, unreadable, or replacement state. |
 
 `retirement_cleanup_pending` is derived from
 `retirement_cleanup_record_state`: it is false for `absent` and true for
 `readable` or `unreadable`. `retirement_cleanup_owned` is false when the record
-is absent, unreadable, or belongs to a replacement publication. A true
-`retirement_completion_marker_persisted` describes only the exact completing
-publication.
+is absent, unreadable, or belongs to a replacement publication. The fields
+report observed durable state only; the failed completion adds no further
+durable write while the record lock and retained gate are still held.
 
 ##### Retirement commit outcome matrix
 

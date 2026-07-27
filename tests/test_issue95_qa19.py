@@ -341,13 +341,11 @@ def test_completion_unlink_failure_reports_retired_with_pending_cleanup(
     )
     assert set(cleanup_schema) == {
         "retirement_cleanup_pending",
-        "retirement_completion_marker_persisted",
         "retirement_cleanup_record_state",
         "retirement_cleanup_owned",
     }
     assert {field: block[field] for field in cleanup_schema} == {
         "retirement_cleanup_pending": True,
-        "retirement_completion_marker_persisted": True,
         "retirement_cleanup_record_state": "readable",
         "retirement_cleanup_owned": True,
     }
@@ -416,32 +414,29 @@ def test_conflict_cleanup_failure_uses_precommit_pending_signal(
     assert store.load_index("local", "modern") is not None
 
 
-def test_marker_persistence_failure_is_disclosed_from_durable_state(
+def test_unreadable_record_after_commit_is_disclosed_as_unowned(
     tmp_path, monkeypatch
 ):
+    """Disclosure reports OBSERVED durable state, not what the commit assumed.
+
+    The completion unlink fails and the record becomes unparseable in the same
+    step, so the emitter cannot confirm the publication it just completed. It
+    must say so — ``unreadable`` and not owned — rather than reporting the
+    publication identity it was holding in memory.
+    """
     _, worktree, _, store_path = legacy._standard_pair(
         tmp_path, monkeypatch
     )
     record_path = store_path / "local" / ".retirements" / "old.json"
     real_unlink = type(record_path).unlink
-    real_replace = retirements.os.replace
-    record_replacements = 0
 
-    def fail_record_unlink(path, *args, **kwargs):
+    def corrupt_then_fail_unlink(path, *args, **kwargs):
         if path == record_path:
+            path.write_text("{truncated", encoding="utf-8")
             raise OSError("injected publication completion failure")
         return real_unlink(path, *args, **kwargs)
 
-    def fail_marker_replace(source, destination, *args, **kwargs):
-        nonlocal record_replacements
-        if destination == record_path:
-            record_replacements += 1
-            if record_replacements > 1:
-                raise OSError("injected completion marker failure")
-        return real_replace(source, destination, *args, **kwargs)
-
-    monkeypatch.setattr(type(record_path), "unlink", fail_record_unlink)
-    monkeypatch.setattr(retirements.os, "replace", fail_marker_replace)
+    monkeypatch.setattr(type(record_path), "unlink", corrupt_then_fail_unlink)
 
     result = legacy._index(
         worktree / "docs",
@@ -452,13 +447,10 @@ def test_marker_persistence_failure_is_disclosed_from_durable_state(
 
     block = result["legacy_reconciliation"]
     assert block["reason_code"] == wc.REASON_LEGACY_RECONCILED
-    assert block.get("retirement_cleanup_pending") is True
-    assert block.get("retirement_completion_marker_persisted") is False
-    record = retirements.pending_retirement(
-        str(store_path), "local", "old"
-    )
-    assert record is not None
-    assert record.get("completion_pending") is not True
+    assert block["retirement_cleanup_pending"] is True
+    assert block["retirement_cleanup_record_state"] == "unreadable"
+    assert block["retirement_cleanup_owned"] is False
+    # The commit itself still stands: primary gone, retained peer intact.
     store = DocStore(base_path=str(store_path))
     assert store.load_index("local", "old") is None
     assert store.load_index("local", "modern") is not None

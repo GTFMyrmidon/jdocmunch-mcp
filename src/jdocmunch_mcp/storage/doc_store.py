@@ -41,9 +41,9 @@ DELETE_REASON_CODES = {
 }
 
 # Additive disclosure emitted only when a guarded retirement committed its
-# primary unlink but exact-publication record completion did not finish.
-# Field order is stable so the emitter can derive every public field name from
-# this lower-layer authority.
+# primary unlink but exact-publication record completion did not finish. This
+# is the single authority for the field names, types, and meanings that
+# SPEC.md publishes and the drift guard checks.
 RETIREMENT_CLEANUP_OUTCOME_SCHEMA = {
     "retirement_cleanup_pending": {
         "json_type": "boolean",
@@ -53,20 +53,12 @@ RETIREMENT_CLEANUP_OUTCOME_SCHEMA = {
             "false only when it is absent."
         ),
     },
-    "retirement_completion_marker_persisted": {
-        "json_type": "boolean",
-        "allowed_values": ("false", "true"),
-        "meaning": (
-            "True only when the exact publication durably records "
-            "completion_pending=true; false otherwise."
-        ),
-    },
     "retirement_cleanup_record_state": {
         "json_type": "string",
         "allowed_values": ("absent", "readable", "unreadable"),
         "meaning": (
             "Observed durable retirement-record state after the completion "
-            "and marker attempts."
+            "attempt."
         ),
     },
     "retirement_cleanup_owned": {
@@ -1939,48 +1931,38 @@ class DocStore:
                             if outcome is not None:
                                 outcome["_primary_unlink_committed"] = True
                             from .retirements import (
-                                _retirement_record_state,
-                                finish_retirement,
-                                mark_retirement_completion_pending,
+                                _retirement_record_state, finish_retirement,
                             )
-                            retirement_completion_failed = not finish_retirement(
-                                self.base_path,
-                                owner,
-                                name,
-                                publication_id=expected_publication,
-                                _lock_held=True,
+                            # Nothing after the unlink may add durable writes
+                            # to this critical section: the record lock and
+                            # the retained gate are both still held, and the
+                            # unlink that just failed is evidence the store is
+                            # already unhealthy. Read the durable state, tell
+                            # the caller, and get out.
+                            retirement_completion_failed = (
+                                not finish_retirement(
+                                    self.base_path, owner, name,
+                                    publication_id=expected_publication,
+                                    _lock_held=True,
+                                )
                             )
-                            if retirement_completion_failed:
-                                marker_persisted = (
-                                    mark_retirement_completion_pending(
-                                        self.base_path,
-                                        owner,
-                                        name,
-                                        publication_id=expected_publication,
-                                        _lock_held=True,
-                                    )
+                            if retirement_completion_failed and (
+                                outcome is not None
+                            ):
+                                state, record = _retirement_record_state(
+                                    self.base_path, owner, name
                                 )
-                                record_state, durable_record = (
-                                    _retirement_record_state(
-                                        self.base_path, owner, name
-                                    )
+                                outcome.update(
+                                    retirement_cleanup_pending=(
+                                        state != "absent"
+                                    ),
+                                    retirement_cleanup_record_state=state,
+                                    retirement_cleanup_owned=(
+                                        record is not None
+                                        and record.get("publication_id")
+                                        == expected_publication
+                                    ),
                                 )
-                                if outcome is not None:
-                                    cleanup_values = (
-                                        record_state != "absent",
-                                        marker_persisted,
-                                        record_state,
-                                        durable_record is not None
-                                        and durable_record.get("publication_id")
-                                        == expected_publication,
-                                    )
-                                    outcome.update(
-                                        zip(
-                                            RETIREMENT_CLEANUP_OUTCOME_SCHEMA,
-                                            cleanup_values,
-                                            strict=True,
-                                        )
-                                    )
                 except RetirementRecordLockError:
                     raise RetirementConflict([f"{owner}/{name}"])
             else:
