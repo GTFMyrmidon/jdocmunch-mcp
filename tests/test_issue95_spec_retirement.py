@@ -95,17 +95,6 @@ ABSENT_MONOLITH_CONTRADICTIONS = (
     "non-retired result with an absent monolith",
 )
 
-CLEANUP_INCOMPLETE_CONTRADICTIONS = (
-    (
-        "Following a successful primary unlink, the operation can still "
-        "return cleanup_incomplete."
-    ),
-    (
-        "The primary index can be unlinked before a cleanup-incomplete "
-        "response is returned."
-    ),
-)
-
 CLEANUP_INCOMPLETE_PATTERN = re.compile(
     r"cleanup[-_]incomplete",
     re.IGNORECASE,
@@ -462,110 +451,50 @@ def test_retirement_commit_outcome_matrix_is_complete_and_consistent():
             assert row["Retiring monolith"] == "loadable"
 
 
-@pytest.mark.parametrize(
-    "claim",
-    (
-        *ABSENT_MONOLITH_CONTRADICTIONS,
-        *CLEANUP_INCOMPLETE_CONTRADICTIONS,
-    ),
-)
-def test_retirement_spec_rejects_explicit_contradictions(claim):
+@pytest.mark.parametrize("claim", ABSENT_MONOLITH_CONTRADICTIONS)
+def test_retirement_spec_rejects_absent_monolith_claims(claim):
+    """Exact-phrase tripwire for the one claim family with no inventory pin.
+
+    Unlike cleanup-incomplete prose, "absent monolith" claims have no
+    canonical sentence set to pin against, so this is a named-phrase check
+    that cannot catch a reworded equivalent. A tripwire, not a proof.
+    """
     _assert_retirement_contract()
     with pytest.raises(AssertionError, match="contains contradictions"):
         _assert_no_contradictions(_retirement_section_raw() + "\n" + claim)
 
 
-def test_retirement_spec_rejects_same_paragraph_cleanup_contradiction():
-    section = _retirement_section_raw()
-    paragraph = next(
-        value
-        for value in re.split(r"\n\s*\n", section)
-        if "cleanup-incomplete reason codes"
-        in " ".join(value.split()).lower()
-        and "never follows a committed primary unlink"
-        in " ".join(value.split()).lower()
-    )
-    contradiction = (
-        "Nevertheless, after a committed primary unlink, the operation may "
-        "return cleanup_incomplete."
-    )
-    mutated = section.replace(paragraph, f"{paragraph} {contradiction}")
-
-    with pytest.raises(AssertionError, match="contains contradictions"):
-        _assert_no_contradictions(mutated)
-
-
 @pytest.mark.parametrize(
-    "contradiction",
+    "sentence",
     (
+        "Cleanup_incomplete may return after a committed primary unlink.",
         (
             "Cleanup_incomplete may follow a committed primary unlink and "
             "never requires manual repair."
         ),
         (
-            "Cleanup_incomplete may follow a committed primary unlink, "
-            "because a pre-commit check only records diagnostics."
-        ),
-    ),
-)
-def test_retirement_spec_rejects_unrelated_cleanup_qualifiers(
-    contradiction,
-):
-    with pytest.raises(AssertionError, match="contains contradictions"):
-        _assert_no_contradictions(
-            _retirement_section_raw() + "\n" + contradiction
-        )
-
-
-@pytest.mark.parametrize(
-    "contradiction",
-    (
-        (
             "Cleanup_incomplete never follows a committed primary unlink but "
             "cleanup_incomplete may return after a committed primary unlink."
         ),
         (
-            "Cleanup_incomplete may follow a committed primary unlink while "
-            "monitoring runs only before the primary unlink."
+            "Only before the primary unlink may cleanup-incomplete occur "
+            "after a committed primary unlink."
         ),
     ),
 )
-def test_retirement_spec_rejects_cross_occurrence_qualifiers(
-    contradiction,
-):
+def test_any_added_cleanup_incomplete_sentence_fails_the_inventory(sentence):
+    """The guard pins the inventory; it does not judge meaning.
+
+    Cleanup-incomplete prose is protected by pinning the COMPLETE set of
+    sentences that mention it, so ANY addition fails — contradictory,
+    redundant, or merely new. That is what makes the guard sound: scanning for
+    specific contradictory phrasings could never be complete, because a
+    contradiction can always be reworded. These cases sample the property;
+    they are not the list of phrasings it covers.
+    """
     with pytest.raises(AssertionError, match="contains contradictions"):
         _assert_no_contradictions(
-            _retirement_section_raw() + "\n" + contradiction
-        )
-
-
-@pytest.mark.parametrize(
-    "contradiction",
-    (
-        (
-            "Cleanup_incomplete never follows a committed primary unlink and "
-            "may return after a committed primary unlink."
-        ),
-        (
-            "Cleanup_incomplete occurs only before the primary unlink and may "
-            "return after a committed primary unlink."
-        ),
-        (
-            "Only before the primary unlink may cleanup-incomplete occur after "
-            "a committed primary unlink."
-        ),
-        (
-            "After a committed primary unlink, cleanup_incomplete cannot occur "
-            "but may return after a committed primary unlink."
-        ),
-    ),
-)
-def test_retirement_spec_rejects_noncanonical_cleanup_claims(
-    contradiction,
-):
-    with pytest.raises(AssertionError, match="contains contradictions"):
-        _assert_no_contradictions(
-            _retirement_section_raw() + "\n" + contradiction
+            _retirement_section_raw() + "\n" + sentence
         )
 
 
@@ -575,129 +504,98 @@ def _write_mutated_spec(tmp_path, text):
     return spec_path
 
 
-def test_retirement_spec_rejects_cleanup_prose_after_section_boundary(
-    tmp_path,
-):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    contradiction = (
-        "Cleanup_incomplete may return after a committed primary unlink."
+CONTRADICTION = (
+    "Cleanup_incomplete may return after a committed primary unlink."
+)
+GIT_TABLE_END = "\n\n**`reconciliation.reason_code`**"
+
+
+def _authoritative_row(text):
+    return next(
+        line
+        for line in text.splitlines()
+        if line.startswith("| `supersession_cleanup_incomplete` |")
     )
-    mutated = text.replace(
-        SECTION_END,
-        f"{SECTION_END}\n\n{contradiction}",
-        1,
-    )
-
-    with pytest.raises(AssertionError):
-        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
 
 
-def test_retirement_spec_rejects_escaped_cleanup_prose(tmp_path):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    contradiction = (
+def _after_section_boundary(text):
+    """Drift parked just outside the section, still inside the document."""
+    return text.replace(SECTION_END, f"{SECTION_END}\n\n{CONTRADICTION}", 1)
+
+
+def _markdown_escaped(text):
+    """An escaped underscore renders identically to a reader."""
+    escaped = (
         "Cleanup\\_incomplete may return after a committed primary unlink."
     )
-    mutated = text.replace(
+    return text.replace(SECTION_START, f"{SECTION_START}\n\n{escaped}", 1)
+
+
+def _indented_fence(text):
+    """Four spaces open an indented code block, not a fence — still visible."""
+    return text.replace(
         SECTION_START,
-        f"{SECTION_START}\n\n{contradiction}",
+        f"{SECTION_START}\n\n    ```\n{CONTRADICTION}\n    ```",
         1,
     )
 
-    with pytest.raises(AssertionError):
-        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
 
-
-def test_retirement_spec_rejects_reason_code_moved_to_wrong_table(tmp_path):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    row = next(
-        line
-        for line in text.splitlines()
-        if line.startswith("| `supersession_cleanup_incomplete` |")
-    )
-    mutated = text.replace(f"{row}\n", "", 1)
-    git_table_end = (
-        "\n\n**`reconciliation.reason_code`**"
-    )
-    mutated = mutated.replace(
-        git_table_end,
-        f"\n{row}{git_table_end}",
-        1,
+def _reason_code_in_wrong_table(text):
+    """An authoritative row relocated under a different table label."""
+    row = _authoritative_row(text)
+    return text.replace(f"{row}\n", "", 1).replace(
+        GIT_TABLE_END, f"\n{row}{GIT_TABLE_END}", 1
     )
 
-    with pytest.raises(AssertionError):
-        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
 
-
-def test_retirement_spec_rejects_contradictory_authoritative_row(tmp_path):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    row = next(
-        line
-        for line in text.splitlines()
-        if line.startswith("| `supersession_cleanup_incomplete` |")
-    )
-    contradiction = (
+def _contradiction_appended_to_row(text):
+    """Drift smuggled onto the end of an otherwise correct row."""
+    row = _authoritative_row(text)
+    appended = (
         " Nevertheless, after a committed primary unlink, the operation may "
         "return cleanup_incomplete."
     )
-    mutated_row = row[:-1].rstrip() + contradiction + " |"
-    mutated = text.replace(row, mutated_row, 1)
-
-    with pytest.raises(AssertionError):
-        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
+    return text.replace(row, row[:-1].rstrip() + appended + " |", 1)
 
 
-def test_retirement_spec_rejects_escaped_shadow_reason_code(tmp_path):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    shadow_row = (
-        "| `shadow_cleanup\\_incomplete` | A visible shadow outcome. |"
-    )
-    git_table_end = (
-        "\n\n**`reconciliation.reason_code`**"
-    )
-    mutated = text.replace(
-        git_table_end,
-        f"\n{shadow_row}{git_table_end}",
-        1,
-    )
-
-    with pytest.raises(AssertionError):
-        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
+def _escaped_shadow_reason_code(text):
+    """A fourth reason code that renders like one of the real three."""
+    shadow = "| `shadow_cleanup\\_incomplete` | A visible shadow outcome. |"
+    return text.replace(GIT_TABLE_END, f"\n{shadow}{GIT_TABLE_END}", 1)
 
 
-def test_retirement_spec_rejects_extra_cell_hiding_authoritative_outcome(
-    tmp_path,
-):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    row = next(
-        line
-        for line in text.splitlines()
-        if line.startswith("| `supersession_cleanup_incomplete` |")
-    )
+def _extra_cell_hiding_the_outcome(text):
+    """An inserted column, so the last cell is no longer the outcome."""
+    row = _authoritative_row(text)
     cells = [cell.strip() for cell in row.strip("|").split("|")]
-    contradiction = (
-        "Cleanup_incomplete may return after a committed primary unlink."
+    return text.replace(
+        row, f"| {cells[0]} | {CONTRADICTION} | {cells[1]} |", 1
     )
-    mutated_row = (
-        f"| {cells[0]} | {contradiction} | {cells[1]} |"
-    )
-    mutated = text.replace(row, mutated_row, 1)
-
-    with pytest.raises(AssertionError):
-        _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
 
 
-def test_retirement_spec_rejects_cleanup_prose_after_four_space_fence_marker(
-    tmp_path,
-):
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    contradiction = (
-        "Cleanup_incomplete may return after a committed primary unlink."
-    )
-    mutated = text.replace(
-        SECTION_START,
-        f"{SECTION_START}\n\n    ```\n{contradiction}\n    ```",
-        1,
-    )
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        _after_section_boundary,
+        _markdown_escaped,
+        _indented_fence,
+        _reason_code_in_wrong_table,
+        _contradiction_appended_to_row,
+        _escaped_shadow_reason_code,
+        _extra_cell_hiding_the_outcome,
+    ),
+    ids=lambda mutate: mutate.__name__.lstrip("_"),
+)
+def test_retirement_spec_guard_reads_what_a_reader_sees(tmp_path, mutate):
+    """Each case defeats a different part of the guard's reader model.
+
+    The guard has to decide what a reader actually SEES: which lines sit
+    inside a real fence, how markdown escapes render, and which column carries
+    the authoritative outcome. A mutation slipping past any of those would let
+    SPEC.md drift while this suite stayed green, so each model is pinned once
+    here rather than as its own near-identical test.
+    """
+    mutated = mutate(SPEC_PATH.read_text(encoding="utf-8"))
 
     with pytest.raises(AssertionError):
         _assert_retirement_contract(_write_mutated_spec(tmp_path, mutated))
