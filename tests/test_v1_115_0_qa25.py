@@ -133,3 +133,80 @@ def test_every_contention_sensitive_caller_states_its_intent():
                 f"one because {why}."
             )
     assert not problems, "jdoc#95 QA-25 violations:\n" + "\n".join(problems)
+
+# ── exhaustiveness (jdoc#98) ────────────────────────────────────────────────
+# The guard above is a PRESENCE check and says so. It proves the sites we knew
+# about still state their intent; it cannot fail when a NEW contention-sensitive
+# caller arrives with no policy at all, which is the drift QA-25 exists to catch.
+#
+# This closes that, for production code only. Every `delete_index` call under
+# src/ must either pass `lock_wait` explicitly or be named here with a reason.
+# Silence stops being an option: adding a caller forces a human to state intent
+# one way or the other, which IS QA-25 ("intent is stated by the caller, never
+# inferred").
+#
+# Tests are deliberately out of scope. Their setup and teardown deletes are
+# first acquirers where the flag cannot change the outcome, and demanding it
+# there would be the noise the guard above already declined to create.
+#
+# The exemption map is empty on purpose. If a genuinely uncontended production
+# delete ever appears, add it WITH its reason rather than loosening the rule.
+UNCONTENDED_EXEMPT: dict[tuple[Path, str, str], str] = {}
+
+
+def test_every_production_delete_states_a_wait_policy():
+    """No production `delete_index` call may leave `lock_wait` unstated."""
+    unstated = []
+    for path in sorted(SRC_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]:
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not (
+                    isinstance(func, ast.Attribute) and func.attr == "delete_index"
+                ):
+                    continue
+                if any(kw.arg == "lock_wait" for kw in node.keywords):
+                    continue
+                key = (path, fn.name, ast.unparse(func))
+                if key in UNCONTENDED_EXEMPT:
+                    continue
+                unstated.append(
+                    f"  {path.relative_to(SRC_DIR)}::{fn.name}() line {node.lineno}"
+                )
+
+    assert not unstated, (
+        "production delete_index call(s) with no explicit lock_wait:\n"
+        + "\n".join(unstated)
+        + "\n\njdoc#95 QA-25 / jdoc#98: a contention-sensitive caller states "
+        "whether it waits or refuses; the lock never deduces intent. Pass "
+        "lock_wait=True (this caller waits for a handle that will be released) "
+        "or lock_wait=False (this caller refuses fast with "
+        "index_lifecycle_busy). If the call is genuinely uncontended, add it to "
+        "UNCONTENDED_EXEMPT with the reason it cannot matter."
+    )
+
+
+def test_the_exhaustiveness_guard_is_not_vacuous():
+    """A guard over zero call sites would pass forever and prove nothing."""
+    found = 0
+    for path in sorted(SRC_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "delete_index"
+            ):
+                found += 1
+    assert found >= 2, (
+        f"only {found} production delete_index call site(s) found; the "
+        "exhaustiveness guard above is walking the wrong tree or the calls "
+        "moved out of src/"
+    )
