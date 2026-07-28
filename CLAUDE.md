@@ -1,8 +1,15 @@
 # jdocmunch-mcp
 
-**Version:** 1.119.0 + unreleased branch `coordinated-retirement` @ `8d15897`
-(#93 arc, NOT published; master merged up through 1.119.0; all 8 CI jobs green,
-head HELD for rknighton's PR) | **Tests:** `PYTHONPATH=src pytest tests/ -q`
+**Version:** 1.119.0 + unreleased branch `coordinated-retirement` @ `9721807`
+(#93/#95 arc, NOT published; master merged up through 1.119.0) |
+**Tests:** `PYTHONPATH=src pytest tests/ -q`
+
+⚠ The branch head is no longer held: **PR #97 (rknighton) merged 2026-07-28**,
+placing the #95 Path A candidate on the branch. Tests (8/8 matrix) and Replay
+are green at `9721807` on both `pull_request` and `workflow_dispatch`.
+**#92 remains the held vehicle into `master` — merging to this branch is not a
+ship**, and the #95 release gate (independent re-verification, time-box
+2026-08-02) is unchanged.
 
 ## v1.119.0 — 5th absence refusal rule: a rebuild underneath a scan cannot prove absence
 
