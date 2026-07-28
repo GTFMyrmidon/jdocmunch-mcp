@@ -2,6 +2,50 @@
 
 **Version:** 1.119.0 | **Tests:** `pytest tests/ -q`
 
+## Held branch + release gate (read before shipping anything)
+
+⚠ **`coordinated-retirement` is HELD and holds the number 1.115.0.** `master`
+ships patches around it (1.114.1, 1.114.2, 1.116.0+). On merge, resolve version
+conflicts to the HIGHER number and keep every CHANGELOG entry. ⚠ **The
+retirement work SHIPS as 1.120.0+ — "v1.115.0" is a CHANGELOG heading, not a
+release number.**
+
+⚠ **[#95](https://github.com/jgravelle/jdocmunch-mcp/issues/95) is the SINGLE
+gate** (@rknighton; #80/#89/#90/#93 were all consolidated into it). Binding,
+carried verbatim:
+
+- Time-box through **2026-08-02**. Nothing expires; a later re-verification
+  counts in full.
+- If re-verification misses it, release notes carry WORD FOR WORD: *"Verified
+  against the reviewer's pre-registered lifecycle harness at a frozen SHA. Not
+  independently re-verified by its author."* ⚠ Deliberately WEAKER than a
+  sign-off — never let the changelog blur the two.
+
+**PR #97 MERGED 2026-07-28 as `9721807` to `coordinated-retirement`** (QA-19
+commit-scoped authority, QA-23 caller-derived wait, QA-21 lockfile preservation,
+public `reason_code` vocabulary). His frozen harness was re-downloaded from the
+#95 attachment and re-run here, not transcribed: 4F/3P at `3709d21`, 7/7 at
+`03d9762`; suite 1963 passed / 8 skipped on Python 3.10.11 + NumPy 1.26.4, which
+closes the 3.10 gap he had labelled historical. Four green runs at the merged
+SHA, Tests 8/8 matrix. History left UNSQUASHED on purpose — the
+intermediate-commit non-vacuity table is only checkable per-commit.
+
+⚠⚠ **MERGING IS NOT SHIPPING AND REVIEWING IS NOT THE GATE.** `coordinated-retirement`
+is the staging target; **#92 stays held as the vehicle into `master`**. Two
+review questions remain open on #97 and non-blocking: `begin_retirement` now
+takes `hold_record_lock(blocking=True)`, reaching the unbounded Windows
+`LK_LOCK` retry loop; and `void_retirements_referencing` leaves a corrupt record
+inert but PERMANENT.
+
+⚠ **The QA harness is an ISSUE ATTACHMENT, not a repo file** — `find` in the
+tree returns nothing. Pull it from the #95 body links, copy into `tests/` to
+run, then DELETE it.
+
+⚠ **State that lives only on a PR is state the gate does not carry.** On
+2026-07-28 every substantive point was answered on #97 and NOT on #95, leaving
+the gate of record showing "Ready for your review" as its last word. Mirror PR
+outcomes back to #95.
+
 ## v1.119.0 — 5th absence refusal rule: a rebuild underneath a scan cannot prove absence
 
 Suite parity with jcm v1.108.168. v1.117.0's four rules (only `absent`;
