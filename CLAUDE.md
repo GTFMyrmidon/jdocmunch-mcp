@@ -2,6 +2,41 @@
 
 **Version:** 1.119.0 | **Tests:** `pytest tests/ -q`
 
+## Issue + release policy (suite-wide, 2026-07-28)
+
+**1. One issue, one verdict.** A multi-finding report gets SPLIT at triage into
+one issue per finding, cross-linked, credit on each. Detail is not discouraged;
+the reason is closure mechanics. A 4-finding issue closes only when the last one
+settles, so three finished fixes sit behind one unfinished conversation.
+
+⚠⚠ **THIS REPO IS WHERE THE LESSON CAME FROM.** On 2026-07-27 five issues
+(#80/#89/#90/#93) were CONSOLIDATED into one gate, #95. That cut the open count
+from 5 to 1 and manufactured a single artifact with the power to block a
+release, which is exactly what it then did. **Tracker-tidiness and granularity
+pull in opposite directions; do not optimize the count.**
+
+**2. A release is NEVER blocked on an open issue**, including a verification we
+asked for. Done + tested + green ships on schedule, carrying a plain
+verification-status line. The #95 sentence is the canonical template and is
+deliberately WEAKER than a sign-off; never blur the two in a changelog. Late
+re-verification counts IN FULL and is announced retroactively. Nothing expires.
+**Every timebox names its default action** ("verification by X, or Y ships with
+disclosure Z").
+
+⚠ **A reviewer's thoroughness must never become a veto.** If being careful can
+stall a release, careful review becomes expensive to accept, which is backwards.
+
+**3. A contributor's PR is never the only path.** Timebox and keep our own path
+warm.
+
+⚠⚠ **Do NOT answer "an issue is stuck" with aggregate stats.** jdoc's median
+time-to-close is 1 day (60 issues, 45 within a day, 1 ever past a week). True,
+and NOT a response: the cost of a blocked issue is CONCENTRATED, not
+distributed. Design the fix at the OUTLIER. See
+[[feedback_dont_answer_pain_with_aggregates]].
+
+Surfaces: `CONTRIBUTING.md` + `.github/ISSUE_TEMPLATE/`.
+
 ## Held branch + release gate (read before shipping anything)
 
 ⚠ **`coordinated-retirement` is HELD and holds the number 1.115.0.** `master`
