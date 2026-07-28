@@ -44,18 +44,49 @@ def _git(*args: str) -> str:
 
 
 def _tree_is_clean() -> bool | None:
-    status = _git("status", "--porcelain")
+    """Did the TESTED tree differ from the commit it claims to be?
+
+    Tracked modifications only. The run itself writes junit.xml, coverage data
+    and this receipt directory into the working tree before the receipt is
+    emitted, so counting untracked files reported every CI run as dirty. A
+    signal that always fires is not a signal, and it would have hidden the real
+    case it exists for: a tracked file edited after checkout, where the numbers
+    genuinely do not describe the named commit.
+    """
     if not _git("rev-parse", "HEAD"):
         return None
-    return status == ""
+    return _git("status", "--porcelain", "--untracked-files=no") == ""
 
 
 def build_receipt(report_path: Path | None) -> dict:
     sha = _git("rev-parse", "HEAD")
     clean = _tree_is_clean()
+    # On a pull_request event, GitHub checks out a SYNTHETIC merge of the PR head
+    # into the base. That commit is what ran, so it is the honest answer to "what
+    # produced these numbers", but it exists nowhere in the branch history and a
+    # reviewer looking it up finds nothing. Record both, and say which is which.
+    import os
+
+    ci = {
+        k: v
+        for k, v in {
+            "event": os.environ.get("GITHUB_EVENT_NAME"),
+            "workflow_sha": os.environ.get("GITHUB_SHA"),
+            "ref": os.environ.get("GITHUB_REF_NAME"),
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+        }.items()
+        if v
+    }
+    if ci.get("event") == "pull_request":
+        ci["note"] = (
+            "checked-out sha is a synthetic PR merge commit and is not in the "
+            "branch history; workflow_sha is the branch head that triggered it"
+        )
+
     receipt = {
         "schema": "jdocmunch.evidence-receipt/v1",
         "sha": sha or None,
+        "ci": ci or None,
         # A dirty tree means the numbers do NOT describe the named SHA. Recorded
         # rather than refused, so the receipt can say so out loud.
         "tree_clean": clean,
@@ -161,6 +192,22 @@ def cmd_summarize(args: argparse.Namespace) -> int:
         print()
     else:
         print(f"SHA: `{shas.pop()}`\n")
+
+    # If these ran on a pull_request event the SHA above is a synthetic merge
+    # commit that is not in the branch history. Name the branch head too, or a
+    # reviewer looks up the only SHA on offer and finds nothing.
+    heads = {
+        (r.get("ci") or {}).get("workflow_sha")
+        for r in receipts
+        if (r.get("ci") or {}).get("workflow_sha")
+    }
+    events = {(r.get("ci") or {}).get("event") for r in receipts}
+    if heads and events == {"pull_request"}:
+        print(
+            "Checked-out SHA is a synthetic PR merge commit. Branch head: "
+            + ", ".join(f"`{h}`" for h in sorted(heads))
+        )
+        print()
 
     dirty = [r for r in receipts if r.get("tree_clean") is False]
     if dirty:
