@@ -56,6 +56,12 @@ jobs:
       # worth having.
       - name: Emit evidence receipt
         if: always()
+        env:
+          # GITHUB_SHA is the synthetic MERGE commit on a pull_request event, not
+          # the branch head. The head sha is only reachable through the event
+          # payload, so pass it explicitly or the receipt cannot name a commit
+          # that exists in the branch history.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: uv run python scripts/evidence_receipt.py emit --report junit.xml --out receipts
       - name: Upload evidence receipt
         if: always()

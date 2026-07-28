@@ -74,13 +74,18 @@ def build_receipt(report_path: Path | None) -> dict:
             "workflow_sha": os.environ.get("GITHUB_SHA"),
             "ref": os.environ.get("GITHUB_REF_NAME"),
             "run_id": os.environ.get("GITHUB_RUN_ID"),
+            # NOT a default GitHub env var. The workflow passes it from the event
+            # payload, because GITHUB_SHA is ALSO the merge commit on this event
+            # and naming it "the branch head" was simply false.
+            "head_sha": os.environ.get("PR_HEAD_SHA"),
         }.items()
         if v
     }
     if ci.get("event") == "pull_request":
         ci["note"] = (
             "checked-out sha is a synthetic PR merge commit and is not in the "
-            "branch history; workflow_sha is the branch head that triggered it"
+            "branch history. head_sha is the branch commit under test; "
+            "workflow_sha is the same merge commit, not the head."
         )
 
     receipt = {
@@ -197,9 +202,9 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     # commit that is not in the branch history. Name the branch head too, or a
     # reviewer looks up the only SHA on offer and finds nothing.
     heads = {
-        (r.get("ci") or {}).get("workflow_sha")
+        (r.get("ci") or {}).get("head_sha")
         for r in receipts
-        if (r.get("ci") or {}).get("workflow_sha")
+        if (r.get("ci") or {}).get("head_sha")
     }
     events = {(r.get("ci") or {}).get("event") for r in receipts}
     if heads and events == {"pull_request"}:
