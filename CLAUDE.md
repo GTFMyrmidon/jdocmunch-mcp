@@ -1,6 +1,10 @@
 # jdocmunch-mcp
 
-**Version:** 1.119.0 | **Tests:** `pytest tests/ -q`
+**Version:** 1.119.0 (master) | branch `coordinated-retirement` @ `132c8e1`,
+green 10/10 | **Tests:** `PYTHONPATH=src pytest tests/ -q`
+
+⚠ **ONE open issue: [#95](https://github.com/jgravelle/jdocmunch-mcp/issues/95),
+the gate.** See the split below.
 
 ## Issue + release policy (suite-wide, 2026-07-28)
 
@@ -71,6 +75,50 @@ review questions remain open on #97 and non-blocking: `begin_retirement` now
 takes `hold_record_lock(blocking=True)`, reaching the unbounded Windows
 `LK_LOCK` retry loop; and `void_retirements_referencing` leaves a corrupt record
 inert but PERMANENT.
+
+## #95 SPLIT 2026-07-28: 15 of 19 criteria satisfied, 3 split out and fixed
+
+Applied the one-issue-one-verdict rule to our own gate. All 19 acceptance
+criteria were checked **against the branch**, not against a summary of it:
+**15 satisfied**, evidenced by 58 tests across six `test_issue95_*.py` files.
+⚠ **PR #97 was FAR larger than the four items recorded above** — it includes
+seven real-subprocess `test_spawn_*` cases, which is the "real-process
+interruption, not mocked exceptions" criterion nobody had ticked.
+
+Three were genuinely open, split into their own issues, and all three are now
+fixed and closed:
+
+- **#98** QA-25 exhaustiveness (`b476e09`). The old guard was a PRESENCE check by
+  design; it could not fail when a NEW caller arrived with no policy. Now every
+  production `delete_index` call must pass `lock_wait` or be named in
+  `UNCONTENDED_EXEMPT` with a reason. ⚠ **`UNCONTENDED_EXEMPT` is empty ON
+  PURPOSE** — add a site with its reason, never loosen the rule.
+- **#99** installed-wheel smoke (`a84c757`). New `package-smoke` CI job on ubuntu
+  + windows builds the wheel, installs into a clean venv, runs
+  `scripts/smoke_installed.py` from a dir with no `src/` reachable. ⚠ **The
+  script REFUSES to run if it imported from a source tree** — without that it
+  passes by testing `src/` again and the job is decorative.
+- **#100** machine-generated evidence (`a84c757` + `79c6542` + `132c8e1`).
+  `scripts/evidence_receipt.py` emits a receipt per matrix job from
+  `pytest --junitxml` (built in, no new dep) and rolls them into a summary.
+
+⚠⚠ **The receipt tool took THREE defects, all found by reading a REAL CI receipt
+rather than the local one.** (1) `tree_clean` false on a pristine checkout,
+because the run writes junit.xml/coverage/receipts before emitting — **a signal
+that always fires hides the case it exists for**. (2) It recorded the synthetic
+PR-merge SHA, which is `fatal: bad object` in branch history. (3) The fix for (2)
+then CLAIMED `GITHUB_SHA` was the branch head — **on a `pull_request` event
+`GITHUB_SHA` IS the merge commit**; the head is reachable ONLY via
+`github.event.pull_request.head.sha` passed from the workflow as `PR_HEAD_SHA`.
+**A false provenance line inside the provenance artifact.**
+
+Two honesty guards, both proven to fire: a dirty tree is recorded and surfaced,
+and a summary spanning >1 SHA prints `MIXED SHAs. This is not evidence for a
+single candidate.` rather than averaging runs into a figure describing nothing.
+
+⚠ Receipt counts split **1972 Linux / 1967 Windows on identical 1981 totals**
+(9 vs 14 skips) — that is the five POSIX-only tests, i.e. the QA-24 mechanism
+showing itself. **Never read a Windows pass as verifying a locking contract.**
 
 ⚠ **The QA harness is an ISSUE ATTACHMENT, not a repo file** — `find` in the
 tree returns nothing. Pull it from the #95 body links, copy into `tests/` to
