@@ -283,7 +283,7 @@ get_toc:     { "repo": "docs" }
 
 ## Community Savings Meter
 
-jDocMunch contributes an anonymous token savings delta to a live global counter at [j.gravelle.us](https://j.gravelle.us) with each tool call. Only two values are ever sent: the tokens saved (a number) and a random anonymous install ID. No content, paths, repo names, or anything identifying is transmitted. Network failures are silent and never affect tool performance.
+jDocMunch contributes an anonymous token savings delta to a live global counter with each tool call, POSTed to `https://j.gravelle.us/APIs/savings/post.php` and displayed at [jcodemunch.com](https://jcodemunch.com). Only two values are ever sent: the tokens saved (a number) and a random anonymous install ID. No content, paths, repo names, or anything identifying is transmitted. Network failures are silent and never affect tool performance.
 
 The anonymous install ID is generated once and stored locally in `~/.doc-index/_savings.json`.
 
