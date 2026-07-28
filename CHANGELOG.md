@@ -243,6 +243,17 @@ unverified recovery record; both fixed before this release shipped.
 - **QA-18:** corrected below — the #89 harness claim now states the exact
   results instead of "pass in full."
 
+**Issue #95 merge-closure candidate:** retirement publication is now
+commit-scoped: record creation, replacement, and removal are coordinated, final
+authorization requires the exact current publication, and fingerprints are
+re-proved after retained-handle coordination. Public `delete_index` makes one
+nonblocking lifecycle-coordination attempt while internal retirement keeps its
+bounded wait; successful deletion preserves the stable per-index lockfile.
+The public deleted, missing, and lifecycle-busy results have one authoritative
+runtime vocabulary, with a `SPEC.md` table and drift guard. QA-25's explicit
+caller wait policy and nonblocking default were preserved and independently
+verified, not redesigned.
+
 Additive and 1.x-compatible: new defaulted kwarg, new exception only raised
 when that kwarg is passed, new response keys, no INDEX_VERSION bump. Tests:
 `tests/test_v1_115_0.py` (10) + `tests/test_v1_115_0_qa89.py` (10) +

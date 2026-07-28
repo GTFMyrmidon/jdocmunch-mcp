@@ -179,18 +179,19 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
       3. Publish the durable retiring record and REQUIRE the receipt:
          cleanup never starts without authoritative recovery state on disk
          (QA-07).
-      4. Guarded delete: ``delete_index`` re-verifies the fingerprints
-         inside the deletion boundary at entry AND again immediately before
-         the primary record is removed, under the handle's write lock.
+      4. Guarded delete: ``delete_index`` re-verifies the exact publication
+         and fingerprints after nonblocking retained-handle coordination,
+         then holds those authorities through primary removal and conditional
+         completion.
 
     Returns ``(outcome, info)``. Outcomes: ``"retired"``; ``"conflict"``
     (an index changed or vanished — ``info`` may carry ``changed_handles``);
     ``"unproven"`` (the reloaded state no longer satisfies the proof);
     ``"record_unavailable"`` (record publication failed; nothing destructive
-    was attempted); ``"cleanup_incomplete"`` (``info`` carries
-    ``pending_retirement: True`` only when the durable record actually
-    exists — QA-07 truthfulness). Every non-``retired`` outcome leaves both
-    handles loadable."""
+    was attempted); ``"cleanup_incomplete"`` (the primary commit did not
+    occur, so the retiring handle remains loadable). After the primary unlink,
+    the outcome is always ``"retired"``; ``info`` additively discloses durable
+    record cleanup state when publication completion needs recovery."""
     from ..storage.doc_store import RetirementConflict
     from ..storage.retirements import (
         begin_retirement,
@@ -214,12 +215,13 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
         ]}
     if not reverify(sel, peer):
         return "unproven", {}
-    published = begin_retirement(
+    publication_id = begin_retirement(
         store.base_path, owner, repo_name,
         retained=target, fingerprints=fingerprints, family=family,
     )
-    if not published:
+    if not publication_id:
         return "record_unavailable", {}
+    delete_outcome = {}
     try:
         # jdoc#93 QA-23: this is the INTERNAL coordinated operation, already
         # mid-protocol with a published record on disk. A bounded wait for the
@@ -228,20 +230,38 @@ def _execute_retirement(store, owner, repo_name, repo_id, target, family,
         # public delete path is the one that must never silently wait.
         removed = store.delete_index(
             owner, repo_name, expected_fingerprints=fingerprints,
+            outcome=delete_outcome,
             lock_wait=True,
+            retirement_publication=publication_id,
         )
     except RetirementConflict as conflict:
-        finish_retirement(store.base_path, owner, repo_name)  # voided
-        return "conflict", {"changed_handles": conflict.changed}
+        cleanup_finished = finish_retirement(
+            store.base_path,
+            owner,
+            repo_name,
+            publication_id=publication_id,
+        )
+        info = {"changed_handles": conflict.changed}
+        if not cleanup_finished:
+            pending = pending_retirement(
+                store.base_path, owner, repo_name
+            )
+            if pending is not None:
+                info["pending_retirement"] = True
+        return "conflict", info
     except Exception:
-        removed = False
+        removed = bool(delete_outcome.get("_primary_unlink_committed"))
+    cleanup_info = {
+        key: value
+        for key, value in delete_outcome.items()
+        if not key.startswith("_") and key != "reason_code"
+    }
     if not removed:
         info = {}
         if pending_retirement(store.base_path, owner, repo_name) is not None:
             info["pending_retirement"] = True
         return "cleanup_incomplete", info
-    finish_retirement(store.base_path, owner, repo_name)
-    return "retired", {}
+    return "retired", cleanup_info
 
 
 def _resolve_legacy_reconcile(
@@ -474,6 +494,7 @@ def _resolve_legacy_reconcile(
             "removed_handle": repo_id,
             "removed_file_count": len(s_docs),
             "certified_sha": s_sha,
+            **info,
             "detail": (
                 "The selected legacy index was proven an exact duplicate of "
                 "its modern peer (verified identity, same clean certified "
@@ -925,6 +946,7 @@ def _resolve_graduation(
                     "provisional_sha": p_sha,
                     "established_sha": e_sha,
                     "relationship": "provisional_is_strict_ancestor_of_established",
+                    **info,
                     "detail": (
                         "Git proved the provisional snapshot is a strict "
                         "ancestor of the established index's snapshot (same "
@@ -1079,6 +1101,7 @@ def _resolve_graduation(
                 "established_handle": target,
                 "removed_handle": f"{owner}/{repo_name}",
                 "removed_file_count": len(p_docs),
+                **info,
                 "detail": (
                     "Git lineage was verified; an established index for this "
                     "corpus already exists and every provisional file matches "

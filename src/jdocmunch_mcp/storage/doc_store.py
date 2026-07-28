@@ -31,18 +31,61 @@ INDEX_VERSION = 3
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _UNSET = object()
 
+# Authoritative storage outcomes for delete_index. The semantic keys are
+# internal; the values are the stable public reason codes emitted by storage
+# and interpreted by the public tool.
+DELETE_REASON_CODES = {
+    "deleted": "index_deleted",
+    "not_found": "index_not_found",
+    "lifecycle_busy": "index_lifecycle_busy",
+}
+
+# Additive disclosure emitted only when a guarded retirement committed its
+# primary unlink but exact-publication record completion did not finish. This
+# is the single authority for the field names, types, and meanings that
+# SPEC.md publishes and the drift guard checks.
+RETIREMENT_CLEANUP_OUTCOME_SCHEMA = {
+    "retirement_cleanup_pending": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True when durable record state remains readable or unreadable; "
+            "false only when it is absent."
+        ),
+    },
+    "retirement_cleanup_record_state": {
+        "json_type": "string",
+        "allowed_values": ("absent", "readable", "unreadable"),
+        "meaning": (
+            "Observed durable retirement-record state after the completion "
+            "attempt."
+        ),
+    },
+    "retirement_cleanup_owned": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True only for a readable record whose publication_id equals the "
+            "exact completing publication; false for absent, unreadable, or "
+            "replacement state."
+        ),
+    },
+}
+
 
 class RetirementConflict(Exception):
     """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
     its retirement was approved. Raised at the entry check (nothing touched)
-    or at the pre-removal recheck immediately before the primary record would
-    be unlinked (jdoc#89 QA-06) — in both cases every participating index
-    remains loadable; at worst rebuildable auxiliary artifacts of the
-    retiring handle are gone. ``changed`` lists the ``owner/name`` handles
+    or at the final recheck after the retained-handle gate is acquired and
+    immediately before the primary record would be unlinked (jdoc#89 QA-06).
+    In both entry and final conflicts, the retiring primary remains loadable
+    because its primary unlink did not commit; at worst rebuildable auxiliary
+    artifacts of the retiring handle are gone. A retained peer that changed or
+    disappeared is not restored. ``changed`` lists the ``owner/name`` handles
     that no longer match their proof-time fingerprints (an expected value of
-    None always conflicts — missing state never authorizes removal). Only
-    ever raised when the caller passed ``expected_fingerprints``; unguarded
-    deletes are unaffected."""
+    None always conflicts; missing state never authorizes removal). Only ever
+    raised when the caller passed ``expected_fingerprints``; unguarded deletes
+    are unaffected."""
 
     def __init__(self, changed: list):
         self.changed = list(changed)
@@ -101,7 +144,9 @@ def _with_index_lock(method):
                 if not acquired:
                     outcome = kwargs.get("outcome")
                     if outcome is not None:
-                        outcome["reason_code"] = "index_lifecycle_busy"
+                        outcome["reason_code"] = DELETE_REASON_CODES[
+                            "lifecycle_busy"
+                        ]
                     return False
                 return method(self, owner, name, *args, **kwargs)
         with self._index_write_lock(owner, name):
@@ -709,12 +754,10 @@ class DocStore:
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _safe_repo_component(self, value: str, field_name: str) -> str:
-        import re
-        if not value or value in {".", ".."}:
-            raise ValueError(f"Invalid {field_name}: {value!r}")
-        if "/" in value or "\\" in value:
-            raise ValueError(f"Invalid {field_name}: {value!r}")
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        # Shares retirements.is_safe_path_component so the store side and the
+        # record side cannot drift into two different notions of "safe".
+        from .retirements import is_safe_path_component
+        if not is_safe_path_component(value):
             raise ValueError(f"Invalid {field_name}: {value!r}")
         return value
 
@@ -1573,10 +1616,17 @@ class DocStore:
         re-proves against the new state. Best-effort."""
         try:
             from .retirements import (
-                finish_retirement, void_retirements_referencing,
+                void_retirement_if_stale, void_retirements_referencing,
             )
-            finish_retirement(self.base_path, owner, name)
-            void_retirements_referencing(self.base_path, f"{owner}/{name}")
+            current_fingerprint = self.index_fingerprint(owner, name)
+            void_retirement_if_stale(
+                self.base_path, owner, name, current_fingerprint
+            )
+            void_retirements_referencing(
+                self.base_path,
+                f"{owner}/{name}",
+                current_fingerprint=current_fingerprint,
+            )
         except Exception:
             pass
 
@@ -1586,12 +1636,15 @@ class DocStore:
         The retirement precondition token (jdoc#88 QA-01): captured at proof
         time and re-verified inside :meth:`delete_index`, it detects ANY
         change to the stored index — content, certification, or metadata —
-        between approval and physical removal."""
+        between approval and physical removal.
+
+        Shares :func:`retirements.fingerprint_index_file` with the record-side
+        re-proof: two implementations that drifted by a byte would make every
+        publication refuse itself."""
+        from .retirements import fingerprint_index_file
         try:
-            return hashlib.sha256(
-                self._index_path(owner, name).read_bytes()
-            ).hexdigest()
-        except (OSError, ValueError):
+            return fingerprint_index_file(self._index_path(owner, name))
+        except ValueError:
             return None
 
     def _verify_expected_fingerprints(self, expected_fingerprints: dict) -> list:
@@ -1609,6 +1662,129 @@ class DocStore:
                 changed.append(handle)
         return changed
 
+    def _commit_guarded_retirement(
+        self, owner: str, name: str, index_path: Path, *,
+        expected_fingerprints: dict,
+        expected_publication: str,
+        entry_record: Optional[dict],
+        outcome: Optional[dict],
+    ) -> bool:
+        """The final authorization gate: the ONE destructive step.
+
+        jdoc#89 QA-06 / jdoc#90 QA-17 / jdoc#93 QA-19. Called holding this
+        handle's write lock, with every auxiliary artifact already removed and
+        the primary ``<name>.json`` still in place. Acquires the record lock,
+        then the retained peer's gate NONBLOCKINGLY, and holds both through
+        the unlink and publication-scoped completion.
+
+        Everything before the retained gate is fast rejection only. A
+        fingerprint read before that gate cannot see a writer already in
+        flight on the retained handle: one that passed its own void scan
+        before our record existed, or a save paused an instruction short of
+        ``_atomic_replace``. Both hold the retained handle's write lock, so
+        only the proof repeated AFTER the gate closes can authorize the
+        commit.
+
+        Returns True when exact-publication record completion also succeeded,
+        False when the primary unlink committed but that completion did not.
+        The caller must then leave the durable record alone as recoverable
+        state. Raises :class:`RetirementConflict` on any refusal, always
+        before the unlink, so the retiring monolith stays loadable; only
+        rebuildable auxiliary artifacts may already be gone.
+        """
+        from .retirements import (
+            _retirement_record_state, finish_retirement, hold_record_lock,
+            retirement_record, RetirementRecordLockError,
+            _valid_retirement_record,
+        )
+
+        def _publication_conflict() -> RetirementConflict:
+            """Name the peer this retirement can no longer speak for."""
+            return RetirementConflict(
+                [(entry_record or {}).get("retained") or f"{owner}/{name}"]
+            )
+
+        def _published_proof(current: Optional[dict]) -> dict:
+            """The durable proof this publication actually authorizes.
+
+            The receipt and the proof travel together or the receipt means
+            nothing: a caller holding a valid publication_id could otherwise
+            hand in an empty or partial map and have the gate verify only the
+            handles it chose to mention, so a changed retained peer would go
+            unnoticed. The record's own map is the authority, and the caller's
+            copy must equal it exactly.
+            """
+            if (
+                current is None
+                or current.get("publication_id") != expected_publication
+                or not _valid_retirement_record(current, owner, name)
+            ):
+                raise _publication_conflict()
+            published = current.get("fingerprints")
+            if (
+                not isinstance(published, dict)
+                or not published
+                or published != expected_fingerprints
+            ):
+                raise _publication_conflict()
+            return published
+
+        try:
+            with hold_record_lock(self.base_path, owner, name):
+                record = retirement_record(self.base_path, owner, name)
+                _published_proof(record)
+                retained = record.get("retained")
+                with self._gate_retained_handle(
+                    retained, owner, name
+                ) as gate_ok:
+                    if not gate_ok:
+                        raise RetirementConflict(
+                            [retained or f"{owner}/{name}"]
+                        )
+                    # Re-read under the gate and verify the DURABLE map, not
+                    # the caller's argument, so the authority that authorizes
+                    # the unlink is the same object that recorded the proof.
+                    published = _published_proof(
+                        retirement_record(self.base_path, owner, name)
+                    )
+                    changed = self._verify_expected_fingerprints(published)
+                    if changed:
+                        raise RetirementConflict(changed)
+
+                    _evict_index_cache(index_path)
+                    index_path.unlink()
+                    if outcome is not None:
+                        outcome["_primary_unlink_committed"] = True
+
+                    # Past this point the retirement HAS committed. Add no
+                    # durable write to a critical section that still holds
+                    # both the record lock and the retained gate. A failed
+                    # completion is already evidence the store is unhealthy.
+                    # Read the durable state, disclose it, and get out.
+                    if finish_retirement(
+                        self.base_path, owner, name,
+                        publication_id=expected_publication,
+                        _lock_held=True,
+                    ):
+                        return True
+                    if outcome is not None:
+                        state, record = _retirement_record_state(
+                            self.base_path, owner, name
+                        )
+                        outcome.update(
+                            retirement_cleanup_pending=state != "absent",
+                            retirement_cleanup_record_state=state,
+                            retirement_cleanup_owned=(
+                                record is not None
+                                and record.get("publication_id")
+                                == expected_publication
+                            ),
+                        )
+                    return False
+        except RetirementRecordLockError:
+            # jdoc#95 AC-06: no authoritative lock, no critical section.
+            raise RetirementConflict([f"{owner}/{name}"])
+
     @_with_index_lock
     def delete_index(
         self,
@@ -1617,30 +1793,39 @@ class DocStore:
         expected_fingerprints: Optional[dict] = None,
         outcome: Optional[dict] = None,
         lock_wait: bool = False,
+        retirement_publication: Optional[str] = None,
     ) -> bool:
         """Delete an index and its raw content cache.
 
         Holds the same cross-process write lock as ``save_index`` /
         ``incremental_save`` (jdoc#89 QA-06: every writer and direct delete
-        of a handle joins one lifecycle coordinator — only the target handle
-        is locked, so lock ordering across handles never arises).
+        of a handle joins one lifecycle coordinator). Retirement additionally
+        takes the retained handle's gate nonblockingly only inside the final
+        commit, so it never waits while holding two handle locks.
 
         ``expected_fingerprints`` (jdoc#88 QA-01) maps ``owner/name`` handles
         to :meth:`index_fingerprint` values captured when the retirement was
         approved. The precondition is verified twice inside the deletion
         boundary: at entry before any removal (a mismatch raises
         :class:`RetirementConflict` with nothing touched), and again
-        immediately before the primary ``<name>.json`` record is removed
-        (jdoc#89 QA-06: auxiliary cleanup leaves a window a concurrent save
-        or direct delete of the OTHER handle can occupy — the second check
-        aborts with the handle still loadable; auxiliary artifacts may
-        already be gone, and a refresh rebuilds them). An expected value of
-        None always conflicts (missing state never authorizes removal).
-        Omitted → the pre-existing unguarded behavior.
+        after the retained gate is acquired and immediately before the primary
+        ``<name>.json`` record is removed. The second check aborts with the
+        handle still loadable when a concurrent save or direct delete changed
+        either participant; auxiliary artifacts may already be gone, and a
+        refresh rebuilds them. An expected value of None always conflicts.
+        Omitted (``None``) → the pre-existing unguarded behavior.
+
+        Passing any dict, INCLUDING an empty one, selects the guarded path and
+        therefore also requires ``retirement_publication``. An empty proof
+        asserting nothing can never authorize a removal, so it conflicts
+        rather than silently degrading to an unguarded delete. Callers that
+        want the unguarded behavior omit the argument.
 
         jdoc#93 QA-20: ``outcome`` is an optional caller-supplied dict that
-        receives ``{"reason_code": ...}``. The bool return cannot distinguish
-        "no such index" from "lifecycle contention, try again", and the public
+        receives ``{"reason_code": ...}`` and, for guarded post-commit record
+        cleanup failure, additive durable cleanup state. The bool return cannot
+        distinguish "no such index" from "lifecycle contention, try again",
+        and the public
         tool rendered both as *Index not found.* — so an agent hitting a busy
         retirement concluded the index never existed and re-indexed, which is
         the duplicate-creation failure this arc exists to prevent. Out-param
@@ -1686,13 +1871,20 @@ class DocStore:
             index_path = self._index_path(owner, name)
             content_dir = self._content_dir(owner, name)
         except ValueError:
-            _out("index_not_found")
+            _out(DELETE_REASON_CODES["not_found"])
             return False
 
-        if expected_fingerprints:
+        guarded_retirement = expected_fingerprints is not None
+        if guarded_retirement:
             changed = self._verify_expected_fingerprints(expected_fingerprints)
             if changed:
                 raise RetirementConflict(changed)
+            if (
+                not isinstance(retirement_publication, str)
+                or not retirement_publication
+            ):
+                raise RetirementConflict([f"{owner}/{name}"])
+        expected_publication = retirement_publication
 
         # jdoc#90 QA-17: this handle may be the RETAINED peer of a pending
         # retirement. Coordinate through the retirement record's lock BEFORE
@@ -1704,16 +1896,17 @@ class DocStore:
         # refuse the delete (retry succeeds as soon as the gate closes) so no
         # interleaving can end with both participating indexes absent.
         from .retirements import (
-            hold_record_lock,
-            pending_retirement,
+            retirement_record,
             try_void_retirements_referencing,
         )
         if not try_void_retirements_referencing(
-            self.base_path, f"{owner}/{name}"
+            self.base_path,
+            f"{owner}/{name}",
+            timeout_seconds=1.0 if lock_wait else 0.0,
         ):
             # A retirement owning this handle as its retained peer is inside
             # its destructive step right now. Retryable, and NOT missing.
-            _out("index_lifecycle_busy")
+            _out(DELETE_REASON_CODES["lifecycle_busy"])
             return False
 
         # jdoc#90 QA-17: note whether a durable record backs THIS guarded
@@ -1722,9 +1915,21 @@ class DocStore:
         # above, in another process) turns into a conflict, never a
         # completed retirement against a vanished peer.
         entry_record = (
-            pending_retirement(self.base_path, owner, name)
-            if expected_fingerprints else None
+            retirement_record(self.base_path, owner, name)
+            if guarded_retirement else None
         )
+        if guarded_retirement and (
+            entry_record is None
+            or entry_record.get("publication_id") != expected_publication
+            # Fast rejection of a proof this publication does not authorize.
+            # The final gate repeats it under the record lock; refusing here
+            # keeps auxiliary artifacts intact when the mismatch is already
+            # visible.
+            or not isinstance(entry_record.get("fingerprints"), dict)
+            or not entry_record.get("fingerprints")
+            or entry_record.get("fingerprints") != expected_fingerprints
+        ):
+            raise RetirementConflict([f"{owner}/{name}"])
 
         # jdoc#88 QA-02: remove the primary index record LAST. Auxiliary
         # artifacts (content cache, sidecars) go first; the `<name>.json`
@@ -1734,6 +1939,7 @@ class DocStore:
         # previous order unlinked the primary first, so a mid-cleanup failure
         # left an un-loadable, un-retryable half-deleted index.
         deleted = False
+        retirement_completion_failed = False
         if content_dir.exists():
             shutil.rmtree(content_dir)
             deleted = True
@@ -1786,82 +1992,46 @@ class DocStore:
         # jdoc#88 QA-02: primary record removed LAST — once this succeeds the
         # index is gone; until then a failed earlier step leaves it loadable.
         if index_path.exists():
-            if expected_fingerprints:
-                # jdoc#89 QA-06 / jdoc#90 QA-17: the final gate. Everything
-                # inside the record lock is ONE destructive step: re-verify
-                # every proof-time fingerprint, require the durable record
-                # this retirement published to still exist, then unlink. A
-                # concurrent delete of the retained peer must first void that
-                # record through this same lock (try_void_retirements_
-                # referencing), so it either lands before the gate — record
-                # gone, conflict raised, this handle kept — or is refused
-                # until the gate closes. No interleaving finishes with both
-                # participating indexes absent. A conflict here leaves this
-                # handle loadable; only rebuildable auxiliary artifacts may
-                # already be gone (a refresh rebuilds them).
-                with hold_record_lock(self.base_path, owner, name):
-                    changed = self._verify_expected_fingerprints(
-                        expected_fingerprints
+            if guarded_retirement:
+                retirement_completion_failed = (
+                    not self._commit_guarded_retirement(
+                        owner, name, index_path,
+                        expected_fingerprints=expected_fingerprints,
+                        expected_publication=expected_publication,
+                        entry_record=entry_record,
+                        outcome=outcome,
                     )
-                    if changed:
-                        raise RetirementConflict(changed)
-                    if entry_record is not None and pending_retirement(
-                        self.base_path, owner, name
-                    ) is None:
-                        raise RetirementConflict(
-                            [entry_record.get("retained") or f"{owner}/{name}"]
-                        )
-                    # jdoc#93 QA-19 (Path A): the checks above prove the
-                    # retained peer has not changed YET and that our record
-                    # still exists. Neither can see work already IN FLIGHT on
-                    # the retained handle — a delete that passed its entry void
-                    # scan before our record existed, or a save paused one
-                    # instruction before _atomic_replace. Both hold the
-                    # retained handle's write lock, so take it here,
-                    # non-blocking, and hold it through the unlink and the
-                    # record removal. Failure means in-flight work: conflict
-                    # instead of completing, leaving BOTH indexes loadable.
-                    _retained = (entry_record or {}).get("retained")
-                    with self._gate_retained_handle(
-                        _retained, owner, name
-                    ) as _gate_ok:
-                        if not _gate_ok:
-                            raise RetirementConflict(
-                                [_retained or f"{owner}/{name}"]
-                            )
-                        _evict_index_cache(index_path)
-                        index_path.unlink()
-                        deleted = True
-                        # Record removal inside the gate: the retirement is
-                        # complete the instant the lock releases, so no later
-                        # observer can see "index gone, record pending" from
-                        # this path (QA-08 self-heal still covers crashes).
-                        # Also inside the RETAINED handle's lock (QA-19), so
-                        # the whole destructive step is one interval no
-                        # retained-handle writer can interleave with.
-                        from .retirements import finish_retirement
-                        finish_retirement(self.base_path, owner, name)
+                )
+                deleted = True
             else:
                 _evict_index_cache(index_path)
                 index_path.unlink()
                 deleted = True
-        # jdoc#88 QA-01/QA-02: once the primary record is gone the index has
-        # no pending retirement — the retirement completed, or a direct user
-        # delete of a retiring handle mooted it. Runs AFTER the primary
-        # removal so a failure part-way keeps the durable record (pending
-        # cleanup stays a discoverable fact). jdoc#89 QA-10: a direct delete
-        # also voids any record naming this handle as the RETAINED peer —
-        # that retirement can no longer complete as recorded. Best-effort,
-        # like claims.
+        # jdoc#88 QA-01/QA-02: after the primary commit the result is retired,
+        # but failed exact-publication completion can leave a durable cleanup
+        # record. Preserve that discoverable state for a fresh pending read;
+        # otherwise remove stale retiring records after the primary removal.
+        # jdoc#89 QA-10: a direct delete also voids records naming this handle
+        # as the retained peer. Both cleanup paths revalidate ownership and
+        # remain best-effort, like claims.
         try:
             from .retirements import (
-                finish_retirement, void_retirements_referencing,
+                void_retirement_if_stale, void_retirements_referencing,
             )
-            finish_retirement(self.base_path, owner, name)
-            void_retirements_referencing(self.base_path, f"{owner}/{name}")
+            if not retirement_completion_failed:
+                void_retirement_if_stale(
+                    self.base_path, owner, name, current_fingerprint=None
+                )
+            void_retirements_referencing(
+                self.base_path, f"{owner}/{name}"
+            )
         except Exception:
             pass
-        _out("index_deleted" if deleted else "index_not_found")
+        _out(
+            DELETE_REASON_CODES["deleted"]
+            if deleted
+            else DELETE_REASON_CODES["not_found"]
+        )
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:

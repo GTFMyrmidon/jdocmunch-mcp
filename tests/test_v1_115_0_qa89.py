@@ -15,6 +15,8 @@ direct delete), fsync durability.
 
 from __future__ import annotations
 
+import os
+import stat
 import threading
 
 import pytest
@@ -169,6 +171,11 @@ def test_qa07_failed_save_preserves_record(tmp_path, monkeypatch):
 def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
     """Two same-process publishers of one record both succeed — the temp
     name is unique per publication, not per PID."""
+    owner_dir = tmp_path / "local"
+    owner_dir.mkdir()
+    for name in ("same", "first", "second"):
+        (owner_dir / f"{name}.json").write_text("{}", encoding="utf-8")
+    store = DocStore(base_path=str(tmp_path))
     results = []
     barrier = threading.Barrier(2)
 
@@ -176,7 +183,11 @@ def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
         barrier.wait(timeout=10)
         results.append(retirements.begin_retirement(
             str(tmp_path), "local", "same",
-            retained=f"local/{label}", fingerprints={f"local/{label}": label},
+            retained=f"local/{label}",
+            fingerprints={
+                "local/same": store.index_fingerprint("local", "same"),
+                f"local/{label}": store.index_fingerprint("local", label),
+            },
             family=label,
         ))
 
@@ -188,14 +199,18 @@ def test_qa07_same_process_publishers_never_share_a_temp_path(tmp_path):
         t.start()
     for t in threads:
         t.join(timeout=15)
-    assert results == [True, True]
+    assert len(results) == 2
+    assert all(
+        isinstance(publication, str) and publication
+        for publication in results
+    )
+    assert results[0] != results[1]
 
 
 # --- QA-08..QA-11 ------------------------------------------------------------
 
 def test_qa08_completed_deletion_never_reported_pending(tmp_path, monkeypatch):
-    """A record whose retiring index no longer exists is a completed
-    retirement — self-healed, never claimed pending."""
+    """Failed cleanup stays visible, then a fresh read self-heals it."""
     from pathlib import Path
 
     _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
@@ -208,9 +223,17 @@ def test_qa08_completed_deletion_never_reported_pending(tmp_path, monkeypatch):
             raise OSError("injected finalization failure")
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", fail_record_unlink)
-    assert ds.delete_index("local", "old") is True
-    assert ds.load_index("local", "old") is None
+    with monkeypatch.context() as cleanup_failure:
+        cleanup_failure.setattr(Path, "unlink", fail_record_unlink)
+        assert ds.delete_index("local", "old") is True
+        assert ds.load_index("local", "old") is None
+        pending = retirements.pending_retirement(
+            str(store), "local", "old"
+        )
+        assert pending is not None
+        assert pending["publication_id"]
+
+    # A fresh recovery read self-heals once record cleanup is available.
     assert retirements.pending_retirement(str(store), "local", "old") is None
 
 
@@ -241,14 +264,54 @@ def test_qa11_record_publication_fsyncs(tmp_path, monkeypatch):
     """The publication receipt promises power-loss durability: the record
     bytes are fsync'd before the atomic replace."""
     _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
-    fsync_calls = []
+    fsync_targets = []
     real_fsync = retirements.os.fsync
 
     def record_fsync(fd):
-        fsync_calls.append(fd)
+        mode = os.fstat(fd).st_mode
+        fsync_targets.append(
+            "directory" if stat.S_ISDIR(mode) else "file"
+        )
         return real_fsync(fd)
 
     monkeypatch.setattr(retirements.os, "fsync", record_fsync)
     ds = _begin_pair_retirement(store)
-    assert fsync_calls
+    assert "file" in fsync_targets
+    if os.name != "nt":
+        assert "directory" in fsync_targets
     assert ds.load_index("local", "old") is not None
+
+
+def test_qa11_directory_fsync_failure_returns_no_receipt(
+    tmp_path, monkeypatch
+):
+    _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
+    ds = DocStore(base_path=str(store))
+    fingerprints = {
+        "local/old": ds.index_fingerprint("local", "old"),
+        "local/modern": ds.index_fingerprint("local", "modern"),
+    }
+    record_dir = store / "local" / ".retirements"
+    real_open = retirements.os.open
+
+    def fail_directory_open(path, flags, *args):
+        if os.fspath(path) == os.fspath(record_dir):
+            raise OSError("injected directory fsync open failure")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(
+        retirements, "_POSIX_DIRECTORY_FSYNC", True, raising=False
+    )
+    monkeypatch.setattr(retirements.os, "open", fail_directory_open)
+    publication = retirements.begin_retirement(
+        str(store),
+        "local",
+        "old",
+        retained="local/modern",
+        fingerprints=fingerprints,
+        family="legacy_reconcile",
+    )
+
+    assert publication is None
+    assert ds.load_index("local", "old") is not None
+    assert ds.load_index("local", "modern") is not None

@@ -19,7 +19,10 @@ from pathlib import Path
 import pytest
 
 from jdocmunch_mcp.storage.doc_store import DocStore, RetirementConflict
-from jdocmunch_mcp.storage.retirements import pending_retirement
+from jdocmunch_mcp.storage.retirements import (
+    begin_retirement,
+    pending_retirement,
+)
 from jdocmunch_mcp.tools import _worktree_corpus as wc
 from tests import test_v1_109_0 as modern
 from tests import test_v1_110_0 as legacy
@@ -69,8 +72,25 @@ def test_guarded_delete_mismatch_raises_and_removes_nothing(tmp_path, monkeypatc
 def test_guarded_delete_match_deletes(tmp_path, monkeypatch):
     _, wt, _, store = legacy._standard_pair(tmp_path, monkeypatch)
     ds = DocStore(base_path=str(store))
-    fps = {"local/old": ds.index_fingerprint("local", "old")}
-    assert ds.delete_index("local", "old", expected_fingerprints=fps) is True
+    fps = {
+        "local/old": ds.index_fingerprint("local", "old"),
+        "local/modern": ds.index_fingerprint("local", "modern"),
+    }
+    publication = begin_retirement(
+        str(store),
+        "local",
+        "old",
+        retained="local/modern",
+        fingerprints=fps,
+        family="guarded-delete-unit",
+    )
+    assert publication
+    assert ds.delete_index(
+        "local",
+        "old",
+        expected_fingerprints=fps,
+        retirement_publication=publication,
+    ) is True
     assert ds.load_index("local", "old") is None
 
 
