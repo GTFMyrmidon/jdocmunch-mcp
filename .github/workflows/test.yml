@@ -47,7 +47,23 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests
-        run: uv run pytest tests/ -v --tb=short --cov=src --cov-report=term-missing
+        run: uv run pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --junitxml=junit.xml
+
+      # jdoc#100: the receipt is emitted BY the run, so the SHA in it is the SHA
+      # the numbers came from. Summaries are generated from these rather than
+      # transcribed by hand, which is how this arc has already shipped a wrong
+      # number. `if: always()` because a failing run's counts are the ones most
+      # worth having.
+      - name: Emit evidence receipt
+        if: always()
+        run: uv run python scripts/evidence_receipt.py emit --report junit.xml --out receipts
+      - name: Upload evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.os }}-${{ matrix.python-version }}
+          path: receipts/*.json
+          if-no-files-found: warn
 
       - name: Verify sdist contains no sensitive paths
         if: runner.os == 'Linux'
@@ -62,3 +78,38 @@ jobs:
             exit 1
           fi
           echo "OK: No sensitive paths found in sdist."
+
+  # jdoc#99: every test above runs against an editable source tree, so a
+  # packaging fault cannot fail them. A module missing from the wheel, a stale
+  # file, or a broken entry point all pass and reach PyPI. This installs the
+  # built artifact into a clean environment and exercises the public surface
+  # through it. The script refuses to run if it imports from a source tree, so
+  # it cannot pass by accidentally testing src/ again.
+  package-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Build wheel
+        run: uv build --wheel
+      - name: Install the wheel into a clean environment and smoke it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/smoke"
+          if [ -f "$RUNNER_TEMP/smoke/bin/python" ]; then
+            PY="$RUNNER_TEMP/smoke/bin/python"
+          else
+            PY="$RUNNER_TEMP/smoke/Scripts/python.exe"
+          fi
+          "$PY" -m pip install --quiet --upgrade pip
+          "$PY" -m pip install --quiet dist/*.whl
+          cp scripts/smoke_installed.py "$RUNNER_TEMP/smoke_installed.py"
+          # Run from a directory with no src/ reachable. That is the whole point.
+          cd "$RUNNER_TEMP"
+          "$PY" smoke_installed.py
