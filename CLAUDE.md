@@ -1,29 +1,37 @@
 # jdocmunch-mcp
 
-**Version:** 1.119.0 (master) | branch `coordinated-retirement` @ `132c8e1`,
-green 10/10 | **Tests:** `PYTHONPATH=src pytest tests/ -q`
+**Version:** 1.120.0 SHIPPED 2026-07-29 (PyPI + tag + release) |
+**Tests:** `PYTHONPATH=src pytest tests/ -q`
 
-## ✅ #95 GATE MET 2026-07-29, ahead of the 2026-08-02 time-box
+⚠ **ZERO open issues. The `coordinated-retirement` hold is OVER** — #92 merged as
+`3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
 
-@rknighton completed the independent re-verification at **exactly `132c8e1`**:
-clean detached checkout, isolated container (no network, capabilities dropped,
-`no-new-privileges`), Debian 13.6 / Python 3.12.13, post-test tree identical and
-`git status --porcelain` empty. **QA-15 + QA-17 run TOGETHER: 10 passed, 2
-skipped, 0 failed** (the full collection of both files; the 2 skips are the
-`_PAIR_LOCK_API` cases, inapplicable while Path A stands). ⚠ **QA-15's
-`test_three_processes_keep_one_lock_inode` EXECUTED rather than skipping** — the
-whole reason for running on Linux. Frozen harness **7 passed** at sha256
-`88381e18…`, byte-identical to the hash we recorded.
+## v1.120.0 SHIPPED: the retirement arc closed, independently verified
 
-⚠⚠ **The weaker disclosure sentence is NO LONGER NEEDED and must NOT be used.**
-QA-17 is not self-certified: it was independently re-verified. Release notes
-state that plainly, naming the SHA, the platform and the harness hash.
+@rknighton re-verified QA-15 + QA-17 together at **exactly `132c8e1`** on Linux,
+in a clean detached checkout inside an isolated container: **10 passed, 2
+skipped, 0 failed**, plus his frozen harness **7/7** at sha256 `88381e18…`,
+byte-identical to ours. ⚠ **`test_three_processes_keep_one_lock_inode` EXECUTED
+rather than skipping** — the reason Linux was the platform that mattered. His
+acceptance criteria PREDATED any implementation, so the gate could not be
+reshaped to fit the fix.
 
-⚠ **Head moved to reconcile a DOCS-ONLY conflict** (CLAUDE.md / CONTRIBUTING.md /
-`.github/ISSUE_TEMPLATE/`, all pushed to master 2026-07-28 AFTER the branch last
-merged up — our conflict, not his). `git diff 132c8e1 <head> -- src/ tests/` is
-EMPTY, so the verification carries; same argument used to accept pre-rebase
-evidence on #97. He kept the environment and offered to rerun if wanted.
+⚠⚠ **The fallback disclosure sentence was NOT used and must never be quoted as
+if it were.** It would have been false: QA-17 was independently re-verified, so
+the notes make the STRONGER claim. **Keeping that distinction honest in the
+direction that favored HIM is the whole point of having written it down.**
+
+⚠ **Shipped as 1.120.0, NOT 1.115.0.** That heading stays in CHANGELOG as the
+branch's historical record; `pip` resolves to the highest version, so 1.115.0
+after 1.119.0 would ship into a version nobody receives. See the label section
+below.
+
+⚠ The reconcile that moved the head past his verified SHA was **docs-only**:
+`git diff 132c8e1 4122a56 -- src/ tests/` EMPTY, and that empty diff is PUBLISHED
+in the release notes so a reader can check it rather than trust us. Same argument
+used to accept his pre-rebase evidence on #97.
+
+Suite 1973 passed / 8 skipped local; CI 10/10 + Replay at the merge commit.
 
 ## Issue + release policy (suite-wide, 2026-07-28)
 
@@ -59,41 +67,6 @@ distributed. Design the fix at the OUTLIER. See
 [[feedback_dont_answer_pain_with_aggregates]].
 
 Surfaces: `CONTRIBUTING.md` + `.github/ISSUE_TEMPLATE/`.
-
-## Held branch + release gate (read before shipping anything)
-
-⚠ **`coordinated-retirement` is HELD and holds the number 1.115.0.** `master`
-ships patches around it (1.114.1, 1.114.2, 1.116.0+). On merge, resolve version
-conflicts to the HIGHER number and keep every CHANGELOG entry. ⚠ **The
-retirement work SHIPS as 1.120.0+ — "v1.115.0" is a CHANGELOG heading, not a
-release number.**
-
-⚠ **[#95](https://github.com/jgravelle/jdocmunch-mcp/issues/95) is the SINGLE
-gate** (@rknighton; #80/#89/#90/#93 were all consolidated into it). Binding,
-carried verbatim:
-
-- Time-box through **2026-08-02**. Nothing expires; a later re-verification
-  counts in full.
-- If re-verification misses it, release notes carry WORD FOR WORD: *"Verified
-  against the reviewer's pre-registered lifecycle harness at a frozen SHA. Not
-  independently re-verified by its author."* ⚠ Deliberately WEAKER than a
-  sign-off — never let the changelog blur the two.
-
-**PR #97 MERGED 2026-07-28 as `9721807` to `coordinated-retirement`** (QA-19
-commit-scoped authority, QA-23 caller-derived wait, QA-21 lockfile preservation,
-public `reason_code` vocabulary). His frozen harness was re-downloaded from the
-#95 attachment and re-run here, not transcribed: 4F/3P at `3709d21`, 7/7 at
-`03d9762`; suite 1963 passed / 8 skipped on Python 3.10.11 + NumPy 1.26.4, which
-closes the 3.10 gap he had labelled historical. Four green runs at the merged
-SHA, Tests 8/8 matrix. History left UNSQUASHED on purpose — the
-intermediate-commit non-vacuity table is only checkable per-commit.
-
-⚠⚠ **MERGING IS NOT SHIPPING AND REVIEWING IS NOT THE GATE.** `coordinated-retirement`
-is the staging target; **#92 stays held as the vehicle into `master`**. Two
-review questions remain open on #97 and non-blocking: `begin_retirement` now
-takes `hold_record_lock(blocking=True)`, reaching the unbounded Windows
-`LK_LOCK` retry loop; and `void_retirements_referencing` leaves a corrupt record
-inert but PERMANENT.
 
 ## #95 SPLIT 2026-07-28: 15 of 19 criteria satisfied, 3 split out and fixed
 
@@ -320,9 +293,14 @@ than left for him to notice, since he has been verifying something under a name
 that will never appear in `pip show`. ⚠ **Nothing about the harness, the frozen
 oracle, the acceptance criteria or any receipt depends on the number.**
 
-## ⏰ Retirement release TIME-BOXED through 2026-08-02 (set 2026-07-26)
+## ⏰ Retirement release TIME-BOXED through 2026-08-02 (set 2026-07-26) — RESOLVED
 
-⚠ **ACTION DUE 2026-08-02.** The release was gated on an unpaid volunteer's
+✅ **RESOLVED 2026-07-29: he completed it AHEAD of the box, so the fallback
+never fired.** Kept below for the reasoning, which stands: the time-box existed
+to stop OUR latency becoming HIS obligation, and it is now the suite-wide policy
+in `CONTRIBUTING.md`. ⚠ **Do NOT quote the fallback sentence as if it shipped.**
+
+⚠ **Original text follows (historical):** ACTION DUE 2026-08-02. The release was gated on an unpaid volunteer's
 re-verification with no deadline, holding #80/#89/#90 open indefinitely. That is
 our design error, not his. Posted on
 [#95](https://github.com/jgravelle/jdocmunch-mcp/issues/95#issuecomment-5083861358)
