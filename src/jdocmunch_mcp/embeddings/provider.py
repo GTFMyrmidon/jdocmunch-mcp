@@ -6,16 +6,24 @@ no API key required).
 
 Auto-detection priority (first available wins):
     1. JDOCMUNCH_EMBEDDING_PROVIDER env var (gemini/openai/openai-compatible/sentence-transformers/none)
-    2. GOOGLE_API_KEY → Gemini
-    3. OPENAI_API_KEY → OpenAI
+    2. GOOGLE_API_KEY → Gemini            (opt-in, see below)
+    3. OPENAI_API_KEY → OpenAI            (opt-in, see below)
     4. sentence-transformers installed → local offline model
+
+⚠ Steps 2 and 3 are PAID CLOUD providers and are SKIPPED by auto-detect unless
+JDOCMUNCH_ALLOW_PAID_EMBEDDINGS is set. A bare key in the environment must not
+silently bill, and must not silently send the indexed corpus to a third party.
+Naming the provider in step 1 is always honored.
 
 Set JDOCMUNCH_EMBEDDING_PROVIDER=none to disable all embedding.
 """
 
+import logging
 import math
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -102,14 +110,54 @@ def _sentence_transformers_available() -> bool:
         return False
 
 
+# Embedding providers that bill a remote cloud account per call AND send the
+# indexed text off the machine. A bare env key for any of these must NEVER
+# auto-enable embedding: it silently spends money and, worse, ships the corpus
+# to a third party. Discovered when `index_local` on a PRIVATE memory store
+# auto-selected OpenAI from an ambient OPENAI_API_KEY and began embedding it.
+#
+# The summarizer path already had this guard (`batch_summarize._PAID_CLOUD_PROVIDERS`)
+# with the same rationale. It was never ported here, so AI summaries were
+# correctly suppressed while embeddings sailed through the identical hazard.
+# Naming the provider (JDOCMUNCH_EMBEDDING_PROVIDER) is always honored.
+_PAID_CLOUD_EMBEDDING_PROVIDERS = frozenset({"gemini", "openai"})
+_WARNED_SUPPRESSED_PAID_EMBED: set = set()
+
+# (env var, provider name) in auto-detect priority order.
+_EMBED_AUTO_DETECT_ORDER = (
+    ("GOOGLE_API_KEY", "gemini"),
+    ("OPENAI_API_KEY", "openai"),
+)
+
+
+def _paid_embeddings_allowed() -> bool:
+    """Whether the user explicitly opted in to paid-cloud auto-embedding.
+
+    Off by default: an ambient cloud API key never bills, and never exports the
+    corpus, on its own. Turn on with JDOCMUNCH_ALLOW_PAID_EMBEDDINGS=1. Naming a
+    provider explicitly (JDOCMUNCH_EMBEDDING_PROVIDER) is always honored and does
+    not need this.
+    """
+    return os.environ.get("JDOCMUNCH_ALLOW_PAID_EMBEDDINGS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def get_provider_name() -> Optional[str]:
-    """Return the active provider name, or None if embeddings are disabled."""
+    """Return the active provider name, or None if embeddings are disabled.
+
+    Auto-detect NEVER selects a paid cloud provider from a bare env key unless
+    JDOCMUNCH_ALLOW_PAID_EMBEDDINGS is set. Naming the provider explicitly
+    bypasses this, because that is a deliberate choice rather than an ambient one.
+    """
     explicit = os.environ.get("JDOCMUNCH_EMBEDDING_PROVIDER", "").lower().strip()
     if explicit == "gemini":
         return "gemini"
     if explicit == "openai":
         return "openai"
     if explicit == "openai-compatible":
+        # Not in the paid set: it requires an explicitly configured URL + model,
+        # which is itself the opt-in, and the common target is a local runtime.
         if _openai_compat_url() and _openai_compat_model():
             return "openai-compatible"
         return None
@@ -117,11 +165,24 @@ def get_provider_name() -> Optional[str]:
         return "sentence-transformers"
     if explicit == "none":
         return None
-    # Auto-detect: cloud providers first, then offline fallback
-    if os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
+    # Auto-detect: cloud providers first, then offline fallback.
+    allow_paid = _paid_embeddings_allowed()
+    for env_var, name in _EMBED_AUTO_DETECT_ORDER:
+        if not os.environ.get(env_var):
+            continue
+        if not allow_paid and name in _PAID_CLOUD_EMBEDDING_PROVIDERS:
+            if name not in _WARNED_SUPPRESSED_PAID_EMBED:
+                _WARNED_SUPPRESSED_PAID_EMBED.add(name)
+                logger.warning(
+                    "%s is set but paid-cloud embeddings are opt-in — NOT billing "
+                    "%s automatically, and NOT sending indexed text off this "
+                    "machine. To enable, set JDOCMUNCH_EMBEDDING_PROVIDER=%s (or "
+                    "JDOCMUNCH_ALLOW_PAID_EMBEDDINGS=1). Indexing continues with "
+                    "lexical BM25 search.",
+                    env_var, name, name,
+                )
+            continue
+        return name
     if _sentence_transformers_available():
         return "sentence-transformers"
     return None
