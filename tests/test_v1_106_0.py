@@ -217,6 +217,9 @@ def test_part_b_vocabulary_is_documented():
         # jdoc#88 QA-02 (v1.113.0): exact-duplicate graduation retirement
         # whose delete did not complete — recoverable, retry idempotent.
         wc.REASON_GRADUATION_CLEANUP_INCOMPLETE,
+        # jdoc#88 QA-01 (v1.115.0): guarded-delete conflict on the
+        # exact-duplicate graduation path.
+        wc.REASON_GRADUATION_CONFLICT,
         # jdoc#88 QA-05 (v1.114.0): the read-time resolver's codes, promoted
         # from inline literals to constants so this guard and the SPEC.md
         # table cover them.

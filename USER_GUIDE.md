@@ -235,11 +235,12 @@ Indexes created before v1.102.0 predate corpus identity and can coexist with a
 modern index of the same source. `index_local` accepts an opt-in
 `legacy_reconcile` parameter to resolve one explicitly:
 
-- `legacy_reconcile="report"` — refresh the explicitly named legacy handle,
-  then prove (or fail to prove) it is an exact duplicate of a single modern
-  peer: same verified corpus identity, same clean certified commit, and full
-  path-and-hash coverage. Reports `legacy_reconcile_ready` when the proof
-  passes. Nothing is retired in report mode.
+- `legacy_reconcile="report"` — prove (or fail to prove) the explicitly named
+  legacy handle is an exact duplicate of a single modern peer: same verified
+  corpus identity, same clean certified commit, and full path-and-hash
+  coverage. Report performs no writes on any outcome — it proves from stored
+  snapshots plus live Git evidence, so it requires a clean checkout at the
+  certified commit. Reports `legacy_reconcile_ready` when the proof passes.
 - `legacy_reconcile="apply"` — repeat the proof immediately before retirement,
   then retire the selected legacy handle and return the modern peer's handle.
 

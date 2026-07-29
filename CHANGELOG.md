@@ -1,5 +1,145 @@
 # Changelog
 
+## [1.120.0] - 2026-07-29 - retirement is commit-scoped, and the proof is independent (#95)
+
+Closes the coordinated-retirement arc that ran through #80, #88, #89, #90, #93
+and #95, all of it originated by @rknighton. The `[1.115.0]` entry below records
+the QA-01/QA-03 work and the #89 corrections; this entry covers what landed after
+it, and the independent verification the release was held for.
+
+**Independently re-verified, not self-certified.** QA-15 and QA-17 were run
+together against a frozen commit on Linux by the reviewer who wrote the harness
+and found the original defects, in a clean detached checkout inside an isolated
+container (no network, capabilities dropped, `no-new-privileges`), with the
+post-test tree identical and `git status --porcelain` empty. Result: **10 passed,
+2 skipped, 0 failed**, the full collection of both files. The 2 skips are the
+`_PAIR_LOCK_API` cases, which apply only to the canonical-order pair-lock design
+and stay inapplicable while Path A stands. `test_three_processes_keep_one_lock_inode`
+**executed rather than skipping**, which is the reason Linux was the platform
+that mattered. His pre-registered harness passed **7 of 7** at sha256
+`88381e18f8463617349df506cc2569d54968938b0904d73f56077473d33a5f6`, byte-identical
+to the copy we downloaded and ran ourselves.
+
+The acceptance criteria predated any implementation, so the gate could not be
+reshaped to fit the fix.
+
+### Fixed
+
+- **Final retirement authority was not commit-scoped (QA-19, High).** Retirement
+  could commit using a retained-handle proof that had gone stale after it was
+  taken, record-path existence could be mistaken for authority from the same
+  publication, and record cleanup could remove a *different* publication than
+  the one it proved.
+
+  At every successful commit the retained handle is now loadable and matches the
+  authoritative final proof, and a retained-handle change before that commit
+  forces re-proof or a fail-closed non-`retired` result. The final gate is
+  authorized by the exact current retirement publication rather than by a record
+  path existing. Every retirement-record mutation is lock-coordinated,
+  revalidated, and conditional on the intended publication, so an older
+  completion cannot remove a newer one. Authoritative record-lock failure fails
+  closed and can neither enter an unlocked critical section nor permit a
+  deletion. Every non-`retired` reconciliation outcome leaves the retiring index
+  loadable.
+
+- **Public deletion could wait about a second on a retirement-record lock
+  (QA-23).** Public target-lock and record-lock contention now return a prompt,
+  typed, retryable `index_lifecycle_busy`. An MCP call that blocks on a lock is
+  indistinguishable from a hang to its caller. Internal coordinated retirement
+  keeps its bounded wait, where waiting is mid-protocol and correct. The public
+  path never enters the guarded route: it supplies neither
+  `retirement_publication` nor `expected_fingerprints`, and its record-lock
+  coordination runs at `timeout_seconds=0.0`.
+
+- **Normal deletion did not preserve the index lockfile (QA-21)**, now fixed with
+  a non-vacuous Linux proof.
+
+- **Contention intent was inferred rather than stated (QA-25).** Two tests
+  required opposite behaviour on the same lock while leaving `lock_wait` to the
+  default, so no default could satisfy both. Every contention-sensitive caller
+  now states whether it waits or refuses. The default stays `False`, which is a
+  data-loss argument rather than a preference: a caller that forgets to say gets
+  the refusing behaviour, preserving the guarantee that both participating
+  indexes are never simultaneously absent.
+
+- **A missing or unreadable entry record could be treated as authority.** It now
+  never is: no primary unlink, a non-`retired` result, and a loadable retiring
+  index.
+
+### Added
+
+- **A public `reason_code` vocabulary**, documented in `SPEC.md` and protected by
+  a runtime drift test, so the codes a caller branches on are a contract rather
+  than an implementation detail.
+
+- **Durable, recoverable retirement records.** Interrupted retirements are proven
+  recoverable by **real-process interruption** rather than mocked exceptions:
+  a child process exits inside the record lock and a fresh process acquires the
+  same lock and completes recovery.
+
+- **`package-smoke` CI job** (#99). Every other test runs against an editable
+  source tree, so a packaging fault could not fail them. This builds the wheel,
+  installs it into a clean environment, and exercises public delete against the
+  installed artifact from a directory with no `src/` reachable. The smoke script
+  refuses to run if it imported from a source tree, because without that guard it
+  could pass by testing `src/` again.
+
+- **Machine-generated evidence receipts** (#100). Each matrix job emits a receipt
+  from the run itself, so the commit named in a summary is the commit the numbers
+  came from, and summaries are generated rather than transcribed. Counts come
+  from `pytest --junitxml`, which is built in, so producing evidence adds no
+  dependency. Two honesty guards: a dirty working tree is recorded and surfaced,
+  and a summary spanning more than one commit says so instead of averaging runs
+  into a figure that describes no candidate.
+
+- **An exhaustive wait-policy guard** (#98). Every production `delete_index` call
+  must pass `lock_wait` explicitly or be named with the reason it cannot matter,
+  so a newly added caller cannot arrive with no stated policy.
+
+### Changed
+
+- **CI reports each matrix job independently** (QA-24). A single ubuntu failure
+  was cancelling all four Windows jobs, so a frozen review commit carried no
+  Windows result at all while the checks panel showed eight failures where there
+  was one. An external reviewer cannot verify a per-platform claim against a
+  cancellation.
+
+### Compatibility
+
+Additive under the 1.x contract. No tool added, removed, or renamed. No wire
+format change. `INDEX_VERSION` stays at **3**, so **no reindex is required**.
+
+### Known and deliberate
+
+Two behaviours are documented decisions rather than defects, both recorded on
+`ROADMAP.md` with close conditions and the reviewer's credit:
+
+- The internal record lock acquires without a deadline. This is **not
+  Windows-only**: POSIX `flock(fd, LOCK_EX)` without `LOCK_NB` blocks
+  indefinitely too, so any bound would have to cover both platforms. The exposure
+  is availability rather than authority, since a blocked caller cannot authorize
+  a deletion while it waits, and legitimate holds measured 3.02 ms at 2 MB.
+- An unreadable retirement record is inert but persists. If the record's identity
+  cannot be established there is no verified publication to act on, and unlinking
+  anyway would mutate retirement state without proving it is the intended
+  publication, which is the class of problem QA-19 exists to prevent. It is
+  disclosed as `{"record_state": "unreadable"}` rather than hidden, and a later
+  valid `begin_retirement` for the same slot replaces it.
+
+### Suite
+
+1972 passed / 9 skipped on Linux, 1967 passed / 14 skipped on Windows, across
+Python 3.10 through 3.13. The five-test difference is POSIX-only coordination
+tests, which is exactly why a Windows pass is never read as verifying a locking
+contract.
+
+⚠ **Version note.** This work was tracked throughout as the `[1.115.0]` CHANGELOG
+heading, which master deliberately skipped to reserve the number for this branch.
+It **ships as 1.120.0**: `pip install jdocmunch-mcp` resolves to the highest
+version, so publishing 1.115.0 after 1.119.0 would ship it into a version nobody
+receives by default. The `[1.115.0]` entry stays as the historical record of the
+branch's work.
+
 ## [1.119.0] - 2026-07-24 - a rebuild underneath a scan cannot prove absence (5th refusal rule)
 
 Suite parity with jcodemunch-mcp v1.108.168.
@@ -158,6 +298,113 @@ Version 1.115.0 is deliberately skipped here so the held branch keeps it; on
 merge, resolve version conflicts to the higher number and keep all CHANGELOG
 entries.**
 
+## [1.115.0] - 2026-07-22 - QA-01/QA-03: coordinated & recoverable retirement, truly read-only report (#88)
+
+The remaining two findings from @rknighton's #88 adversarial QA.
+
+**QA-01 (High):** every retirement path proved the relationship, rechecked it,
+then deleted — and an index that changed between the recheck and the physical
+removal was still removed under the stale decision. `DocStore.delete_index`
+now accepts proof-time `expected_fingerprints` (sha256 of each handle's
+monolith, retiring AND retained) and re-verifies them inside the deletion
+boundary, before any removal. A mismatch raises `RetirementConflict` with
+nothing touched; the three retirement sites (legacy apply, supersession,
+exact-dedup graduation) report it as `legacy_reconcile_conflict`,
+`supersession_conflict`, and the new `graduation_conflict`, each with a
+`changed_handles` list and both indexes kept.
+
+**Recoverability (QA-01/QA-02):** a durable retiring record
+(`<owner>/.retirements/<name>.json` — retiring + retained handles,
+fingerprints, family, start time) is written before the destructive step.
+Removed on success and on conflict; kept when cleanup fails, so pending work
+survives a crash as a discoverable fact (`pending_retirement: true` in
+cleanup-incomplete responses). A refresh of a retiring handle cancels the
+pending retirement rather than racing it, and `delete_index` clears the
+record once the primary record is gone.
+
+**QA-03 (Medium):** `legacy_reconcile="report"` is documented as proof-only
+but ran the full refresh first, rewriting the legacy index whenever source
+files changed. Report now diverts before the refresh and proves from stored
+snapshots plus live Git evidence: both indexes certified clean at one SHA and
+the live checkout clean at that same SHA — three clean legs at one commit
+mean the stored snapshots describe the live tree, no refresh needed. Zero
+writes on every outcome; responses carry `_meta.read_only: true`. A genuinely
+uncertified legacy index reports `legacy_reconcile_uncertified` honestly
+(apply, which refreshes under C.2 intent, remains the certify-and-retire
+path).
+
+**Pre-production corrections (#89, @rknighton):** the branch QA pass found
+the coordination above still left a proof-to-capture gap and an
+unverified recovery record; both fixed before this release shipped.
+
+- **QA-06 (High):** the three retirement paths now run one coordinated
+  destructive step — fingerprints captured FIRST, decisive proof re-run on a
+  reload the token covers, then the guarded delete verifies the fingerprints
+  at entry AND immediately before the primary record is removed (a concurrent
+  save or direct delete of the retained peer mid-cleanup now conflicts with
+  every index still loadable). A missing/unreadable fingerprint fails closed
+  (`None` never authorizes), and `delete_index` holds the same cross-process
+  write lock as the save paths — every writer and direct delete of a handle
+  joins one lifecycle coordinator. Only the target handle is ever locked, so
+  cross-handle lock ordering (and its deadlock surface) never arises.
+- **QA-07 (Medium):** `begin_retirement` returns a durable publication
+  receipt (fsync'd record, per-publication-unique temp name — two
+  same-process publishers can no longer collide on one PID-based temp path)
+  and cleanup never starts without it; a failed publication reports
+  cleanup-incomplete with nothing removed. `pending_retirement: true` is
+  claimed only when the record actually exists, and the save paths cancel a
+  pending record only AFTER their atomic replace lands (a failed save
+  preserves the record).
+- **QA-08:** a record whose retiring index no longer exists is a completed
+  retirement — self-healed, never reported pending. **QA-09/QA-10** (policy):
+  a rewrite or direct delete of the RETAINED handle voids any record naming
+  it as retained (fail-visible; the next reconcile re-proves). **QA-11**
+  (contract): record publication is fsync'd, so the receipt survives sudden
+  power loss. **QA-15:** the POSIX write lock re-verifies its inode after
+  acquisition, so lockfile deletion can't split coordination across two
+  inodes.
+
+**Completion QA (#90, @rknighton):**
+
+- **QA-17 (High):** pair coordination previously ended at the final
+  fingerprint check — a retained-peer delete landing between that check and
+  the primary unlink could still leave both indexes absent. The retirement
+  record is now the PAIR coordination point: the guarded delete executes its
+  final gate (fingerprint re-verify, record-existence check, primary unlink,
+  record removal) under a lock on its own retirement record, and any delete
+  first voids the records naming its target as retained THROUGH that same
+  lock (bounded wait) before touching anything. Void lands before the gate →
+  the gate finds the record gone and conflicts, keeping the retiring handle.
+  Gate already closed → the retained-peer delete is refused (returns False;
+  a retry succeeds as soon as the gate opens, normally milliseconds). No
+  interleaving finishes with both participating indexes absent, and no
+  caller ever blocks on two locks — the single-handle lock design (and its
+  absent deadlock surface) is preserved.
+- **QA-18:** corrected below — the #89 harness claim now states the exact
+  results instead of "pass in full."
+
+**Issue #95 merge-closure candidate:** retirement publication is now
+commit-scoped: record creation, replacement, and removal are coordinated, final
+authorization requires the exact current publication, and fingerprints are
+re-proved after retained-handle coordination. Public `delete_index` makes one
+nonblocking lifecycle-coordination attempt while internal retirement keeps its
+bounded wait; successful deletion preserves the stable per-index lockfile.
+The public deleted, missing, and lifecycle-busy results have one authoritative
+runtime vocabulary, with a `SPEC.md` table and drift guard. QA-25's explicit
+caller wait policy and nonblocking default were preserved and independently
+verified, not redesigned.
+
+Additive and 1.x-compatible: new defaulted kwarg, new exception only raised
+when that kwarg is passed, new response keys, no INDEX_VERSION bump. Tests:
+`tests/test_v1_115_0.py` (10) + `tests/test_v1_115_0_qa89.py` (10) +
+`tests/test_v1_115_0_qa90.py` (4); @rknighton's `qa_adversarial_test.py`
+passes 8/8 verbatim. His #89 `qa_blockers.py` passes 9/9; `qa_process.py`
+passes 5/6 — the one flip is `test_observation_direct_retained_delete`, his
+explicitly-labeled current-behavior observation, which now asserts pre-#89
+behavior by design (the QA-10 policy voids the record on a retained-handle
+direct delete). His #90 `qa_atomic_gap.py` both-indexes-absent state is
+unreachable: the mid-gate retained delete is refused, so the harness stops
+at its delete-returns-True assert while the invariant it protects holds.
 ## [1.114.2] - 2026-07-23 - canonical handoff contract: finalize_handoff + munch://handoff/<id> (suite parity, jcodemunch-mcp #374)
 
 New tool `finalize_handoff` (`jdocmunch.handoff/v1`) + resource

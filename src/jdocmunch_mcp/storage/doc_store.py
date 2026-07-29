@@ -2,6 +2,7 @@
 
 import fnmatch
 import functools
+import inspect
 import hashlib
 import json
 import os
@@ -30,6 +31,68 @@ INDEX_VERSION = 3
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _UNSET = object()
 
+# Authoritative storage outcomes for delete_index. The semantic keys are
+# internal; the values are the stable public reason codes emitted by storage
+# and interpreted by the public tool.
+DELETE_REASON_CODES = {
+    "deleted": "index_deleted",
+    "not_found": "index_not_found",
+    "lifecycle_busy": "index_lifecycle_busy",
+}
+
+# Additive disclosure emitted only when a guarded retirement committed its
+# primary unlink but exact-publication record completion did not finish. This
+# is the single authority for the field names, types, and meanings that
+# SPEC.md publishes and the drift guard checks.
+RETIREMENT_CLEANUP_OUTCOME_SCHEMA = {
+    "retirement_cleanup_pending": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True when durable record state remains readable or unreadable; "
+            "false only when it is absent."
+        ),
+    },
+    "retirement_cleanup_record_state": {
+        "json_type": "string",
+        "allowed_values": ("absent", "readable", "unreadable"),
+        "meaning": (
+            "Observed durable retirement-record state after the completion "
+            "attempt."
+        ),
+    },
+    "retirement_cleanup_owned": {
+        "json_type": "boolean",
+        "allowed_values": ("false", "true"),
+        "meaning": (
+            "True only for a readable record whose publication_id equals the "
+            "exact completing publication; false for absent, unreadable, or "
+            "replacement state."
+        ),
+    },
+}
+
+
+class RetirementConflict(Exception):
+    """jdoc#88 QA-01: a guarded ``delete_index`` found an index changed since
+    its retirement was approved. Raised at the entry check (nothing touched)
+    or at the final recheck after the retained-handle gate is acquired and
+    immediately before the primary record would be unlinked (jdoc#89 QA-06).
+    In both entry and final conflicts, the retiring primary remains loadable
+    because its primary unlink did not commit; at worst rebuildable auxiliary
+    artifacts of the retiring handle are gone. A retained peer that changed or
+    disappeared is not restored. ``changed`` lists the ``owner/name`` handles
+    that no longer match their proof-time fingerprints (an expected value of
+    None always conflicts; missing state never authorizes removal). Only ever
+    raised when the caller passed ``expected_fingerprints``; unguarded deletes
+    are unaffected."""
+
+    def __init__(self, changed: list):
+        self.changed = list(changed)
+        super().__init__(
+            f"index state changed since retirement was approved: {self.changed}"
+        )
+
 
 def _with_index_lock(method):
     """Serialize same-repo index writes across processes.
@@ -46,10 +109,46 @@ def _with_index_lock(method):
     Non-reentrant (the lock is per-fd), so a decorated method must not call
     another decorated writer for the *same* repo while holding the lock. Today
     neither writer calls the other.
+
+    jdoc#93 QA-23: a decorated method may opt into a ZERO-WAIT acquisition by
+    accepting a ``lock_wait`` parameter and being called with
+    ``lock_wait=False``. Contention then returns False immediately with
+    ``outcome["reason_code"] = "index_lifecycle_busy"`` instead of queueing.
+    That is the PUBLIC-path contract: a tool call that silently blocks on a
+    lock is indistinguishable from a hang to its caller, so contention is
+    reported as a typed, retryable answer. Internal coordinated operations
+    (the retirement's own guarded delete) keep the blocking acquisition —
+    they are mid-protocol and a bounded wait is correct there.
+
+    Only ``delete_index`` opts in today; the default is unchanged blocking, so
+    every other writer behaves exactly as before.
     """
+
+    # Resolved once, at decoration time: a method that declares `lock_wait`
+    # owns its own default, so an omitted argument honors the signature rather
+    # than this decorator's opinion. Methods without the parameter (save_index,
+    # incremental_save) keep blocking acquisition unconditionally.
+    try:
+        _param = inspect.signature(method).parameters.get("lock_wait")
+        _default_lock_wait = (
+            True if _param is None or _param.default is inspect.Parameter.empty
+            else bool(_param.default)
+        )
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        _default_lock_wait = True
 
     @functools.wraps(method)
     def wrapper(self, owner=None, name=None, *args, **kwargs):
+        if kwargs.get("lock_wait", _default_lock_wait) is False:
+            with self._try_index_write_lock(owner, name) as acquired:
+                if not acquired:
+                    outcome = kwargs.get("outcome")
+                    if outcome is not None:
+                        outcome["reason_code"] = DELETE_REASON_CODES[
+                            "lifecycle_busy"
+                        ]
+                    return False
+                return method(self, owner, name, *args, **kwargs)
         with self._index_write_lock(owner, name):
             return method(self, owner, name, *args, **kwargs)
 
@@ -655,12 +754,10 @@ class DocStore:
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _safe_repo_component(self, value: str, field_name: str) -> str:
-        import re
-        if not value or value in {".", ".."}:
-            raise ValueError(f"Invalid {field_name}: {value!r}")
-        if "/" in value or "\\" in value:
-            raise ValueError(f"Invalid {field_name}: {value!r}")
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        # Shares retirements.is_safe_path_component so the store side and the
+        # record side cannot drift into two different notions of "safe".
+        from .retirements import is_safe_path_component
+        if not is_safe_path_component(value):
             raise ValueError(f"Invalid {field_name}: {value!r}")
         return value
 
@@ -794,17 +891,41 @@ class DocStore:
             yield
             return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-        try:
+        while True:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
             if fcntl is not None:
                 fcntl.flock(fd, fcntl.LOCK_EX)
-            else:  # Windows: LK_LOCK blocks ~10s then raises; loop until granted
-                while True:
-                    try:
-                        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                # jdoc#89 QA-15: POSIX locks attach to the open inode, not the
+                # pathname. delete_index can unlink the lockfile while another
+                # process holds (or is queued on) its old inode; a lock taken
+                # on a stale inode would no longer coordinate with later
+                # acquirers of the recreated path. Verify the fd still IS the
+                # path after acquiring; if not, retry on the fresh inode.
+                try:
+                    path_stat = os.stat(str(lock_path))
+                    fd_stat = os.fstat(fd)
+                    if (path_stat.st_ino, path_stat.st_dev) == (
+                        fd_stat.st_ino, fd_stat.st_dev
+                    ):
                         break
-                    except OSError:
-                        time.sleep(0.05)
+                except OSError:
+                    pass  # unlinked under us — stale inode, retry
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+                continue
+            # Windows: LK_LOCK blocks ~10s then raises; loop until granted.
+            # An open file cannot be unlinked on Windows, so the inode-split
+            # hazard above cannot occur here.
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            break
+        try:
             yield
         finally:
             try:
@@ -817,6 +938,124 @@ class DocStore:
                         pass
             finally:
                 os.close(fd)
+
+    @contextmanager
+    def _try_index_write_lock(self, owner, name):
+        """Non-blocking sibling of :meth:`_index_write_lock`; yields acquired?
+
+        jdoc#93 QA-19 (Path A). The retirement gate must be able to tell that a
+        save or delete is *in flight* on the retained handle. A fingerprint
+        cannot: it proves the file has not changed YET, and says nothing about a
+        writer holding the lock one instruction from publishing.
+
+        Deliberately NON-BLOCKING. The QA-14 deadlock surface was closed by the
+        rule that no caller ever blocks on two locks, and this gate already
+        holds its own handle lock plus its record lock. An attempt that never
+        waits cannot participate in a cycle, so the rule survives: on
+        contention we fail closed rather than queue.
+
+        Degenerate case: when neither locking primitive exists, or the path is
+        unusable, this yields True — matching ``_index_write_lock``, which is
+        itself a no-op there. The check is exactly as vacuous as the lock it
+        probes, never more optimistic than the surrounding model.
+        """
+        try:
+            lock_path = self._index_path(owner, name).with_name(
+                f"{self._index_path(owner, name).name}.lock"
+            )
+        except (ValueError, TypeError):
+            yield True
+            return
+        if (fcntl is None and msvcrt is None) or not owner or not name:
+            yield True
+            return
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fd = None
+        acquired = False
+        # Bounded, because the QA-15 inode recheck can legitimately retry. With
+        # QA-21 fixed nothing unlinks the lockfile any more, so this should
+        # settle on the first pass; the cap keeps a pathological racer from
+        # spinning here forever.
+        for _ in range(5):
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        os.close(fd)
+                        fd = None
+                        break  # held by someone else — that is the answer
+                    # QA-15: confirm we locked the inode this path names.
+                    try:
+                        path_stat = os.stat(str(lock_path))
+                        fd_stat = os.fstat(fd)
+                        if (path_stat.st_ino, path_stat.st_dev) == (
+                            fd_stat.st_ino, fd_stat.st_dev
+                        ):
+                            acquired = True
+                            break
+                    except OSError:
+                        pass  # unlinked under us — stale inode, retry
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+                    fd = None
+                    continue
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    os.close(fd)
+                    fd = None
+                    break  # held by someone else
+                acquired = True
+                break
+            except Exception:
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+                raise
+
+        try:
+            yield acquired
+        finally:
+            if fd is not None:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    else:
+                        try:
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        except OSError:
+                            pass
+                finally:
+                    os.close(fd)
+
+    @contextmanager
+    def _gate_retained_handle(self, retained, owner, name):
+        """Hold the RETAINED peer's write lock across the destructive step.
+
+        Yields True when the gate may proceed. Yields False only when a writer
+        or deleter genuinely holds the retained handle right now — the caller
+        turns that into a ``RetirementConflict`` so both indexes stay loadable.
+
+        Two cases deliberately proceed without acquiring anything:
+
+        * No retained handle (an unguarded delete). There is no peer to couple.
+        * The retained handle IS this handle. ``_index_write_lock`` is
+          non-reentrant and per-fd, so acquiring it again on this thread would
+          conflict with the lock this very delete already holds and turn every
+          such retirement into a permanent false conflict.
+        """
+        if not retained or not isinstance(retained, str) or "/" not in retained:
+            yield True
+            return
+        r_owner, _, r_name = retained.partition("/")
+        if (r_owner, r_name) == (owner, name):
+            yield True
+            return
+        with self._try_index_write_lock(r_owner, r_name) as got:
+            yield got
 
     @staticmethod
     def _atomic_replace(tmp_path: Path, index_path: Path,
@@ -908,6 +1147,10 @@ class DocStore:
             # multiple GB on broadly-indexed corpora.
             json.dump(self._index_to_dict(index), f, separators=(",", ":"))
         self._atomic_replace(tmp_path, index_path)
+        # jdoc#89 QA-07: cancel the pending retirement only AFTER the rewrite
+        # actually landed — a save that fails before the replace leaves the
+        # still-pending work discoverable instead of erasing its record.
+        self._cancel_pending_retirement(owner, name)
         _evict_index_cache(index_path)
         self._write_summary(owner, name, index)  # jdoc#77
 
@@ -1201,6 +1444,8 @@ class DocStore:
             # jdoc#75: compact separators (see save_index).
             json.dump(self._index_to_dict(updated), f, separators=(",", ":"))
         self._atomic_replace(tmp_path, index_path)
+        # jdoc#89 QA-07: cancel only after the rewrite landed (see save_index).
+        self._cancel_pending_retirement(owner, name)
         _evict_index_cache(index_path)
         self._write_summary(owner, name, updated)  # jdoc#77
 
@@ -1359,13 +1604,332 @@ class DocStore:
                 continue
         return repos
 
-    def delete_index(self, owner: str, name: str) -> bool:
-        """Delete an index and its raw content cache."""
+    def _cancel_pending_retirement(self, owner: str, name: str) -> None:
+        """jdoc#88 QA-01 item 3: a refresh of a retiring handle CANCELS the
+        pending retirement instead of racing it. The proof-time fingerprints
+        are stale by definition once the handle is rewritten, and a voided
+        retirement must not linger as pending work. jdoc#89 QA-09: the same
+        applies from the RETAINED side — rewriting the retained peer stales
+        the record's stored proof, so any record naming this handle as
+        retained is voided too. Fail-visible by design: the caller's write
+        goes where they aimed it, never silently rerouted; the next reconcile
+        re-proves against the new state. Best-effort."""
+        try:
+            from .retirements import (
+                void_retirement_if_stale, void_retirements_referencing,
+            )
+            current_fingerprint = self.index_fingerprint(owner, name)
+            void_retirement_if_stale(
+                self.base_path, owner, name, current_fingerprint
+            )
+            void_retirements_referencing(
+                self.base_path,
+                f"{owner}/{name}",
+                current_fingerprint=current_fingerprint,
+            )
+        except Exception:
+            pass
+
+    def index_fingerprint(self, owner: str, name: str) -> Optional[str]:
+        """sha256 of the stored monolith bytes, or None when unreadable.
+
+        The retirement precondition token (jdoc#88 QA-01): captured at proof
+        time and re-verified inside :meth:`delete_index`, it detects ANY
+        change to the stored index — content, certification, or metadata —
+        between approval and physical removal.
+
+        Shares :func:`retirements.fingerprint_index_file` with the record-side
+        re-proof: two implementations that drifted by a byte would make every
+        publication refuse itself."""
+        from .retirements import fingerprint_index_file
+        try:
+            return fingerprint_index_file(self._index_path(owner, name))
+        except ValueError:
+            return None
+
+    def _verify_expected_fingerprints(self, expected_fingerprints: dict) -> list:
+        """The handles whose current fingerprints no longer match their
+        proof-time values. jdoc#89 QA-06: an expected value of None fails
+        closed — a missing or unreadable fingerprint at proof time never
+        authorizes a removal, so ``None == None`` can never pass the guard."""
+        changed = []
+        for handle, expected in expected_fingerprints.items():
+            h_owner, _, h_name = handle.partition("/")
+            if (
+                expected is None
+                or self.index_fingerprint(h_owner, h_name) != expected
+            ):
+                changed.append(handle)
+        return changed
+
+    def _commit_guarded_retirement(
+        self, owner: str, name: str, index_path: Path, *,
+        expected_fingerprints: dict,
+        expected_publication: str,
+        entry_record: Optional[dict],
+        outcome: Optional[dict],
+    ) -> bool:
+        """The final authorization gate: the ONE destructive step.
+
+        jdoc#89 QA-06 / jdoc#90 QA-17 / jdoc#93 QA-19. Called holding this
+        handle's write lock, with every auxiliary artifact already removed and
+        the primary ``<name>.json`` still in place. Acquires the record lock,
+        then the retained peer's gate NONBLOCKINGLY, and holds both through
+        the unlink and publication-scoped completion.
+
+        Everything before the retained gate is fast rejection only. A
+        fingerprint read before that gate cannot see a writer already in
+        flight on the retained handle: one that passed its own void scan
+        before our record existed, or a save paused an instruction short of
+        ``_atomic_replace``. Both hold the retained handle's write lock, so
+        only the proof repeated AFTER the gate closes can authorize the
+        commit.
+
+        Returns True when exact-publication record completion also succeeded,
+        False when the primary unlink committed but that completion did not.
+        The caller must then leave the durable record alone as recoverable
+        state. Raises :class:`RetirementConflict` on any refusal, always
+        before the unlink, so the retiring monolith stays loadable; only
+        rebuildable auxiliary artifacts may already be gone.
+        """
+        from .retirements import (
+            _retirement_record_state, finish_retirement, hold_record_lock,
+            retirement_record, RetirementRecordLockError,
+            _valid_retirement_record,
+        )
+
+        def _publication_conflict() -> RetirementConflict:
+            """Name the peer this retirement can no longer speak for."""
+            return RetirementConflict(
+                [(entry_record or {}).get("retained") or f"{owner}/{name}"]
+            )
+
+        def _published_proof(current: Optional[dict]) -> dict:
+            """The durable proof this publication actually authorizes.
+
+            The receipt and the proof travel together or the receipt means
+            nothing: a caller holding a valid publication_id could otherwise
+            hand in an empty or partial map and have the gate verify only the
+            handles it chose to mention, so a changed retained peer would go
+            unnoticed. The record's own map is the authority, and the caller's
+            copy must equal it exactly.
+            """
+            if (
+                current is None
+                or current.get("publication_id") != expected_publication
+                or not _valid_retirement_record(current, owner, name)
+            ):
+                raise _publication_conflict()
+            published = current.get("fingerprints")
+            if (
+                not isinstance(published, dict)
+                or not published
+                or published != expected_fingerprints
+            ):
+                raise _publication_conflict()
+            return published
+
+        try:
+            with hold_record_lock(self.base_path, owner, name):
+                record = retirement_record(self.base_path, owner, name)
+                _published_proof(record)
+                retained = record.get("retained")
+                with self._gate_retained_handle(
+                    retained, owner, name
+                ) as gate_ok:
+                    if not gate_ok:
+                        raise RetirementConflict(
+                            [retained or f"{owner}/{name}"]
+                        )
+                    # Re-read under the gate and verify the DURABLE map, not
+                    # the caller's argument, so the authority that authorizes
+                    # the unlink is the same object that recorded the proof.
+                    published = _published_proof(
+                        retirement_record(self.base_path, owner, name)
+                    )
+                    changed = self._verify_expected_fingerprints(published)
+                    if changed:
+                        raise RetirementConflict(changed)
+
+                    _evict_index_cache(index_path)
+                    index_path.unlink()
+                    if outcome is not None:
+                        outcome["_primary_unlink_committed"] = True
+
+                    # Past this point the retirement HAS committed. Add no
+                    # durable write to a critical section that still holds
+                    # both the record lock and the retained gate. A failed
+                    # completion is already evidence the store is unhealthy.
+                    # Read the durable state, disclose it, and get out.
+                    if finish_retirement(
+                        self.base_path, owner, name,
+                        publication_id=expected_publication,
+                        _lock_held=True,
+                    ):
+                        return True
+                    if outcome is not None:
+                        state, record = _retirement_record_state(
+                            self.base_path, owner, name
+                        )
+                        outcome.update(
+                            retirement_cleanup_pending=state != "absent",
+                            retirement_cleanup_record_state=state,
+                            retirement_cleanup_owned=(
+                                record is not None
+                                and record.get("publication_id")
+                                == expected_publication
+                            ),
+                        )
+                    return False
+        except RetirementRecordLockError:
+            # jdoc#95 AC-06: no authoritative lock, no critical section.
+            raise RetirementConflict([f"{owner}/{name}"])
+
+    @_with_index_lock
+    def delete_index(
+        self,
+        owner: str,
+        name: str,
+        expected_fingerprints: Optional[dict] = None,
+        outcome: Optional[dict] = None,
+        lock_wait: bool = False,
+        retirement_publication: Optional[str] = None,
+    ) -> bool:
+        """Delete an index and its raw content cache.
+
+        Holds the same cross-process write lock as ``save_index`` /
+        ``incremental_save`` (jdoc#89 QA-06: every writer and direct delete
+        of a handle joins one lifecycle coordinator). Retirement additionally
+        takes the retained handle's gate nonblockingly only inside the final
+        commit, so it never waits while holding two handle locks.
+
+        ``expected_fingerprints`` (jdoc#88 QA-01) maps ``owner/name`` handles
+        to :meth:`index_fingerprint` values captured when the retirement was
+        approved. The precondition is verified twice inside the deletion
+        boundary: at entry before any removal (a mismatch raises
+        :class:`RetirementConflict` with nothing touched), and again
+        after the retained gate is acquired and immediately before the primary
+        ``<name>.json`` record is removed. The second check aborts with the
+        handle still loadable when a concurrent save or direct delete changed
+        either participant; auxiliary artifacts may already be gone, and a
+        refresh rebuilds them. An expected value of None always conflicts.
+        Omitted (``None``) → the pre-existing unguarded behavior.
+
+        Passing any dict, INCLUDING an empty one, selects the guarded path and
+        therefore also requires ``retirement_publication``. An empty proof
+        asserting nothing can never authorize a removal, so it conflicts
+        rather than silently degrading to an unguarded delete. Callers that
+        want the unguarded behavior omit the argument.
+
+        jdoc#93 QA-20: ``outcome`` is an optional caller-supplied dict that
+        receives ``{"reason_code": ...}`` and, for guarded post-commit record
+        cleanup failure, additive durable cleanup state. The bool return cannot
+        distinguish "no such index" from "lifecycle contention, try again",
+        and the public
+        tool rendered both as *Index not found.* — so an agent hitting a busy
+        retirement concluded the index never existed and re-indexed, which is
+        the duplicate-creation failure this arc exists to prevent. Out-param
+        rather than a changed return type so every existing caller is
+        untouched.
+
+        jdoc#93 QA-23: ``lock_wait=False`` makes contention return False
+        immediately rather than wait. The public tool passes False explicitly
+        (fast ``index_lifecycle_busy`` refusal); retirement passes True.
+
+        jdoc#95 QA-25 (RESOLVED, was UNRESOLVED): two tests once called
+        ``delete_index(owner, name)`` with no lock_wait while requiring
+        OPPOSITE behavior on the SAME lock — the target handle's write lock
+        taken by ``_with_index_lock``:
+
+        * ``test_v1_115_0_qa90.py::test_qa17_retained_delete_refused_inside_final_gate``
+          needs an immediate False. A retirement is paused mid-unlink holding
+          this handle through ``_gate_retained_handle``, and blocking would
+          wait on work that cannot finish.
+        * ``test_v1_115_0_lifecycle_v2.py::test_three_processes_keep_one_lock_inode``
+          (Linux-only, SKIPS on Windows) needs a block. Contention there is an
+          ordinary cross-process writer that will release.
+
+        Neither is wrong, and no default satisfies both. We proposed inferring
+        intent from surrounding state (refuse when a pending retirement record
+        names this handle as retained, else honor lock_wait). The reviewer, who
+        authored both tests, rejected that in favour of the simpler rule:
+        **every contention-sensitive caller states whether it waits or
+        refuses, and the lock never deduces it.** Both tests now pass the flag
+        explicitly, so this default arbitrates nothing.
+
+        ⚠ The default stays False, and ``test_v1_115_0_qa25.py`` asserts that
+        by signature inspection. It is not a preference: a caller that forgot
+        to say gets the refusing behavior, which preserves the QA-17 guarantee
+        that both participating indexes are never simultaneously absent — a
+        data-loss property. Defaulting to blocking would make forgetting cost
+        an index. Do not flip it; add an explicit argument at the call site."""
+        def _out(code: str) -> None:
+            if outcome is not None:
+                outcome["reason_code"] = code
+
         try:
             index_path = self._index_path(owner, name)
             content_dir = self._content_dir(owner, name)
         except ValueError:
+            _out(DELETE_REASON_CODES["not_found"])
             return False
+
+        guarded_retirement = expected_fingerprints is not None
+        if guarded_retirement:
+            changed = self._verify_expected_fingerprints(expected_fingerprints)
+            if changed:
+                raise RetirementConflict(changed)
+            if (
+                not isinstance(retirement_publication, str)
+                or not retirement_publication
+            ):
+                raise RetirementConflict([f"{owner}/{name}"])
+        expected_publication = retirement_publication
+
+        # jdoc#90 QA-17: this handle may be the RETAINED peer of a pending
+        # retirement. Coordinate through the retirement record's lock BEFORE
+        # any destructive step: voiding the record here guarantees the owning
+        # retirement's final gate (which re-checks record existence under the
+        # same lock) conflicts instead of completing against a peer this
+        # delete is about to remove. When a record's lock is held — the
+        # owning retirement is inside its destructive step this instant —
+        # refuse the delete (retry succeeds as soon as the gate closes) so no
+        # interleaving can end with both participating indexes absent.
+        from .retirements import (
+            retirement_record,
+            try_void_retirements_referencing,
+        )
+        if not try_void_retirements_referencing(
+            self.base_path,
+            f"{owner}/{name}",
+            timeout_seconds=1.0 if lock_wait else 0.0,
+        ):
+            # A retirement owning this handle as its retained peer is inside
+            # its destructive step right now. Retryable, and NOT missing.
+            _out(DELETE_REASON_CODES["lifecycle_busy"])
+            return False
+
+        # jdoc#90 QA-17: note whether a durable record backs THIS guarded
+        # delete at entry — the final gate then requires it to still exist,
+        # so a retained-peer delete that voided it (through the record lock
+        # above, in another process) turns into a conflict, never a
+        # completed retirement against a vanished peer.
+        entry_record = (
+            retirement_record(self.base_path, owner, name)
+            if guarded_retirement else None
+        )
+        if guarded_retirement and (
+            entry_record is None
+            or entry_record.get("publication_id") != expected_publication
+            # Fast rejection of a proof this publication does not authorize.
+            # The final gate repeats it under the record lock; refusing here
+            # keeps auxiliary artifacts intact when the mismatch is already
+            # visible.
+            or not isinstance(entry_record.get("fingerprints"), dict)
+            or not entry_record.get("fingerprints")
+            or entry_record.get("fingerprints") != expected_fingerprints
+        ):
+            raise RetirementConflict([f"{owner}/{name}"])
 
         # jdoc#88 QA-02: remove the primary index record LAST. Auxiliary
         # artifacts (content cache, sidecars) go first; the `<name>.json`
@@ -1375,6 +1939,7 @@ class DocStore:
         # previous order unlinked the primary first, so a mid-cleanup failure
         # left an un-loadable, un-retryable half-deleted index.
         deleted = False
+        retirement_completion_failed = False
         if content_dir.exists():
             shutil.rmtree(content_dir)
             deleted = True
@@ -1402,13 +1967,20 @@ class DocStore:
                     sidecar.unlink()
                 except OSError:
                     pass
-        # Best-effort removal of the per-repo write-lock file (_index_write_lock).
-        lock_path = index_path.with_name(f"{index_path.name}.lock")
-        if lock_path.exists():
-            try:
-                lock_path.unlink()
-            except OSError:
-                pass
+        # jdoc#93 QA-21: the per-repo write-lock file is DELIBERATELY NOT
+        # removed. This delete is holding that very lock. On Windows the
+        # unlink of an open file fails and is swallowed, so the pathname
+        # survives and the hazard is invisible there; on POSIX it succeeds
+        # mid-critical-section, and a newcomer then O_CREATs a fresh inode,
+        # acquires it uncontended, and runs concurrently with this deleter
+        # on the orphaned one. The QA-15 stale-inode recheck in
+        # _index_write_lock cannot catch that case — nothing about the new
+        # inode is stale, it is simply a different lock.
+        #
+        # An empty lockfile is the stable coordination object; leaving it is
+        # cheaper than the race. This also demotes the QA-15 retry from
+        # load-bearing to defensive, since the unlink it compensates for is
+        # exactly what no longer happens here.
         # jdoc#81: remove any corpus-creation claim naming this repo so a
         # deleted corpus can be re-created under a fresh name without a
         # phantom conflict.
@@ -1420,9 +1992,46 @@ class DocStore:
         # jdoc#88 QA-02: primary record removed LAST — once this succeeds the
         # index is gone; until then a failed earlier step leaves it loadable.
         if index_path.exists():
-            _evict_index_cache(index_path)
-            index_path.unlink()
-            deleted = True
+            if guarded_retirement:
+                retirement_completion_failed = (
+                    not self._commit_guarded_retirement(
+                        owner, name, index_path,
+                        expected_fingerprints=expected_fingerprints,
+                        expected_publication=expected_publication,
+                        entry_record=entry_record,
+                        outcome=outcome,
+                    )
+                )
+                deleted = True
+            else:
+                _evict_index_cache(index_path)
+                index_path.unlink()
+                deleted = True
+        # jdoc#88 QA-01/QA-02: after the primary commit the result is retired,
+        # but failed exact-publication completion can leave a durable cleanup
+        # record. Preserve that discoverable state for a fresh pending read;
+        # otherwise remove stale retiring records after the primary removal.
+        # jdoc#89 QA-10: a direct delete also voids records naming this handle
+        # as the retained peer. Both cleanup paths revalidate ownership and
+        # remain best-effort, like claims.
+        try:
+            from .retirements import (
+                void_retirement_if_stale, void_retirements_referencing,
+            )
+            if not retirement_completion_failed:
+                void_retirement_if_stale(
+                    self.base_path, owner, name, current_fingerprint=None
+                )
+            void_retirements_referencing(
+                self.base_path, f"{owner}/{name}"
+            )
+        except Exception:
+            pass
+        _out(
+            DELETE_REASON_CODES["deleted"]
+            if deleted
+            else DELETE_REASON_CODES["not_found"]
+        )
         return deleted
 
     def _index_to_dict(self, index: DocIndex) -> dict:

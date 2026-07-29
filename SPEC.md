@@ -65,6 +65,17 @@ Fetches documentation files via the GitHub API, parses sections, and saves to lo
 
 Deletes both the index JSON and the raw content cache directory.
 
+##### Public result vocabulary
+
+| Outcome | `success` | `reason_code` | `retryable` |
+|---|---:|---|---:|
+| Deleted | `true` | `index_deleted` | `false` |
+| Missing | `false` | `index_not_found` | `false` |
+| Lifecycle contention | `false` | `index_lifecycle_busy` | `true` |
+
+Lifecycle contention returns promptly after one immediate coordination attempt,
+without a retry sleep. Internal retirement cleanup retains its bounded wait.
+
 ---
 
 ### Discovery Tools
@@ -369,8 +380,9 @@ supersession; jdoc#80 Parts B/C, #85, #86):
 | `superseded_by_established` | Git proved the provisional snapshot a strict ancestor of the established one (both certified clean); the older provisional was retired. |
 | `provisional_newer_than_established` | Git proved the provisional snapshot strictly newer; the established index is never replaced automatically — both kept, explicit refresh path reported. |
 | `supersession_conflict` | The target or candidate set changed before retirement; nothing removed, retry safe. |
-| `supersession_cleanup_incomplete` | Supersession proven but retirement did not complete; the provisional remains discoverable, retry idempotent. |
-| `graduation_cleanup_incomplete` | Exact-duplicate graduation proven but removing the provisional did not complete; nothing reconciled, the provisional remains discoverable, retry idempotent. |
+| `supersession_cleanup_incomplete` | Supersession was proven, but a pre-commit publication or cleanup failure prevented the primary unlink; the provisional remains discoverable and retry is idempotent. |
+| `graduation_cleanup_incomplete` | Exact-duplicate graduation was proven, but a pre-commit publication or cleanup failure prevented the primary unlink; nothing was reconciled, the provisional remains discoverable, and retry is idempotent. |
+| `graduation_conflict` | An index changed between the exact-duplicate proof and physical removal; the guarded delete voided the retirement before touching anything — both indexes kept, retry safe. |
 
 **`legacy_reconciliation.reason_code`** (Part C.2 — explicit-intent
 reconciliation of genuine pre-1.102 fieldless legacy indexes; jdoc#87.
@@ -386,7 +398,101 @@ ordinary refresh stays backfill-only and never retires anything):
 | `legacy_reconcile_ready` | Report mode: proof passed (single peer, same clean certified commit, full path-and-hash coverage); nothing was changed. |
 | `legacy_reconciled_to_established` | Apply mode: proof repeated immediately before retirement; the selected legacy handle was retired, the peer is unchanged and its handle returned. |
 | `legacy_reconcile_conflict` | The peer or candidate set changed between proof and retirement; nothing removed, retry safe. |
-| `legacy_reconcile_cleanup_incomplete` | Retirement proven but removal did not complete; the legacy index remains discoverable, retry idempotent. |
+| `legacy_reconcile_cleanup_incomplete` | Retirement was proven, but a pre-commit publication or cleanup failure prevented the primary unlink; the legacy index remains discoverable and retry is idempotent. |
+
+**Retirement coordination** (jdoc#88 QA-01/QA-02 + jdoc#89 QA-06..QA-11,
+v1.115.0): every retirement path (legacy apply, supersession, exact-dedup
+graduation) runs one coordinated destructive step. A guarded retirement
+requires the explicit publication receipt created by its caller and a readable
+current retirement record with that exact current publication identity;
+record-path existence or a receiptless read of the current slot is not
+destructive authority. Missing or unreadable fingerprints, a missing or
+unreadable record, an omitted receipt, or a publication mismatch fail closed.
+`None` never authorizes removal, and neither does an empty set of expected
+fingerprints: a proof that asserts nothing is refused rather than treated as
+an unguarded delete.
+Monolith fingerprints for the retiring and retained handles may be checked
+earlier for fast rejection, but final authorization is proved only after the
+retained-handle gate is acquired and immediately before the primary
+`<name>.json` commit. At that point the guarded `delete_index` re-verifies
+every expected fingerprint and re-reads the exact publication while the
+retiring-handle lock, record lock, and retained gate remain held through the
+primary unlink and publication-scoped completion.
+
+The retirement record is the PAIR coordination point (jdoc#90 QA-17): the
+final step combines record coordination with a nonblocking retained-handle
+gate. Public deletion uses zero-wait coordination, while internal retirement
+uses its bounded wait where record voiding or cleanup must coordinate. A delete
+first revalidates and voids records naming its target as retained before its
+own destructive steps. A void landing before the final gate makes that gate
+conflict and keeps the retiring handle; a delete arriving while the gate is
+closed is refused and can succeed on retry. Path A keeps fixed
+handle-then-record ordering and never blocks on the retained gate, so it does
+not introduce pair locks, a second coordinator, or a cross-handle lock cycle.
+
+A durable retiring record (`<owner>/.retirements/<name>.json`) is published
+before the destructive step, fsync'd, with a per-publication-unique temp name,
+and the publication receipt is required. A failed publication stops the
+retirement before anything is removed. Completion, conflict cleanup, reverse
+scans, and stale repair acquire the record lock and revalidate the current
+record before unlinking it: stale or older cleanup cannot remove a newer
+publication. Each operation completes or cleans up only its exact publication.
+Every non-retired outcome occurs before the primary unlink and leaves the
+retiring monolith loadable. Cleanup-incomplete reason codes describe only a
+pre-commit failure, and a cleanup-incomplete outcome never follows a committed
+primary unlink. After the primary unlink commits, the retirement result is
+retired. If exact-publication record removal then fails, record cleanup failure
+is disclosed additively on that retired result, including whether the durable
+completion marker was persisted and whether a record remains. A fresh
+pending-state read rechecks under the record lock that the retiring monolith is
+still absent and self-heals the completed deletion when it can. A fresh
+pending-state read returns the durable record when self-healing cannot remove
+it, rather than falsely reporting no pending record. A rewrite of either
+participant voids only the publication it revalidated; a failed save preserves
+the existing record.
+
+##### Retirement cleanup disclosure schema
+
+These fields are additive and appear together only on a retired result when
+the primary unlink committed but exact-publication record completion failed.
+They never describe a pre-commit conflict. If exact-publication record cleanup
+fails while a conflict has kept the retiring monolith loadable, the response
+instead reports `pending_retirement: true` as the durable pre-commit recovery
+signal and emits none of the `retirement_cleanup_*` fields.
+
+| Field | JSON type | Allowed values | Meaning |
+|---|---|---|---|
+| `retirement_cleanup_pending` | `boolean` | `false`, `true` | True when durable record state remains readable or unreadable; false only when it is absent. |
+| `retirement_cleanup_record_state` | `string` | `absent`, `readable`, `unreadable` | Observed durable retirement-record state after the completion attempt. |
+| `retirement_cleanup_owned` | `boolean` | `false`, `true` | True only for a readable record whose `publication_id` equals the exact completing publication; false for absent, unreadable, or replacement state. |
+
+`retirement_cleanup_pending` is derived from
+`retirement_cleanup_record_state`: it is false for `absent` and true for
+`readable` or `unreadable`. `retirement_cleanup_owned` is false when the record
+is absent, unreadable, or belongs to a replacement publication. The fields
+report observed durable state only; the failed completion adds no further
+durable write while the record lock and retained gate are still held.
+
+##### Retirement commit outcome matrix
+
+| Scenario | Primary unlink committed | Returned retirement status | Retiring monolith | Cleanup fields | Durable recovery |
+|---|---|---|---|---|---|
+| Pre-commit refusal | `false` | non-retired | loadable | absent | Retry starts from the still-loadable retiring monolith. |
+| Committed with complete record cleanup | `true` | retired | absent | absent | No retirement cleanup remains for that exact publication. |
+| Committed with incomplete record cleanup | `true` | retired | absent | present | The cleanup fields report durable state; a fresh pending read self-heals or returns the record. |
+
+Availability is commit-scoped. At the protected A-to-B commit, B is loadable
+and matches A's final authoritative proof. A change or removal of B before that
+commit forces A to re-prove or fail closed. After A commits and releases
+coordination, a later separately authorized B-to-C retirement may legitimately
+remove B. No perpetual availability guarantee applies to historical A or B;
+each successful commit guarantees only that its retained successor is loadable
+at that protected commit.
+
+`legacy_reconcile="report"` performs no writes on any outcome: it proves
+from stored snapshots plus live Git evidence (both indexes certified clean
+at the live checkout's clean commit), and its responses carry
+`_meta.read_only: true`.
 
 **Top-level `error` codes** (fail-closed refusals returned as
 `{"success": false, "error": <code>, ...}` before any write — these two were

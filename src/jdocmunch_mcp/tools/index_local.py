@@ -161,6 +161,109 @@ def _leftover_artifacts(store, owner: str, name: str) -> list:
     return leftovers
 
 
+def _execute_retirement(store, owner, repo_name, repo_id, target, family,
+                        reverify):
+    """jdoc#89 QA-06/QA-07 — the coordinated destructive step shared by all
+    three retirement paths (legacy apply, supersession, exact-dedup).
+
+    The ordering is the contract:
+
+      1. Capture proof-time fingerprints for BOTH handles. A missing or
+         unreadable fingerprint fails closed — ``None`` never authorizes.
+      2. RELOAD both indexes and re-prove the decisive predicates
+         (``reverify(sel, peer)``) on the reloaded state. Because the token
+         was captured BEFORE this reload, any change the re-proof ran on is
+         the state the token describes, and any change AFTER the reload is
+         caught by the guard in step 4 — the proved state and the accepted
+         token can no longer diverge (the QA-06 proof/capture gap).
+      3. Publish the durable retiring record and REQUIRE the receipt:
+         cleanup never starts without authoritative recovery state on disk
+         (QA-07).
+      4. Guarded delete: ``delete_index`` re-verifies the exact publication
+         and fingerprints after nonblocking retained-handle coordination,
+         then holds those authorities through primary removal and conditional
+         completion.
+
+    Returns ``(outcome, info)``. Outcomes: ``"retired"``; ``"conflict"``
+    (an index changed or vanished — ``info`` may carry ``changed_handles``);
+    ``"unproven"`` (the reloaded state no longer satisfies the proof);
+    ``"record_unavailable"`` (record publication failed; nothing destructive
+    was attempted); ``"cleanup_incomplete"`` (the primary commit did not
+    occur, so the retiring handle remains loadable). After the primary unlink,
+    the outcome is always ``"retired"``; ``info`` additively discloses durable
+    record cleanup state when publication completion needs recovery."""
+    from ..storage.doc_store import RetirementConflict
+    from ..storage.retirements import (
+        begin_retirement,
+        finish_retirement,
+        pending_retirement,
+    )
+
+    t_owner, _, t_name = target.partition("/")
+    fingerprints = {
+        repo_id: store.index_fingerprint(owner, repo_name),
+        target: store.index_fingerprint(t_owner, t_name),
+    }
+    missing = [h for h, fp in fingerprints.items() if not fp]
+    if missing:
+        return "conflict", {"changed_handles": missing}
+    sel = store.load_index(owner, repo_name)
+    peer = store.load_index(t_owner, t_name)
+    if sel is None or peer is None:
+        return "conflict", {"changed_handles": [
+            h for h, idx in ((repo_id, sel), (target, peer)) if idx is None
+        ]}
+    if not reverify(sel, peer):
+        return "unproven", {}
+    publication_id = begin_retirement(
+        store.base_path, owner, repo_name,
+        retained=target, fingerprints=fingerprints, family=family,
+    )
+    if not publication_id:
+        return "record_unavailable", {}
+    delete_outcome = {}
+    try:
+        # jdoc#93 QA-23: this is the INTERNAL coordinated operation, already
+        # mid-protocol with a published record on disk. A bounded wait for the
+        # retiring handle's own lock is correct here — bailing out would leave
+        # a pending record behind for a lock that clears in milliseconds. The
+        # public delete path is the one that must never silently wait.
+        removed = store.delete_index(
+            owner, repo_name, expected_fingerprints=fingerprints,
+            outcome=delete_outcome,
+            lock_wait=True,
+            retirement_publication=publication_id,
+        )
+    except RetirementConflict as conflict:
+        cleanup_finished = finish_retirement(
+            store.base_path,
+            owner,
+            repo_name,
+            publication_id=publication_id,
+        )
+        info = {"changed_handles": conflict.changed}
+        if not cleanup_finished:
+            pending = pending_retirement(
+                store.base_path, owner, repo_name
+            )
+            if pending is not None:
+                info["pending_retirement"] = True
+        return "conflict", info
+    except Exception:
+        removed = bool(delete_outcome.get("_primary_unlink_committed"))
+    cleanup_info = {
+        key: value
+        for key, value in delete_outcome.items()
+        if not key.startswith("_") and key != "reason_code"
+    }
+    if not removed:
+        info = {}
+        if pending_retirement(store.base_path, owner, repo_name) is not None:
+            info["pending_retirement"] = True
+        return "cleanup_incomplete", info
+    return "retired", cleanup_info
+
+
 def _resolve_legacy_reconcile(
     store, owner, repo_name, repo_id, folder_path,
     wt_evidence, call_selection, mode, t0,
@@ -322,17 +425,60 @@ def _resolve_legacy_reconcile(
             "current state.",
             established_handle=target,
         )
-    try:
-        removed = store.delete_index(owner, repo_name)
-    except Exception:
-        removed = False
-    if not removed:
+    # jdoc#88 QA-01 / jdoc#89 QA-06/QA-07: the recheck above and the physical
+    # removal are not one moment. _execute_retirement captures fingerprints
+    # for BOTH handles FIRST, re-proves certification + hash coverage on a
+    # reload the token covers, requires the durable-record receipt, then runs
+    # the guarded delete (verified again inside the deletion boundary and at
+    # the pre-removal recheck).
+    def _reverify(sel2, peer2):
+        s2 = getattr(sel2, "head_sha", None) or ""
+        p2 = getattr(peer2, "head_sha", None) or ""
+        if not (
+            bool(getattr(sel2, "sha_certified", False))
+            and not getattr(sel2, "source_dirty", False)
+            and bool(getattr(peer2, "sha_certified", False))
+            and not getattr(peer2, "source_dirty", False)
+            and s2 and s2 == p2
+        ):
+            return False
+        s2_hashes = getattr(sel2, "file_hashes", {}) or {}
+        p2_hashes = getattr(peer2, "file_hashes", {}) or {}
+        return all(
+            s2_hashes.get(fp) and s2_hashes.get(fp) == p2_hashes.get(fp)
+            for fp in (getattr(sel2, "doc_paths", []) or [])
+        )
+
+    outcome, info = _execute_retirement(
+        store, owner, repo_name, repo_id, target,
+        family="legacy_reconcile", reverify=_reverify,
+    )
+    if outcome in ("conflict", "unproven"):
+        return _kept(
+            REASON_LEGACY_CONFLICT,
+            "An index changed between proof and removal. The retirement was "
+            "voided before the legacy index record was removed; both indexes "
+            "remain loadable. Re-run to retry against the current state.",
+            established_handle=target,
+            **info,
+        )
+    if outcome == "record_unavailable":
+        return _kept(
+            REASON_LEGACY_CLEANUP_INCOMPLETE,
+            "Retirement was proven, but the durable retirement record could "
+            "not be published, so the destructive step was never started. "
+            "Nothing was removed; fix the store's .retirements path and "
+            "re-run with legacy_reconcile='apply' to retry.",
+            established_handle=target,
+        )
+    if outcome == "cleanup_incomplete":
         return _kept(
             REASON_LEGACY_CLEANUP_INCOMPLETE,
             "Retirement was proven but removing the legacy index did not "
             "complete. It remains discoverable; re-run with "
             "legacy_reconcile='apply' to retry (idempotent).",
             established_handle=target,
+            **info,
         )
     leftovers = _leftover_artifacts(store, owner, repo_name)
     latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -348,6 +494,7 @@ def _resolve_legacy_reconcile(
             "removed_handle": repo_id,
             "removed_file_count": len(s_docs),
             "certified_sha": s_sha,
+            **info,
             "detail": (
                 "The selected legacy index was proven an exact duplicate of "
                 "its modern peer (verified identity, same clean certified "
@@ -361,6 +508,150 @@ def _resolve_legacy_reconcile(
         replacement["legacy_reconciliation"]["cleanup_incomplete"] = True
         replacement["legacy_reconciliation"]["leftover_files"] = leftovers[:10]
     return None, replacement
+
+
+def _report_legacy_reconcile(
+    store, owner, repo_name, repo_id, folder_path,
+    wt_evidence, call_selection, sel_index, t0,
+):
+    """jdoc#88 QA-03 — ``legacy_reconcile="report"``, actually read-only.
+
+    The shipped report ran the full refresh first, rewriting the legacy index
+    whenever source files changed — precisely when the read-only guarantee
+    mattered. This resolver proves from STORED snapshots plus live Git
+    evidence and never enters a save path.
+
+    Certification transitivity replaces the refresh: the stored loser and the
+    stored peer must both be certified clean at one SHA, and the live checkout
+    must be clean at that same SHA. Three clean legs at one commit mean the
+    stored snapshots describe the live tree, so the stored path-and-hash
+    comparison is the same proof apply would reach after its refresh. A
+    genuinely uncertified legacy index reports honestly that report cannot
+    certify it without writing; apply (which refreshes under C.2 intent)
+    remains the certify-and-retire path."""
+    from ._worktree_corpus import (
+        classify_graduation,
+        filter_lineage_candidates,
+        REASON_LEGACY_AMBIGUOUS,
+        REASON_LEGACY_CONFLICT,
+        REASON_LEGACY_CONTENT_DIFFERS,
+        REASON_LEGACY_NO_MODERN_PEER,
+        REASON_LEGACY_READY,
+        REASON_LEGACY_UNCERTIFIED,
+    )
+
+    def _respond(block):
+        return {
+            "success": True,
+            "repo": repo_id,
+            "requested_path": str(folder_path),
+            "legacy_reconciliation": block,
+            "_meta": {
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+                "read_only": True,
+            },
+        }
+
+    def _kept(reason_code, detail, **extra):
+        block = {"state": "kept", "reason_code": reason_code, "detail": detail}
+        block.update(extra)
+        return _respond(block)
+
+    peers = filter_lineage_candidates(
+        store.list_repos(), wt_evidence, allow_containment=False
+    )
+    peers = [c for c in peers if c.get("repo") != repo_id]
+    action, target = classify_graduation(peers, call_selection)
+    if action == "graduate":
+        return _kept(
+            REASON_LEGACY_NO_MODERN_PEER,
+            "No non-provisional modern peer matches this corpus identity "
+            "(lineage + relative root + durable selection). Nothing was "
+            "changed. Re-run WITHOUT legacy_reconcile to backfill this "
+            "index into the identity system — it is the only index for "
+            "this corpus.",
+        )
+    if action == "ambiguous":
+        return _kept(
+            REASON_LEGACY_AMBIGUOUS,
+            "More than one non-provisional modern peer matches this corpus "
+            "identity. Retirement requires exactly one; nothing was changed. "
+            "Resolve the peer ambiguity first, then re-run.",
+            peer_count=len(peers),
+        )
+
+    t_owner, _, t_name = target.partition("/")
+    peer_index = store.load_index(t_owner, t_name)
+    if peer_index is None:
+        return _kept(
+            REASON_LEGACY_CONFLICT,
+            "The modern peer vanished between classification and proof. "
+            "Nothing was changed; re-run to retry.",
+            established_handle=target,
+        )
+
+    s_sha = getattr(sel_index, "head_sha", None) or ""
+    p_sha = getattr(peer_index, "head_sha", None) or ""
+    live_sha = getattr(wt_evidence, "head_sha", None) or ""
+    certified = (
+        bool(getattr(sel_index, "sha_certified", False))
+        and not getattr(sel_index, "source_dirty", False)
+        and bool(getattr(peer_index, "sha_certified", False))
+        and not getattr(peer_index, "source_dirty", False)
+        and s_sha and s_sha == p_sha
+        and not getattr(wt_evidence, "corpus_dirty", False)
+        and live_sha == s_sha
+    )
+    if not certified:
+        return _kept(
+            REASON_LEGACY_UNCERTIFIED,
+            "A read-only report requires BOTH stored indexes certified clean "
+            "at one commit AND a clean checkout at that same commit — that "
+            "is what lets stored snapshots stand in for a refresh. One leg "
+            "failed (dirty, uncertified, or a different commit); nothing was "
+            "changed. Commit/refresh to a clean shared state and re-run, or "
+            "use legacy_reconcile='apply', which refreshes before proving.",
+            established_handle=target,
+            selected_sha=s_sha or None,
+            established_sha=p_sha or None,
+            checkout_sha=live_sha or None,
+        )
+
+    s_docs = set(getattr(sel_index, "doc_paths", []) or [])
+    s_hashes = getattr(sel_index, "file_hashes", {}) or {}
+    p_hashes = getattr(peer_index, "file_hashes", {}) or {}
+    differing = sorted(
+        fp for fp in s_docs
+        if not s_hashes.get(fp) or s_hashes.get(fp) != p_hashes.get(fp)
+    )
+    if differing:
+        return _kept(
+            REASON_LEGACY_CONTENT_DIFFERS,
+            "Every selected-handle path must exist in the modern peer with "
+            "the same stored hash; the listed files differ (or equality "
+            "could not be proven from stored hashes). Not a duplicate — "
+            "nothing was changed.",
+            established_handle=target,
+            differing_files=differing[:20],
+            differing_file_count=len(differing),
+        )
+
+    return _respond({
+        "state": "report",
+        "reason_code": REASON_LEGACY_READY,
+        "established_handle": target,
+        "would_remove_handle": repo_id,
+        "covered_file_count": len(s_docs),
+        "certified_sha": s_sha,
+        "detail": (
+            "Proof passed from stored snapshots and live Git evidence: "
+            "exactly one modern peer, both indexes certified clean at this "
+            "checkout's commit, full path-and-hash coverage. Nothing was "
+            "changed — report performs no writes. Re-run with "
+            "legacy_reconcile='apply' to retire this legacy handle and keep "
+            "the peer."
+        ),
+    })
 
 
 def _finish_legacy_reconcile(result, legacy_ctx):
@@ -572,17 +863,66 @@ def _resolve_graduation(
                         ),
                     },
                 }
-            try:
-                removed = store.delete_index(owner, repo_name)
-            except Exception:
-                removed = False
-            if not removed:
+            # jdoc#88 QA-01 / jdoc#89 QA-06/QA-07: coordinated destructive
+            # step — fingerprints captured first, ancestry closure re-proved
+            # on a reload the token covers (both snapshots still certified
+            # clean at the exact SHAs the ancestry proof ordered), durable
+            # record receipt required, then the guarded delete.
+            def _reverify(sel2, peer2):
+                return (
+                    bool(getattr(sel2, "sha_certified", False))
+                    and not getattr(sel2, "source_dirty", False)
+                    and (getattr(sel2, "head_sha", None) or "") == p_sha
+                    and bool(getattr(peer2, "sha_certified", False))
+                    and not getattr(peer2, "source_dirty", False)
+                    and (getattr(peer2, "head_sha", None) or "") == e_sha
+                )
+
+            outcome, info = _execute_retirement(
+                store, owner, repo_name, repo_id, target,
+                family="supersession", reverify=_reverify,
+            )
+            if outcome in ("conflict", "unproven"):
+                return {
+                    "graduate": False, "return": None,
+                    "disclosure": {
+                        "state": RECONCILIATION_PROVISIONAL,
+                        "reason_code": REASON_SUPERSESSION_CONFLICT,
+                        "established_handle": target,
+                        **info,
+                        "detail": (
+                            "An index changed between proof and removal. The "
+                            "retirement was voided before the provisional "
+                            "index record was removed; both indexes remain "
+                            "loadable. Re-run to retry against the current "
+                            "state."
+                        ),
+                    },
+                }
+            if outcome == "record_unavailable":
                 return {
                     "graduate": False, "return": None,
                     "disclosure": {
                         "state": RECONCILIATION_PROVISIONAL,
                         "reason_code": REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
                         "established_handle": target,
+                        "detail": (
+                            "Supersession was proven, but the durable "
+                            "retirement record could not be published, so the "
+                            "destructive step was never started. Nothing was "
+                            "removed; fix the store's .retirements path and "
+                            "re-run to retry."
+                        ),
+                    },
+                }
+            if outcome == "cleanup_incomplete":
+                return {
+                    "graduate": False, "return": None,
+                    "disclosure": {
+                        "state": RECONCILIATION_PROVISIONAL,
+                        "reason_code": REASON_SUPERSESSION_CLEANUP_INCOMPLETE,
+                        "established_handle": target,
+                        **info,
                         "detail": (
                             "Supersession was proven but retiring the "
                             "provisional index did not complete. It remains "
@@ -606,6 +946,7 @@ def _resolve_graduation(
                     "provisional_sha": p_sha,
                     "established_sha": e_sha,
                     "relationship": "provisional_is_strict_ancestor_of_established",
+                    **info,
                     "detail": (
                         "Git proved the provisional snapshot is a strict "
                         "ancestor of the established index's snapshot (same "
@@ -649,8 +990,55 @@ def _resolve_graduation(
     # emit `removed_handle` for a loser that still exists. Keep both indexes
     # discoverable and report the recoverable, retryable state (mirrors the
     # supersession/legacy cleanup-incomplete paths, which already check this).
-    removed = store.delete_index(owner, repo_name)
-    if not removed:
+    # jdoc#88 QA-01 / jdoc#89 QA-06/QA-07: coordinated destructive step —
+    # fingerprints captured first, the exact-duplicate proof (path coverage +
+    # per-file hash equality) re-run on a reload the token covers, durable
+    # record receipt required, then the guarded delete (verified inside the
+    # deletion boundary and at the pre-removal recheck).
+    from ._worktree_corpus import REASON_GRADUATION_CONFLICT
+
+    def _reverify(sel2, peer2):
+        p2_docs = set(getattr(sel2, "doc_paths", []) or [])
+        e2_docs = set(getattr(peer2, "doc_paths", []) or [])
+        if not (p2_docs <= e2_docs):
+            return False
+        p2_hashes = getattr(sel2, "file_hashes", {}) or {}
+        e2_hashes = getattr(peer2, "file_hashes", {}) or {}
+        return all(
+            p2_hashes.get(fp) and p2_hashes.get(fp) == e2_hashes.get(fp)
+            for fp in p2_docs
+        )
+
+    outcome, info = _execute_retirement(
+        store, owner, repo_name, repo_id, target,
+        family="exact_dedup", reverify=_reverify,
+    )
+    if outcome in ("conflict", "unproven"):
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        return {
+            "graduate": False,
+            "return": {
+                "success": True,
+                "repo": repo_id,
+                "requested_path": str(folder_path),
+                "reconciliation": {
+                    "state": RECONCILIATION_PROVISIONAL,
+                    "reason_code": REASON_GRADUATION_CONFLICT,
+                    "established_handle": target,
+                    **info,
+                    "detail": (
+                        "The provisional index was proven an exact duplicate, "
+                        "but an index changed between proof and removal. The "
+                        "retirement was voided before the provisional index "
+                        "record was removed; both indexes remain loadable. "
+                        "Re-run to retry against the current state."
+                    ),
+                },
+                "_meta": {"latency_ms": latency_ms},
+            },
+            "disclosure": None,
+        }
+    if outcome == "record_unavailable":
         latency_ms = int((time.perf_counter() - t0) * 1000)
         return {
             "graduate": False,
@@ -662,6 +1050,31 @@ def _resolve_graduation(
                     "state": RECONCILIATION_PROVISIONAL,
                     "reason_code": REASON_GRADUATION_CLEANUP_INCOMPLETE,
                     "established_handle": target,
+                    "detail": (
+                        "The provisional index was proven an exact duplicate, "
+                        "but the durable retirement record could not be "
+                        "published, so the destructive step was never "
+                        "started. Nothing was removed; fix the store's "
+                        ".retirements path and re-run to retry."
+                    ),
+                },
+                "_meta": {"latency_ms": latency_ms},
+            },
+            "disclosure": None,
+        }
+    if outcome == "cleanup_incomplete":
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        return {
+            "graduate": False,
+            "return": {
+                "success": True,
+                "repo": repo_id,
+                "requested_path": str(folder_path),
+                "reconciliation": {
+                    "state": RECONCILIATION_PROVISIONAL,
+                    "reason_code": REASON_GRADUATION_CLEANUP_INCOMPLETE,
+                    "established_handle": target,
+                    **info,
                     "detail": (
                         "The provisional index was proven an exact duplicate "
                         "of its established peer, but removing it did not "
@@ -688,6 +1101,7 @@ def _resolve_graduation(
                 "established_handle": target,
                 "removed_handle": f"{owner}/{repo_name}",
                 "removed_file_count": len(p_docs),
+                **info,
                 "detail": (
                     "Git lineage was verified; an established index for this "
                     "corpus already exists and every provisional file matches "
@@ -1337,6 +1751,16 @@ def index_local(
                     "Git lineage could not be confirmed for this path, and "
                     "retirement requires hard Git-verified proof. Re-run "
                     "once Git evidence is available."
+                )
+            if mode_str == "report":
+                # jdoc#88 QA-03: report is proof-only and diverts BEFORE the
+                # refresh — the shipped path refreshed first, rewriting the
+                # legacy index whenever source files changed, exactly when
+                # the documented read-only guarantee mattered. The read-only
+                # resolver proves from stored snapshots + live Git evidence.
+                return _report_legacy_reconcile(
+                    store, owner, repo_name, repo_id, folder_path,
+                    wt_evidence, call_selection, existing_index, t0,
                 )
             legacy_ctx = {
                 "store": store, "owner": owner, "repo_name": repo_name,

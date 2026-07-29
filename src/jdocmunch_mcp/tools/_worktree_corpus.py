@@ -89,6 +89,12 @@ REASON_SUPERSESSION_CLEANUP_INCOMPLETE = "supersession_cleanup_incomplete"
 # same call can be retried (idempotent), mirroring the supersession/legacy
 # cleanup-incomplete codes.
 REASON_GRADUATION_CLEANUP_INCOMPLETE = "graduation_cleanup_incomplete"
+# jdoc#88 QA-01 — the exact-duplicate graduation path had no conflict
+# vocabulary: a retained or retiring index that changed between proof and
+# removal was still removed under the stale decision. The guarded delete
+# (DocStore.delete_index expected_fingerprints) now voids the retirement and
+# reports this instead; both indexes stay, retry safe.
+REASON_GRADUATION_CONFLICT = "graduation_conflict"
 # jdoc#87 — Part C.2: reconciliation of genuine pre-1.102 fieldless legacy
 # indexes. Fires ONLY under explicit `legacy_reconcile="report"|"apply"`
 # intent; an ordinary refresh stays backfill-only. The explicitly selected

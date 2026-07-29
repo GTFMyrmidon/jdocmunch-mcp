@@ -94,6 +94,7 @@ def search_sections(
         per_repo: list[dict] = []
         rankings: list[list[str]] = []
         result_pool: dict[str, dict] = {}
+        member_rebuilding = False
         for member in member_repos:
             sub = search_sections(
                 repo=member, query=query,
@@ -110,6 +111,16 @@ def search_sections(
                 "result_count": sub.get("result_count", 0),
                 "error": sub.get("error"),
             })
+            # jdoc#93 (suite parity with jcm v1.108.169): each member's own
+            # verdict is already correctly wired for the rebuilding rule, and
+            # this fan-out used to discard them — so a zero-result GROUP search
+            # could reach `absent` and mint a citable ref while ANY member index
+            # was being rewritten underneath it. There is no single index to
+            # re-stat here, so the group inherits its members' detection:
+            # one rebuilding member makes the whole group's absence unprovable.
+            _sub_v = (sub.get("_meta") or {}).get("verdict") or {}
+            if (_sub_v.get("channels") or {}).get("index") == "rebuilding":
+                member_rebuilding = True
             rows = sub.get("results") or []
             ranking = []
             for r in rows:
@@ -142,6 +153,7 @@ def search_sections(
                 "verdict": build_verdict(
                     result_count=len(merged),
                     semantic_requested=bool(semantic is True or semantic_only),
+                    index_changed=member_rebuilding,
                 ),
             },
         }
