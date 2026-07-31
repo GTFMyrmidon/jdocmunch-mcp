@@ -3,6 +3,20 @@
 **Version:** 1.120.0 SHIPPED 2026-07-29 (PyPI + tag + release) |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
+⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
+that way.** The runtime import in `storage/doc_store.py` (vectorized semantic
+search, pure-Python reference as fallback) stays OPTIONAL and LAZY; numpy is a
+dev dep purely so the six tests asserting **fast path == reference** actually
+run. They had skipped on EVERY CI run — a divergence between the two paths would
+have shipped unnoticed. CI-equivalent env went 1982 passed/14 skipped → 1988
+passed/8 skipped. ⚠ **`PYTHONPATH=src pytest` on a dev box is NOT the same run as
+CI** — this box has numpy from other packages, so the gap was invisible locally;
+reproduce CI with `uv run --python 3.13 python -m pytest tests/ -q`
+([[feedback_an_assumption_about_the_machine_is_not_a_fixture]]). Remaining 8
+skips are legitimate: 6 POSIX-only (Windows box), 2 gated on a pair-lock helper
+API that was never built — those skip on every platform and are dead tests for an
+unbuilt design path.
+
 ⚠ **ZERO open issues. The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
 
