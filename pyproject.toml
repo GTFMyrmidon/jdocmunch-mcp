@@ -44,6 +44,12 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
+    # Test-only. numpy stays an OPTIONAL runtime dependency, lazily imported by
+    # the vectorized semantic-search path in storage/doc_store.py; without it
+    # here, the tests asserting that path agrees with the pure-Python reference
+    # skipped on every CI run, and a divergence between the two would have
+    # shipped unnoticed.
+    "numpy>=1.24.0",
 ]
 
 [tool.pytest.ini_options]
