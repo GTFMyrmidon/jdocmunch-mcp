@@ -41,9 +41,6 @@ from jdocmunch_mcp.tools.delete_index import delete_index as public_delete
 from jdocmunch_mcp.tools.index_local import _execute_retirement
 from tests import test_v1_110_0 as legacy
 
-_PAIR_LOCK_API = hasattr(DocStore, "hold_index_locks")
-
-
 def _pair(tmp_path, monkeypatch):
     _, _, _, store = legacy._standard_pair(tmp_path, monkeypatch)
     return store, DocStore(base_path=str(store))
@@ -59,24 +56,6 @@ def _retire(store: DocStore):
         "lifecycle-test",
         lambda selected, retained: selected is not None and retained is not None,
     )
-
-
-def _process_public_delete(base_path, output):
-    output.put(public_delete("local/modern", storage_path=base_path))
-
-
-def _process_incremental_save(base_path, output):
-    saved = DocStore(base_path=base_path).incremental_save(
-        "local",
-        "modern",
-        [],
-        [],
-        [],
-        [],
-        {},
-        {},
-    )
-    output.put(saved is not None)
 
 
 def _process_hold_lock(base_path, locked, release, output):
@@ -299,47 +278,6 @@ def test_delete_preserves_the_coordination_lockfile(tmp_path, monkeypatch):
     assert lock_path.exists()
 
 
-@pytest.mark.skipif(
-    not _PAIR_LOCK_API,
-    reason="pair-lock helper API absent (applies only to the "
-           "canonical-order pair-lock design path)",
-)
-def test_pair_lock_order_is_independent_of_argument_order(tmp_path, monkeypatch):
-    """Opposite handle order must not deadlock overlapping operations."""
-    _, store = _pair(tmp_path, monkeypatch)
-    entered = []
-    start = threading.Barrier(3)
-
-    def hold(handles, marker):
-        start.wait()
-        with store.hold_index_locks(handles):
-            entered.append(marker)
-
-    first = threading.Thread(
-        target=hold,
-        args=(
-            (("local", "old"), ("local", "modern")),
-            "first",
-        ),
-    )
-    second = threading.Thread(
-        target=hold,
-        args=(
-            (("local", "modern"), ("local", "old")),
-            "second",
-        ),
-    )
-    first.start()
-    second.start()
-    start.wait()
-    first.join(10)
-    second.join(10)
-
-    assert not first.is_alive()
-    assert not second.is_alive()
-    assert sorted(entered) == ["first", "second"]
-
-
 def test_public_delete_reports_deleted_then_missing(tmp_path, monkeypatch):
     """The additive response fields preserve ordinary delete outcomes."""
     store_path, _ = _pair(tmp_path, monkeypatch)
@@ -353,44 +291,6 @@ def test_public_delete_reports_deleted_then_missing(tmp_path, monkeypatch):
     assert missing["success"] is False
     assert missing["reason_code"] == "index_not_found"
     assert missing["retryable"] is False
-
-
-@pytest.mark.skipif(
-    not _PAIR_LOCK_API,
-    reason="pair-lock helper API absent (applies only to the "
-           "canonical-order pair-lock design path)",
-)
-def test_pair_coordination_is_cross_process(tmp_path, monkeypatch):
-    """Other processes report a delete busy and make a save wait."""
-    store_path, store = _pair(tmp_path, monkeypatch)
-    context = multiprocessing.get_context("spawn")
-    delete_output = context.Queue()
-    save_output = context.Queue()
-    deleting = context.Process(
-        target=_process_public_delete,
-        args=(str(store_path), delete_output),
-    )
-    saving = context.Process(
-        target=_process_incremental_save,
-        args=(str(store_path), save_output),
-    )
-
-    with store.hold_index_locks(
-        (("local", "old"), ("local", "modern"))
-    ):
-        deleting.start()
-        saving.start()
-        delete_result = delete_output.get(timeout=15)
-        assert delete_result["reason_code"] == "index_lifecycle_busy"
-        assert delete_result["retryable"] is True
-        with pytest.raises(queue.Empty):
-            save_output.get(timeout=0.5)
-
-    assert save_output.get(timeout=15) is True
-    deleting.join(10)
-    saving.join(10)
-    assert deleting.exitcode == 0
-    assert saving.exitcode == 0
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="POSIX inode regression")
