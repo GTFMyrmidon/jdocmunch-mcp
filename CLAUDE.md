@@ -12,10 +12,15 @@ have shipped unnoticed. CI-equivalent env went 1982 passed/14 skipped → 1988
 passed/8 skipped. ⚠ **`PYTHONPATH=src pytest` on a dev box is NOT the same run as
 CI** — this box has numpy from other packages, so the gap was invisible locally;
 reproduce CI with `uv run --python 3.13 python -m pytest tests/ -q`
-([[feedback_an_assumption_about_the_machine_is_not_a_fixture]]). Remaining 8
-skips are legitimate: 6 POSIX-only (Windows box), 2 gated on a pair-lock helper
-API that was never built — those skip on every platform and are dead tests for an
-unbuilt design path.
+([[feedback_an_assumption_about_the_machine_is_not_a_fixture]]). Remaining 6
+skips are legitimate: all POSIX-only, and they DO run on Linux CI. ⚠ **The two
+`_PAIR_LOCK_API` tests were DELETED 2026-07-31** (`a4cef61`) — they called
+`DocStore.hold_index_locks`, which does not exist, so a `hasattr` guard skipped
+them on every platform on every run since the day they were written: tests for a
+canonical-order pair-lock design that was considered and not taken. **The passed
+count did not move (1988 → 1988), which is the check that matters** — nothing
+that ever executed was removed. If that design is ever revived, write the tests
+against the API that exists.
 
 ⚠ **ZERO open issues. The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
