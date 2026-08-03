@@ -620,6 +620,22 @@ def _all_tools() -> list[Tool]:
                     "repo_group": {
                         "type": "string",
                         "description": "v1.26+ — fan out across the named repo group (defined via define_repo_group). When set, the per-repo `repo` arg is ignored; results from each member repo are fused via RRF."
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "v1.121+ — drop per-row fields a caller can't act on (repo, parent_id, children, byte_start/byte_end, content_hash, inline_code, references; plus empty tags and a summary identical to the title). Per-row _freshness is kept only when it isn't 'fresh'. ~40% fewer bytes per result. Default off — the full row is unchanged."
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "v1.121+ — explicit per-row field whitelist (e.g. ['id','title','doc_path','_score']). Wins over compact. `id` is always returned."
+                    },
+                    "snippet_bytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "v1.121+ — inline the first N bytes of each section's body as `snippet` so a confident top hit needs no get_section round-trip. UTF-8 safe (never splits a codepoint); `snippet_truncated: true` marks a cut section. 0 = off."
                     }
                 },
                 "required": ["query"]
@@ -2071,6 +2087,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 exclude_roles=arguments.get("exclude_roles"),
                 min_byte_length=arguments.get("min_byte_length"),
                 max_byte_length=arguments.get("max_byte_length"),
+                compact=arguments.get("compact", False),
+                fields=arguments.get("fields"),
+                snippet_bytes=arguments.get("snippet_bytes", 0),
                 storage_path=storage_path,
             )
         elif name == "search_titles":

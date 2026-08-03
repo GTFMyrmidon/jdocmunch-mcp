@@ -158,6 +158,34 @@ search_sections: {
 }
 ```
 
+### Search Without the Follow-up Read (v1.121+)
+
+`compact` strips the per-row fields an agent can't act on (`content_hash`,
+`parent_id`, byte offsets, empty collections, a `summary` identical to the
+`title`). `snippet_bytes` inlines the head of each section body, so a confident
+top hit needs no `get_section` call. Together they cut a 10-result response by
+roughly 78% on our own docs.
+
+```
+search_sections: {
+  "repo": "owner/repo",
+  "query": "authentication",
+  "compact": true,
+  "snippet_bytes": 200
+}
+```
+
+For total control, `fields` is an explicit whitelist and wins over `compact`
+(`id` is always returned):
+
+```
+search_sections: {
+  "repo": "owner/repo",
+  "query": "authentication",
+  "fields": ["title", "doc_path", "_score"]
+}
+```
+
 ### Read a Section with Full Hierarchy Context
 
 ```
@@ -221,7 +249,7 @@ index_repo: { "url": "owner/repo", "incremental": false }
 | `get_toc`               | Flat section list in document order              | `repo`                                                           |
 | `get_toc_tree`          | Nested section tree per document                 | `repo`                                                           |
 | `get_document_outline`  | Section hierarchy for one document               | `repo`, `doc_path`                                               |
-| `search_sections`       | Weighted search across sections                  | `repo`, `query`, `doc_path`, `max_results`                       |
+| `search_sections`       | Weighted search across sections                  | `repo`, `query`, `doc_path`, `max_results`, `compact`, `fields`, `snippet_bytes` |
 | `get_section`           | Full content of one section                      | `repo`, `section_id`, `verify`                                   |
 | `get_sections`          | Batch content retrieval                          | `repo`, `section_ids`, `verify`                                  |
 | `get_section_context`   | Section + ancestor headings + child summaries    | `repo`, `section_id`, `max_tokens`, `include_children`           |

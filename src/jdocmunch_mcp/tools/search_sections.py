@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..storage import DocStore
 from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
+from ..retrieval.projection import attach_snippets, project
 from ..retrieval.verdict import (
     build_verdict,
     index_changed_since_load,
@@ -37,6 +38,9 @@ def search_sections(
     exclude_roles: Optional[list] = None,
     min_byte_length: Optional[int] = None,
     max_byte_length: Optional[int] = None,
+    compact: bool = False,
+    fields: Optional[list] = None,
+    snippet_bytes: int = 0,
     storage_path: Optional[str] = None,
 ) -> dict:
     """Search sections with BM25-style lexical + optional semantic fusion.
@@ -54,6 +58,11 @@ def search_sections(
                        hybrid), False (force lexical-only).
       semantic_only:   Skip lexical; rank purely by embedding cosine similarity.
       semantic_weight: Weight (0.0–1.0) of semantic component in hybrid fusion.
+      compact:         Drop per-row fields the caller cannot act on (jdoc#101).
+      fields:          Explicit field whitelist; wins over compact. `id` always
+                       survives.
+      snippet_bytes:   Inline the first N bytes of each section's content so a
+                       confident top hit needs no get_section round-trip.
     """
     t0 = time.perf_counter()
 
@@ -104,6 +113,11 @@ def search_sections(
                 semantic=semantic, semantic_only=semantic_only,
                 semantic_weight=semantic_weight,
                 lexical_engine=lexical_engine, role=role,
+                # jdoc#101: snippets need the member's index to read content,
+                # so they are produced member-side. Projection is NOT — it runs
+                # once on the fused list below, where `repo` is still needed to
+                # tell two members' rows apart.
+                snippet_bytes=snippet_bytes,
                 storage_path=storage_path,
             )
             per_repo.append({
@@ -138,6 +152,9 @@ def search_sections(
                 row = dict(row)
                 row["_fused_score"] = float(fused_score)
                 merged.append(row)
+
+        merged = project(merged, compact=compact, fields=fields,
+                         extra_keep=frozenset({"repo", "_fused_score"}))
 
         return {
             "repo_group": repo_group,
@@ -343,18 +360,14 @@ def search_sections(
         for s in index.sections
         if s.get("doc_path") in matched_doc_paths
     )
-    response_bytes = sum(len(str(r).encode("utf-8")) for r in results)
-    tokens_saved = estimate_savings(raw_bytes, response_bytes)
-    total = record_savings(tokens_saved, storage_path)
-    ca = cost_avoided(tokens_saved, total)
-
+    # jdoc#101: response_bytes is measured on the SERVED rows, so it is
+    # computed after projection/snippets at the bottom of this function —
+    # not here, where the rows still carry fields the caller may never see.
     latency_ms = int((time.perf_counter() - t0) * 1000)
     meta = {
         "latency_ms": latency_ms,
         "sections_returned": len(results),
-        "tokens_saved": tokens_saved,
         "search_mode": mode,
-        **ca,
     }
     if mode == "hybrid":
         meta["semantic_weight"] = semantic_weight
@@ -505,6 +518,41 @@ def search_sections(
         # attached only on absent/degraded states.
         coverage=index_coverage_meta(index),
     )
+
+    # jdoc#101: snippets + projection, LAST. Every filter, attach_scores, the
+    # ranking/replay logs and the verdict above read fields compact drops, so
+    # this has to run downstream of all of them.
+    if snippet_bytes and snippet_bytes > 0:
+        def _snippet_loader(row: dict) -> str:
+            sid = row.get("id")
+            sec = index.get_section(sid) if sid else None
+            if not sec:
+                return ""
+            return (index._ensure_content(sec)
+                    if hasattr(index, "_ensure_content")
+                    else (sec.get("content") or ""))
+
+        attach_snippets(results, snippet_bytes=snippet_bytes,
+                        loader=_snippet_loader)
+        meta["snippet_bytes"] = int(snippet_bytes)
+
+    if compact or fields:
+        # snippet survives an explicit whitelist that asked for it; a caller
+        # passing both fields= and snippet_bytes= wants the snippet.
+        extra = frozenset({"snippet", "snippet_truncated"}) if snippet_bytes else frozenset()
+        results = project(results, compact=compact, fields=fields,
+                          extra_keep=extra)
+        if compact:
+            meta["compact"] = True
+        if fields:
+            meta["fields"] = [str(f) for f in fields
+                              if isinstance(f, str) and f.strip()]
+
+    response_bytes = sum(len(str(r).encode("utf-8")) for r in results)
+    tokens_saved = estimate_savings(raw_bytes, response_bytes)
+    total = record_savings(tokens_saved, storage_path)
+    meta["tokens_saved"] = tokens_saved
+    meta.update(cost_avoided(tokens_saved, total))
 
     payload = {
         "repo": f"{owner}/{name}",

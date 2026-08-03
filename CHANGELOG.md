@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.121.0] - 2026-08-03 - search_sections stops paying for bytes the caller can't use (#101)
+
+Reported by @vondecron, with a per-field byte table that made the fix
+mechanical: a default result row spends most of its bytes on fields an agent
+cannot act on, and carries no body text, so even a perfect top hit costs a
+second `get_section` call.
+
+Three opt-in knobs on `search_sections`, all defaulting to today's behavior:
+
+- **`compact=true`** drops `repo` (already in the envelope), `parent_id`
+  (derivable from `id`), `children`, `byte_start`/`byte_end`, `content_hash`,
+  `inline_code`, `references` and `code_blocks`; drops `tags` when empty; drops
+  `summary` only when it is byte-identical to `title`. Per-row `_freshness`
+  survives only when it is NOT `fresh` -- an all-fresh result set is what
+  `_meta.freshness` already reports, but a single stale row is a signal the
+  caller needs.
+- **`fields=[...]`** is an explicit whitelist and wins over `compact`. `id`
+  always survives; a row nothing can follow up on is not a saving.
+- **`snippet_bytes=N`** inlines the first N bytes of each section body as
+  `snippet`, so a confident top hit needs no round-trip. UTF-8 safe (never
+  splits a codepoint, which matters for the CJK corpora jdoc indexes) and sets
+  `snippet_truncated: true` when it cuts.
+
+Measured on this repo's own docs at `max_results=10`: **1,989 chars/row
+default, 319 compact (-84%), 431 compact + `snippet_bytes=200` (-78%, and the
+`get_section` hop is gone)**.
+
+Two ordering constraints the implementation is built around. Projection runs
+**after** every filter and after scoring, because those consumers read fields
+compact drops (`min_byte_length` reads `byte_start`/`byte_end`, and it still
+works under `compact=true` -- there is a test). And in a `repo_group` fan-out
+`compact` deliberately **keeps `repo`**: dead weight in a single-repo response,
+the only thing telling two members' rows apart in a fused one.
+
+`_meta.tokens_saved` is now computed on the **served** payload rather than on
+the pre-projection rows, so the number describes what the caller received.
+
+Not adopted: jcodemunch's interned `#MUNCH/1` wire format, which the reporter
+raised as prior art. That is a wire-format change, and the 1.x contract forbids
+changing a tool response's JSON shape for existing consumers. `compact`/`fields`
+reach the same saving additively.
+
+New `retrieval/projection.py`. Tests `tests/test_v1_121_0.py` (20, including a
+guard that the default response stays byte-identical). Suite 2008 passed / 6
+skipped. Additive/1.x, no INDEX_VERSION or tool-count change.
+
 ## [1.120.0] - 2026-07-29 - retirement is commit-scoped, and the proof is independent (#95)
 
 Closes the coordinated-retirement arc that ran through #80, #88, #89, #90, #93

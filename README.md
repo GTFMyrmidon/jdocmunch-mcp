@@ -462,7 +462,7 @@ get_section:          { "repo": "owner/repo", "section_id": "owner/repo::docs/co
 | `get_toc`               | Flat section list in document order                   |
 | `get_toc_tree`          | Nested section tree per document                      |
 | `get_document_outline`  | Section hierarchy for one document                    |
-| `search_sections`       | Weighted search returning summaries only              |
+| `search_sections`       | Weighted search returning summaries only (`compact` / `fields` / `snippet_bytes` to trim the wire) |
 | `get_section`           | Full content of one section                           |
 | `get_sections`          | Batch content retrieval                               |
 | `get_section_context`   | Section + ancestor headings + child summaries         |

@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.120.0 SHIPPED 2026-07-29 (PyPI + tag + release) |
+**Version:** 1.121.0 SHIPPED 2026-08-03 (PyPI + tag + release) |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
@@ -22,8 +22,46 @@ count did not move (1988 → 1988), which is the check that matters** — nothin
 that ever executed was removed. If that design is ever revived, write the tests
 against the API that exists.
 
-⚠ **ZERO open issues. The `coordinated-retirement` hold is OVER** — #92 merged as
+⚠ **#101 (@vondecron) fixed in 1.121.0; the close comment is DRAFTED, not
+posted — jjg signs off.** The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
+
+## v1.121.0 — search_sections projection + snippets (#101, @vondecron)
+
+Three opt-in knobs, default response byte-identical (pinned by a test):
+`compact=true`, `fields=[...]` (whitelist, wins over compact, `id` always
+survives), `snippet_bytes=N`. **1,989 chars/row → 319 compact (-84%) → 431 with
+`snippet_bytes=200` (-78% AND the `get_section` hop is gone)**, measured on this
+repo's own docs at `max_results=10`.
+
+⚠ **Projection runs LAST — after every filter, after `attach_scores`, after the
+ranking/replay logs and the verdict.** Those consumers read fields compact drops
+(`min_byte_length` reads `byte_start`/`byte_end`), so projecting earlier would
+silently starve them. There is a test asserting `min_byte_length` still filters
+under `compact=True` ([[feedback_strip_a_field_after_its_consumer_reads_it]]).
+
+⚠ **In a `repo_group` fan-out compact KEEPS `repo`** — dead weight on a
+single-repo row, and the ONLY thing telling two members' rows apart in a fused
+one. That is what `project(..., extra_keep=...)` exists for; the same flag
+means different things on the two code paths
+([[feedback_a_flag_that_fits_one_caller_breaks_on_the_second]]). Snippets are
+produced member-side (they need the member's index to read content); projection
+is applied once to the fused list.
+
+⚠ Per-row `_freshness` is dropped **only when it is `fresh`**. An all-fresh set
+is what `_meta.freshness` already reports; a single stale row is a signal the
+caller needs, so noise-dropping must not become signal-dropping.
+
+`_meta.tokens_saved` now measures the **served** (post-projection) payload —
+it previously measured rows that had not yet had `_answerability`/`_quotability`
+attached either, so the figure never described what crossed the wire.
+
+**Not adopted:** jcm's interned `#MUNCH/1` wire format, which the reporter
+raised as prior art. Changing a tool response's JSON shape is forbidden by the
+1.x contract; `compact`/`fields` reaches the same saving additively.
+
+New `retrieval/projection.py`. Tests `tests/test_v1_121_0.py` (20). Suite 2008
+passed / 6 skipped. No INDEX_VERSION or tool-count change.
 
 ## v1.120.0 SHIPPED: the retirement arc closed, independently verified
 
