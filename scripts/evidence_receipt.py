@@ -37,7 +37,7 @@ from pathlib import Path
 def _git(*args: str) -> str:
     try:
         return subprocess.run(
-            ["git", *args], capture_output=True, text=True, check=True
+            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True
         ).stdout.strip()
     except Exception:
         return ""

@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.121.0 SHIPPED 2026-08-03 (PyPI + tag + release) |
+**Version:** 1.121.1 (PyPI + tag + release PENDING) |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
@@ -25,6 +25,50 @@ against the API that exists.
 ⚠ **#101 (@vondecron) shipped in 1.121.0 and CLOSED 2026-08-03. ZERO open
 issues again.** The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
+
+## v1.121.1 — git output is decoded as UTF-8, not as cp1252
+
+In-house, found by an AST sweep across the suite after the same defect was
+reproduced in jcm. **9 call sites** carried `text=`/`universal_newlines=` with no
+`encoding=` — `tools/_git.py` x2, `service_installer.py` x5, `cli/init.py`,
+`scripts/evidence_receipt.py` — all now pass `encoding="utf-8", errors="replace"`.
+
+⚠⚠ **`index-local` FAILED OUTRIGHT for any corpus checked out under a non-ASCII
+path** — `{"success": false, "error": "Indexing failed: 'NoneType' object has no
+attribute 'strip'"}`. Not a degraded index, no index at all. jcm's version of the
+same bug merely degraded silently, so **do not reason about jdoc's blast radius
+from jcm's**.
+
+⚠ **The trigger is `git rev-parse --show-toplevel`, which prints the repo path
+RAW AND UNQUOTED** — unlike `status`/`ls-files`, whose paths go through
+`core.quotepath` and come back ASCII. `_git_root` is the gateway every git-aware
+path here goes through. On Windows the usual way to have a non-ASCII character in
+your checkout path is your own user name.
+
+⚠ **All three of `_git`'s carefully-separated except clauses were bypassed.**
+`UnicodeDecodeError` is raised inside `subprocess`'s **reader thread**, so no
+`try/except` around the call catches it; `proc.stdout` returns `None` and the
+caller dies later on `.strip()`, naming neither git nor encoding.
+
+⚠⚠ **`local_git_paths_tracked` was ALREADY correct and is untouched** — it uses
+`_git_bytes` + an explicit `.decode("utf-8", errors="surrogateescape")`. Someone
+recognised this hazard for `ls-files` and did not generalise it. **That is the
+exact shape of gap a convention-without-a-test leaves**, and why the fix ships
+with `tests/test_subprocess_encoding_guard.py` (12) rather than a habit.
+
+⚠ Only `81 8d 8f 90 9d` are undefined in cp1252 — `0x9f` IS defined (`Ÿ`), so
+many non-ASCII bytes produce **silent mojibake** instead of a crash. Never read
+"it did not raise" as evidence the decode was right; check the `repr`.
+
+Guard proven non-vacuous BOTH ways: stashing `src/`+`scripts/` fails it naming
+all 9 sites, and the detector is parametrized over known-good/known-bad through
+the SAME function the repo-wide check uses. `tests/` and `unused/` are **EXEMPT
+BY NAME with reasons recorded**, not skipped; `KNOWN_UNENCODED` is an empty
+ratchet with its own anti-rot test.
+
+⚠ **Invisible to CI and to any UTF-8 dev box** — CI is Linux. Verified at
+`index-local`, not at the function edited. Suite 2020 passed / 6 skipped (was
+2008/6; +12 is the guard). No INDEX_VERSION, tool-count or wire-format change.
 
 ## v1.121.0 — search_sections projection + snippets (#101, @vondecron)
 

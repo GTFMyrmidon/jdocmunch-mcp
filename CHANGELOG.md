@@ -1,5 +1,69 @@
 # Changelog
 
+## [1.121.1] - 2026-08-03 - git output is decoded as UTF-8, not as cp1252
+
+In-house, found by an AST sweep across the suite after the same defect was
+reproduced in jcodemunch-mcp. Reproduced here before it was fixed, and verified
+at `index-local` rather than at the function that was edited.
+
+### Fixed
+
+- **`index-local` failed outright for any corpus checked out under a path with
+  a non-ASCII character in it.** `subprocess.run(..., text=True)` with no
+  `encoding=` decodes the child's output with `locale.getpreferredencoding()`,
+  which on a stock Windows box is **cp1252**. Git emits UTF-8.
+
+  ⚠ **The trigger is `git rev-parse --show-toplevel`, which prints the
+  repository's absolute path raw and unquoted** — unlike `status` and
+  `ls-files`, whose paths pass through `core.quotepath` and come back ASCII.
+  `_git_root` is the gateway every git-aware path in the package goes through,
+  so this was not local to one feature. On Windows the most common way to have
+  a non-ASCII character in your checkout path is your own user name.
+
+  Measured on the reproduction: a corpus at `...\Ýcorpus` (UTF-8 `c3 9d`; `9d`
+  is undefined in cp1252) returned
+  `{"success": false, "error": "Indexing failed: 'NoneType' object has no
+  attribute 'strip'"}`. **Not a degraded index — no index at all.** After the
+  fix the same corpus indexes with `head_sha` populated and
+  `sha_certified: true`.
+
+  ⚠ The error message named neither git nor encoding, because
+  `UnicodeDecodeError` is raised inside `subprocess`'s **reader thread**: no
+  `try/except` around the call can catch it, `proc.stdout` comes back `None`,
+  and the caller dies later on `.strip()`. `_git`'s three carefully-separated
+  except clauses (`CalledProcessError` / `TimeoutExpired` / `Exception`) were
+  all bypassed.
+
+  **9 call sites** fixed — `tools/_git.py` ×2, `service_installer.py` ×5,
+  `cli/init.py` ×1, `scripts/evidence_receipt.py` ×1 — all now passing
+  `encoding="utf-8", errors="replace"`.
+
+  ⚠ **`local_git_paths_tracked` was already correct and is untouched**: it uses
+  `_git_bytes` with an explicit `.decode("utf-8", errors="surrogateescape")`.
+  The hazard had been recognised for `ls-files` and not generalised, which is
+  the exact shape of gap a convention-without-a-test produces.
+
+### Added
+
+- `tests/test_subprocess_encoding_guard.py` — an AST guard failing on any
+  `run`/`Popen`/`check_output`/`check_call`/`call` that passes
+  `text=`/`universal_newlines=` without `encoding=`. Proven non-vacuous both
+  ways: the detector is parametrized over known-good and known-bad snippets
+  through the **same function** the repo-wide check uses, and stashing this
+  release's `src/` and `scripts/` changes fails it with all 9 sites named.
+
+  `tests/` and `unused/` are **exempt by name with reasons on the record**, not
+  skipped — `tests/` drives git against fixture repos this suite creates with
+  ASCII authors and paths, `unused/` ships to nobody. `KNOWN_UNENCODED` is an
+  empty ratchet with its own anti-rot test, so a listed gap that gets fixed must
+  be removed rather than decaying into a permanent exemption.
+
+⚠ **Invisible to CI and to any UTF-8 development box.** CI is Linux. The only
+population that hits this is Windows users, which is why the convention could
+not be maintained by noticing and why the sweep found 9 sites rather than 1.
+
+No INDEX_VERSION, tool-count, or wire-format change.
+
 ## [1.121.0] - 2026-08-03 - search_sections stops paying for bytes the caller can't use (#101)
 
 Reported by @vondecron, with a per-field byte table that made the fix

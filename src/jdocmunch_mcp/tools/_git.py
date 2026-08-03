@@ -102,7 +102,7 @@ def _git_probe(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
             stdin=subprocess.DEVNULL,  # see _git: prevents stdio-server deadlock
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=_git_timeout(),
             check=True,
         )
@@ -129,7 +129,7 @@ def _git(cwd: Path, args: list[str]) -> tuple[bool, str]:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=_git_timeout(),
             check=True,
         )

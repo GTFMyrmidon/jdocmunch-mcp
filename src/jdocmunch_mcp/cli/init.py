@@ -221,7 +221,7 @@ def _configure_claude_code(*, dry_run: bool = False) -> str:
     try:
         result = subprocess.run(
             ["claude", "mcp", "add", "jdocmunch", "uvx", "jdocmunch-mcp"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
         if result.returncode == 0:
             return "  ran: claude mcp add jdocmunch uvx jdocmunch-mcp"
