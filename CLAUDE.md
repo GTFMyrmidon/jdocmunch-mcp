@@ -22,8 +22,9 @@ count did not move (1988 → 1988), which is the check that matters** — nothin
 that ever executed was removed. If that design is ever revived, write the tests
 against the API that exists.
 
-⚠ **#101 (@vondecron) fixed in 1.121.0; the close comment is DRAFTED, not
-posted — jjg signs off.** The `coordinated-retirement` hold is OVER** — #92 merged as
+⚠ **#101 (@vondecron) fixed in 1.121.0 and answered on-issue 2026-08-03; the
+issue is still OPEN, awaiting his word on whether the compact drop list cut
+anything he relied on.** The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
 
 ## v1.121.0 — search_sections projection + snippets (#101, @vondecron)
