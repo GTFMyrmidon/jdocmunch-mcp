@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.121.1 |
+**Version:** 1.122.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
@@ -25,6 +25,41 @@ against the API that exists.
 ⚠ **#101 (@vondecron) shipped in 1.121.0 and CLOSED 2026-08-03. ZERO open
 issues again.** The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
+
+## v1.122.0 — a content read discloses its freshness, and `fresh` means proven
+
+`get_section`/`get_sections` handed back bytes with NO freshness and NO verdict
+— `search_sections` has carried per-section freshness since v1.16.0, the tools
+that serve actual content carried none. Now emit `_meta.freshness`,
+`_meta.verdict`, `_meta.drift_layer`.
+
+⚠⚠ **Two over-claims INSIDE the probe were fixed first; without them the new
+disclosure would have been worse than none.** `_classify` answered `fresh`
+having compared NOTHING for (a) a section with no `doc_path` and (b) a file that
+exists but is unreadable (`_file_hash` → `(None, True)` on `OSError`) — both
+fell through to a closing `return "fresh"`. Both now `unknown`. `summary()`
+tallied three buckets and SILENTLY DROPPED anything else, so such a section
+vanished and the counts could sum to fewer than the sections described; it now
+counts `unknown`, and an absent/unrecognised bucket counts as `unknown`.
+
+⚠⚠ **The DEFAULT probe reads jdoc's CACHED MIRROR, not the workspace.** Wired
+naively the new reading said `fresh` for a file that had been EDITED and for one
+that had been DELETED — verified at the entry point, which is the only reason it
+was caught. Content tools now use the jdoc#71 live-source layer when the index
+records a usable `source_root`, and DISCLOSE which layer answered.
+
+⚠ `build_verdict` had the same two-state `"stale" if index_stale else "fresh"`
+as jcm's v1.108.240 defect; extracted as `index_channel` with an optional
+richer reading (Boolean-only callers unchanged). ⚠ **`stale_index` was missing
+from its accepted set on the first pass, so a DELETED source fell through to
+`fresh`** — the exact failure the function exists to prevent, reintroduced by
+its own membership test.
+
+New `section_verdict_for_index`. ⚠ A batch verdict takes the **WORST** section
+reading, never first-or-average: otherwise one stale section rides out under an
+`ok` covering the others. Additive `_meta` keys only; no tool/schema/
+INDEX_VERSION change. Tests `tests/test_identity_freshness.py` (20). Suite 2063
+passed / 6 skipped.
 
 ## v1.121.1 — git output is decoded as UTF-8, not as cp1252
 

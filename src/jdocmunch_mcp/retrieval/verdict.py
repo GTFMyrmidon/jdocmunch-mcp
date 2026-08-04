@@ -197,6 +197,75 @@ def filter_verdict(
     return verdict
 
 
+def index_channel(
+    *,
+    index_changed: bool = False,
+    index_stale: bool = False,
+    freshness: Optional[str] = None,
+) -> str:
+    """The single expression that renders ``verdict.channels.index``.
+
+    ⚠ ``"stale" if index_stale else "fresh"`` has nowhere to put "we could not
+    find out", so an index whose freshness was never established claimed
+    current-snapshot equivalence. Callers that can establish a richer reading
+    pass ``freshness``; callers that cannot keep exactly their previous
+    two-state behaviour, so adding the parameter changes no existing result.
+
+    Ordering is by how badly each condition undermines the answer: a rebuild in
+    flight beats a known lag, and both beat an unestablished reading. ``unknown``
+    sits below ``stale`` and above ``fresh`` — a known lag is worse than an
+    unestablished one, and both are worse than proven currency.
+    """
+    if index_changed:
+        return "rebuilding"
+    if index_stale:
+        return "stale"
+    # ⚠ `stale_index` MUST be in this set. It was omitted on the first pass and
+    # the section-level reading for a DELETED source file fell straight through
+    # to the closing `return "fresh"` — the precise failure this function
+    # exists to prevent, reintroduced by the membership test itself. Caught by
+    # checking the channel at the caller rather than trusting the mapping.
+    if freshness == "stale_index":
+        return "stale"
+    if freshness in ("fresh", "stale", "unknown", "edited_uncommitted"):
+        # Only `fresh` means proven currency; the rest are disclosures.
+        return freshness
+    return "fresh"
+
+
+def section_verdict_for_index(
+    index,
+    *,
+    found_count: int,
+    freshness: Optional[str] = None,
+) -> dict:
+    """``_meta.verdict`` for the identity content-read tools.
+
+    ``get_section`` / ``get_sections`` name their subject, so there is no
+    ranking to be ambiguous about and no absence claim to back — the verdict's
+    job here is to disclose whether the bytes served still match the source.
+    """
+    state = STATE_OK if found_count else STATE_ABSENT
+    if freshness == "stale_index":
+        # We served content the source no longer matches. The read succeeded
+        # and the answer is not current; degraded says both.
+        state = STATE_DEGRADED
+    verdict = {
+        "state": state,
+        "channels": {
+            "index": index_channel(
+                index_changed=index_changed_since_load(index),
+                index_stale=bool(getattr(index, "source_dirty", False)),
+                freshness=freshness,
+            )
+        },
+        "scorer": SCORER_VERSION,
+        "note": _NOTES[state],
+    }
+    _attach_coverage(verdict, index_coverage_meta(index))
+    return verdict
+
+
 def build_verdict(
     *,
     result_count: int,
@@ -208,6 +277,7 @@ def build_verdict(
     index_changed: bool = False,
     did_you_mean: Optional[Sequence[str]] = None,
     coverage: Optional[dict] = None,
+    freshness: Optional[str] = None,
 ) -> dict:
     """Compute the ``_meta.verdict`` dict for a section search.
 
@@ -250,8 +320,10 @@ def build_verdict(
             # "rebuilding" is disclosed on EVERY state, not just the degraded
             # one: a caller reading an `ok` result still deserves to know the
             # index moved under it. Only the absence CLAIM is refused.
-            "index": (
-                "rebuilding" if index_changed else ("stale" if index_stale else "fresh")
+            "index": index_channel(
+                index_changed=index_changed,
+                index_stale=index_stale,
+                freshness=freshness,
             ),
         },
         "scorer": SCORER_VERSION,

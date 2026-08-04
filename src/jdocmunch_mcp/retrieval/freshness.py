@@ -25,6 +25,11 @@ from pathlib import Path
 from typing import Optional
 
 
+#: "The comparison could not be made." Distinct from every bucket that reports
+#: the RESULT of a comparison, and never collapsed into ``fresh``.
+_UNKNOWN = "unknown"
+
+
 class FreshnessProbe:
     """Per-section freshness check, scoped to one search call."""
 
@@ -171,14 +176,32 @@ class FreshnessProbe:
         return bucket
 
     def _classify(self, sec: dict) -> str:
+        """One of ``fresh`` / ``edited_uncommitted`` / ``stale_index`` / ``unknown``.
+
+        ⚠ ``unknown`` is a comparison that could not be MADE, and it is not the
+        same fact as ``fresh``. Every branch below that returns ``fresh`` must
+        have actually compared something; a branch that could not read the file
+        has established nothing, and answering ``fresh`` there asserts
+        current-snapshot equivalence on no evidence.
+
+        Two branches used to do exactly that: a section carrying no
+        ``doc_path``, and a file that exists but whose bytes could not be read
+        (``_file_hash`` returns ``(None, True)`` on ``OSError``, which fell
+        through every comparison to the closing ``return "fresh"``).
+        """
         doc_path = sec.get("doc_path", "") or ""
         if not doc_path:
-            return "fresh"
+            # Nothing to resolve, so nothing was compared.
+            return _UNKNOWN
 
         full_hash, exists = self._file_hash(doc_path)
         if not exists:
             # File missing entirely — treat as stale_index.
             return "stale_index"
+        if full_hash is None:
+            # The file is there and we could not read it. That is a capability
+            # of ours failing, not evidence about the content.
+            return _UNKNOWN
 
         stored_full_hash = (self._index.file_hashes or {}).get(doc_path)
         # When the file's full-file hash diverges from what was recorded at
@@ -220,10 +243,20 @@ class FreshnessProbe:
         return hashlib.sha256(buf).hexdigest()
 
     def summary(self, sections: list) -> dict:
-        """Aggregate counts across a result list. Side-effect-free."""
-        counts = {"fresh": 0, "edited_uncommitted": 0, "stale_index": 0}
+        """Aggregate counts across a result list. Side-effect-free.
+
+        ⚠ ``unknown`` is counted, and an unrecognised or ABSENT bucket counts
+        as ``unknown`` rather than vanishing. The previous version tallied
+        three buckets and silently dropped anything else, so a section whose
+        freshness could not be established was invisible in the aggregate —
+        the counts summed to fewer than the sections they described, and a
+        reader had no way to see the gap.
+        """
+        counts = {"fresh": 0, "edited_uncommitted": 0, "stale_index": 0, _UNKNOWN: 0}
         for sec in sections:
             bucket = sec.get("_freshness")
             if bucket in counts:
                 counts[bucket] += 1
+            else:
+                counts[_UNKNOWN] += 1
         return counts

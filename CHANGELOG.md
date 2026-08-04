@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.122.0] - 2026-08-04 - a content read discloses its freshness, and `fresh` means proven
+
+`get_section` and `get_sections` returned bytes with no indication of whether
+the file they came from had changed — or been deleted — since indexing.
+`search_sections` has carried per-section freshness since v1.16.0; the tools
+that hand a caller actual content carried none. A content read is a claim about
+what a file holds right now, so both now emit `_meta.freshness`, `_meta.verdict`
+and `_meta.drift_layer`.
+
+⚠ **Two over-claims were fixed in the probe itself, and without them the new
+disclosure would have been worse than none.**
+
+`FreshnessProbe._classify` answered `fresh` when it had compared nothing: a
+section carrying no `doc_path`, and a file that exists but whose bytes could not
+be read (`_file_hash` returns `(None, True)` on `OSError`) both fell through
+every comparison to a closing `return "fresh"`. Both now return `unknown` — a
+comparison that could not be made is not the same fact as one that succeeded.
+
+`summary()` compounded it by tallying three buckets and silently dropping
+anything else, so such a section vanished from the aggregate entirely and the
+counts could sum to fewer than the sections they described. It now counts
+`unknown`, and an absent or unrecognised bucket counts as `unknown` rather than
+disappearing.
+
+⚠ **The default probe compares against jdoc's cached content mirror, which does
+not change when the workspace file does.** Wired that way, the new reading
+answered `fresh` for a file that had been edited AND for one that had been
+deleted — a disclosure that discloses nothing. The content tools now use the
+jdoc#71 live-source layer when the index records a usable `source_root`, and
+report which layer answered in `_meta.drift_layer` rather than leaving it to be
+assumed.
+
+`build_verdict` gained the same tri-state treatment its siblings received: the
+`"stale" if index_stale else "fresh"` expression is extracted as `index_channel`
+and takes an optional richer reading. Callers passing only the Boolean keep
+their previous behaviour exactly.
+
+New `section_verdict_for_index` backs the identity tools. A batch verdict takes
+the **worst** section reading, never the first or an average — otherwise one
+stale section rides out under an `ok` covering the others, and the caller may
+never see the per-section flag.
+
+Additive: new `_meta` keys only, no tool, schema or INDEX_VERSION change. A
+section whose freshness cannot be established now reads `unknown` where it read
+`fresh`, which is the correction, and per-row `_freshness` is retained for it
+because only `fresh` rows are dropped as noise.
+
+Tests `tests/test_identity_freshness.py` (20), including a non-vacuity test
+reproducing the old expression. Suite 2063 passed / 6 skipped.
+
 ## [1.121.1] - 2026-08-03 - git output is decoded as UTF-8, not as cp1252
 
 In-house, found by an AST sweep across the suite after the same defect was

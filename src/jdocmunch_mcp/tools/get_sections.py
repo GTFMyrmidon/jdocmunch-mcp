@@ -146,6 +146,41 @@ def get_sections(
             "content_hash": sec.get("content_hash", ""),
             "indexed_at": index.indexed_at,
         })
+    # Per-section freshness + a verdict, matching get_section and the search
+    # tools. Entries that are errors carry no section, so they are annotated
+    # over the ones that do and counted nowhere else.
+    from ..retrieval.freshness import FreshnessProbe
+    from ..retrieval.verdict import section_verdict_for_index
+
+    # jdoc#71 live-source layer, for the reason spelled out in get_section:
+    # the cached mirror cannot see a workspace edit, so it would answer `fresh`
+    # for a file that has changed. Disclosed, never assumed.
+    _source_root = getattr(index, "source_root", "") or ""
+    _use_live = bool(_source_root) and os.path.isdir(_source_root)
+    _probe = FreshnessProbe(
+        store, owner, name, index,
+        source_root=_source_root if _use_live else None,
+    )
+    _secs = [
+        e["section"] for e in results
+        if isinstance(e, dict) and isinstance(e.get("section"), dict)
+    ]
+    for _s in _secs:
+        _probe.annotate(_s)
+    meta["freshness"] = _probe.summary(_secs)
+    meta["drift_layer"] = "live_source" if _use_live else "cached_mirror"
+    # ⚠ The WORST reading governs the batch verdict. Averaging, or taking the
+    # first, would let one stale section ride out under an `ok` covering the
+    # others — the caller has no way to act on a per-section flag it never sees
+    # at the top level.
+    _order = ["stale_index", "unknown", "edited_uncommitted", "fresh"]
+    _worst = next(
+        (b for b in _order if any(s.get("_freshness") == b for s in _secs)),
+        None,
+    )
+    meta["verdict"] = section_verdict_for_index(
+        index, found_count=len(_secs), freshness=_worst
+    )
     return {
         "sections": results,
         "section_count": len(results),

@@ -142,6 +142,32 @@ def get_section(
         "content_hash": sec.get("content_hash", ""),
         "indexed_at": index.indexed_at,
     }
+    # Per-section freshness + a verdict, the same honesty contract the search
+    # tools have carried since v1.16.0. A content read is a claim about what
+    # the file holds RIGHT NOW, so a caller deserves to know whether the bytes
+    # we served still match the source — and to be told when we could not
+    # establish that, rather than being left to assume.
+    from ..retrieval.freshness import FreshnessProbe
+    from ..retrieval.verdict import section_verdict_for_index
+
+    # ⚠ jdoc#71: the DEFAULT probe compares the index against jdoc's own cached
+    # content mirror, which does not change when the workspace file does. A
+    # reading taken that way answers `fresh` for a file that has been edited —
+    # or deleted — so for a content read, which is a claim about the file right
+    # now, the live-source layer is the only one that answers the question.
+    # Which layer answered is DISCLOSED, never assumed.
+    _source_root = getattr(index, "source_root", "") or ""
+    _use_live = bool(_source_root) and os.path.isdir(_source_root)
+    _probe = FreshnessProbe(
+        store, owner, name, index,
+        source_root=_source_root if _use_live else None,
+    )
+    _probe.annotate(result_sec)
+    meta["freshness"] = _probe.summary([result_sec])
+    meta["drift_layer"] = "live_source" if _use_live else "cached_mirror"
+    meta["verdict"] = section_verdict_for_index(
+        index, found_count=1, freshness=result_sec.get("_freshness")
+    )
     return {
         "section": result_sec,
         "_meta": meta,
