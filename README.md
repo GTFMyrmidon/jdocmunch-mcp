@@ -67,6 +67,24 @@ It is built for workflows where token efficiency, context hygiene, and agent rel
 
 ---
 
+## Offloadable-work annotation (`JMUNCH_OFFLOADABLE`, off by default)
+
+Set `JMUNCH_OFFLOADABLE=1` (or the per-server `JDOCMUNCH_OFFLOADABLE=1`) and every `get_section` / `get_sections` reply carries an advisory `_meta.offloadable` block saying whether the work that payload enables is grunt-work a cheaper model can do. Nothing is emitted unless you switch it on, and nothing about the answer itself changes when you do.
+
+**We label. We never route, execute, or hold model credentials.** No new process, no network call, no new tool, and no model of ours ever runs. What to do with the label is entirely the client's decision.
+
+Every modelmaxxing router available today classifies the **prompt**, because that is all a router standing in front of the model can see. This sits downstream of retrieval and classifies **the evidence just assembled** — whether the answer is literally present in the payload, how many documents it spans, whether anything was truncated, and whether any freshness or coverage signal came back unknown.
+
+The verdict is **tri-state and reason-coded**, never a bare score. `not_evaluated` is not `not_offloadable` — "we did not assess it" and "this is not grunt-work" are different facts. The criterion **fails closed**: every unknown bearing on the answer disqualifies, because a false `offloadable` sends real work to a model that will confabulate over the gap, while a false `not_offloadable` costs nothing but a missed saving.
+
+`verify_with` names the call that would **adjudicate** a cheaper model's answer over this payload — an annotation you cannot check is a vendor assertion, and this one ships next to the tool that checks it.
+
+A section whose source file cannot be checked, or that comes back stale, is refused rather than labelled. That is the same freshness disclosure `get_section` gained in v1.122.0 doing its job here.
+
+Identical field contract in jcodemunch-mcp (symbols/files), jdocmunch-mcp (sections/documents) and jdatamunch-mcp (columns/datasets): the vocabulary is *units* and *containers* so all three speak it identically, and a pinned contract digest fails the build in any one of them that drifts.
+
+---
+
 ## Why this exists
 
 Large context windows do not fix bad retrieval.

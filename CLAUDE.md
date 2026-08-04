@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.122.0 |
+**Version:** 1.123.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
@@ -25,6 +25,30 @@ against the API that exists.
 ⚠ **#101 (@vondecron) shipped in 1.121.0 and CLOSED 2026-08-03. ZERO open
 issues again.** The `coordinated-retirement` hold is OVER** — #92 merged as
 `3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
+
+## v1.123.0 — offloadable-work annotation, OFF BY DEFAULT
+
+`JMUNCH_OFFLOADABLE=1` (suite) or `JDOCMUNCH_OFFLOADABLE=1` (this server;
+narrower scope WINS) makes `get_section`/`get_sections` carry an advisory
+`_meta.offloadable` block. ⚠⚠ **We LABEL. We never route, execute, or hold
+model credentials** — no process, no network, no new tool, no model of ours
+runs. Routers classify the PROMPT because that is all they can see; this sits
+downstream of retrieval and classifies THE EVIDENCE JUST ASSEMBLED. Tri-state +
+reason-coded, fails closed; `verify_with` names the call that ADJUDICATES a
+cheap model's answer.
+
+⚠⚠ **This is WHY v1.122.0 shipped first.** A section whose source cannot be
+checked, or that comes back stale, is REFUSED rather than labelled — before the
+identity tools disclosed freshness there was nothing to refuse on and every
+payload would have gated on `TRI_STATE_UNKNOWN`.
+
+⚠ **Suite contract**: identical in jcm (symbols/files) and jdata
+(columns/datasets). `EvidenceShape` speaks *units*/*containers*; a pinned
+`CONTRACT_DIGEST` + generated contract test fails the build in any of the three
+that drifts. ⚠ **This copy is GENERATED from jcodemunch's module** — never
+hand-edit it; edit jcm and re-run the maintainer sync. Additive `_meta` key,
+emitted only when gated on; no tool/schema/INDEX_VERSION change. Tests
+`tests/test_offload_contract.py` (23).
 
 ## v1.122.0 — a content read discloses its freshness, and `fresh` means proven
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.123.0] - 2026-08-04 - offloadable-work annotation, off by default
+
+`get_section` and `get_sections` can now tell you whether the work their payload
+enables is grunt-work a cheaper model can do. Set `JMUNCH_OFFLOADABLE=1` (or
+`JDOCMUNCH_OFFLOADABLE=1` for this server alone) and each reply carries an
+advisory `_meta.offloadable` block. Off by default.
+
+**We label. We never route, execute, or hold model credentials.** No new
+process, no network call, no new tool, no model of ours runs.
+
+Routers classify the *prompt*, because that is all they can see. This sits
+downstream of retrieval and classifies *the evidence just assembled*: whether
+the section content is actually in the payload, how many documents it spans,
+whether anything was truncated, and whether freshness came back unknown.
+
+Tri-state and reason-coded, never a bare score, and it fails closed — every
+unknown bearing on the answer disqualifies. `verify_with` names the call that
+would adjudicate a cheaper model's answer over the payload.
+
+⚠ **This is why v1.122.0 shipped first.** A section whose source cannot be
+checked, or that comes back stale, is refused rather than labelled. Before the
+identity tools disclosed freshness there was nothing to refuse on, and every
+payload would have been rejected on `TRI_STATE_UNKNOWN`.
+
+Identical field contract in jcodemunch-mcp (symbols/files) and jdatamunch-mcp
+(columns/datasets): the vocabulary is *units* and *containers*, and a pinned
+`CONTRACT_DIGEST` plus a generated contract test fails the build in any of the
+three that drifts.
+
+Additive: one new `_meta` key, emitted only when gated on. No tool, schema or
+`INDEX_VERSION` change. Tests `tests/test_offload_contract.py` (23).
+
 ## [1.122.0] - 2026-08-04 - a content read discloses its freshness, and `fresh` means proven
 
 `get_section` and `get_sections` returned bytes with no indication of whether

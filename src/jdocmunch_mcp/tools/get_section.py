@@ -9,6 +9,22 @@ from ..storage import DocStore
 from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
 
 
+def _offload():
+    """The offloadable-work annotator, or None when it cannot be imported.
+
+    Off by default; the module's own env gate decides whether anything is
+    emitted. Imported lazily and tolerant of absence so a build without it
+    degrades to "no annotation" rather than breaking section retrieval.
+    """
+    try:
+        from ..retrieval import offload
+
+        return offload
+    except ImportError:
+        return None
+
+
+
 def get_section(
     repo: str,
     section_id: str,
@@ -168,7 +184,23 @@ def get_section(
     meta["verdict"] = section_verdict_for_index(
         index, found_count=1, freshness=result_sec.get("_freshness")
     )
-    return {
+    out = {
         "section": result_sec,
         "_meta": meta,
     }
+    _mod = _offload()
+    if _mod is not None:
+        # Attached LAST, so the shape it reads is the payload actually served.
+        # `units` is explicit because the section sits under a named key.
+        _mod.annotate(
+            out,
+            units=[result_sec],
+            retrieval_mode=_mod.MODE_IDENTITY,
+            body_field="content",
+            container_field="doc_path",
+            verify_with={
+                "tool": "get_section",
+                "args": {"section_id": section_id, "verify": True},
+            },
+        )
+    return out

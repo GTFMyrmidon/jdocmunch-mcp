@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..storage import DocStore
 from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
+from .get_section import _offload
 
 
 def get_sections(
@@ -181,8 +182,30 @@ def get_sections(
     meta["verdict"] = section_verdict_for_index(
         index, found_count=len(_secs), freshness=_worst
     )
-    return {
+    out = {
         "sections": results,
         "section_count": len(results),
         "_meta": meta,
     }
+    _mod = _offload()
+    if _mod is not None:
+        # Entries wrap the section under a "section" key and some are errors
+        # with no section at all, so unwrap here rather than teaching the
+        # shared criterion a jDocMunch-specific layout.
+        _ids = [s_.get("id") for s_ in _secs if s_.get("id")]
+        _mod.annotate(
+            out,
+            units=_secs,
+            retrieval_mode=_mod.MODE_IDENTITY,
+            body_field="content",
+            container_field="doc_path",
+            verify_with=(
+                {
+                    "tool": "get_section",
+                    "args_each": [{"section_id": i, "verify": True} for i in _ids],
+                }
+                if _ids
+                else None
+            ),
+        )
+    return out
