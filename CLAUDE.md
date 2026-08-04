@@ -585,7 +585,7 @@ with zero surprise. This is a hard constraint, not a guideline.
 - Add new opt-in code paths gated by env var or kwarg.
 
 **Reserved for 2.x (won't ship until a major-version license revision is planned):**
-- See `todo.md` § "Reserved for 2.x" for the canonical list.
+- See `ROADMAP.md` § "Reserved for 2.x" for the canonical list.
 
 ## Architecture
 - INDEX_VERSION=3; version mismatch triggers auto-migration on first load (NEVER a forced reindex on 1.x)

@@ -75,6 +75,27 @@ refusal to delete unverifiable state is not up for revision.
 
 ---
 
+## Reserved for 2.x (license-blocked)
+
+Each item here would unavoidably break a 1.x licensee, so none of it ships until
+a major-version license revision is planned. Deferred indefinitely; re-evaluate
+only when sales explicitly approves a 2.x cut.
+
+| Item | Why it is 2.x-only |
+|---|---|
+| Drop the bytes/4 token estimate (require tiktoken) | Removes a fallback an existing user might rely on |
+| Rename the `list_repos` MCP name (drop the `index_repo` / `list_repos` aliases) | Tool removal breaks agents pinned to the name |
+| Forced reindex on a schema bump | We auto-migrate on 1.x; "force" would break offline upgrades |
+| MCP wire-format change (e.g. envelope rename) | Breaks every existing consumer at once |
+
+This is the canonical list referenced by the 1.x compatibility contract in
+`CLAUDE.md`. It moved here from `todo.md` on 2026-08-03 when that file was
+retired; the table is unchanged.
+
+**Close condition.** None. These stay parked until a 2.x is approved.
+
+---
+
 ## Conventions
 
 - Entries here are **accepted**, not speculative. A rejected proposal gets a
