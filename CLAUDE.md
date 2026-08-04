@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.121.1 (PyPI + tag + release PENDING) |
+**Version:** 1.121.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
