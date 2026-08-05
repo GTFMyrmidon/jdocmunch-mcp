@@ -14,8 +14,9 @@ generated for an early v1.x and were never traceable to anything in
 Removing it and keeping the measured results is the same correction 1.123.1
 applied to TOKEN_SAVINGS.md.
 
-Measured on the built artifacts: **6,769,591 -> 903,226 bytes (-86.7%),
-607 -> 606 entries.** The largest remaining entry is the whitepaper PDF at
+Measured on the built artifacts: **6,769,591 bytes -> ~903 KB (-86.7%),
+607 -> 606 entries.** (Approximate on the new side deliberately: stating the
+exact byte count inside this file changes it.) The largest remaining entry is the whitepaper PDF at
 193,417 bytes. No code change, no test change, no wire-format, tool-count or
 INDEX_VERSION change; suite 2063 passed / 6 skipped.
 
