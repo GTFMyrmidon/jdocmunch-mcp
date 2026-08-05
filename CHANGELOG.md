@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.123.2] - 2026-08-05 - a 5.9 MB marketing image was 87% of the source distribution
+
+`tests/infographic.png` was a promotional graphic that had been sitting in the
+test directory since the initial commit. Nothing referenced it: no test, no
+module, no documentation, no workflow. At 5,895,033 bytes it accounted for
+**87% of the 6,769,591-byte sdist** across only 607 entries, so every install
+from source paid for it.
+
+It was also stale collateral rather than evidence. The figures on it were
+generated for an early v1.x and were never traceable to anything in
+`benchmarks/`, which is where reproducible numbers for this project belong.
+Removing it and keeping the measured results is the same correction 1.123.1
+applied to TOKEN_SAVINGS.md.
+
+Measured on the built artifacts: **6,769,591 -> 903,226 bytes (-86.7%),
+607 -> 606 entries.** The largest remaining entry is the whitepaper PDF at
+193,417 bytes. No code change, no test change, no wire-format, tool-count or
+INDEX_VERSION change; suite 2063 passed / 6 skipped.
+
 ## [1.123.1] - 2026-08-05 - README rewritten as a landing page; TOKEN_SAVINGS.md rebuilt from measured runs
 
 - README restructured to identity -> value -> evidence -> install -> quickstart -> capabilities -> architecture -> security -> limitations -> licensing; 793 -> 226 lines. New Limitations section.

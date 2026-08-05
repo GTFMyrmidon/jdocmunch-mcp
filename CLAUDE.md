@@ -1,7 +1,17 @@
 # jdocmunch-mcp
 
-**Version:** 1.123.0 |
+**Version:** 1.123.2 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
+
+⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
+distributed.** `tests/infographic.png` — a 5.9 MB promotional image, referenced
+by nothing — sat there from the initial commit and was **87% of the whole
+source distribution** until 1.123.2 removed it. ⚠⚠ **No guard would have caught
+it**: it is a tracked file, so exclusion rules and untracked-file scans are both
+blind to it, and nothing asserts a size budget. **Inspect the artifact's LARGEST
+entries, not just its file list** — a clean-looking 607-entry tarball was almost
+entirely one image. ⚠ `uv.lock` is **gitignored here** (unlike jcm), so it is
+never distributed and never validated; do not reason about it as a pinned input.
 
 ⚠ **`numpy` is in the dev group as of 2026-07-31 — test-only, and it must stay
 that way.** The runtime import in `storage/doc_store.py` (vectorized semantic
