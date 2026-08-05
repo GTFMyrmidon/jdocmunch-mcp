@@ -1,6 +1,6 @@
 <!-- mcp-name: io.github.jgravelle/jdocmunch-mcp -->
 
-# jDocMunch MCP: Section-Level Documentation Retrieval for AI Agents
+# jDocMunch MCP
 
 **jDocMunch is an MCP server for coding agents that retrieves the exact documentation section a task needs, without loading whole files into the context window.**
 
@@ -26,6 +26,19 @@ Index a documentation set once by heading hierarchy, then fetch a single section
 **The mechanism.** jDocMunch parses a documentation set into a section tree keyed by heading hierarchy, stores each section's byte offsets into the original file, and exposes retrieval over MCP. Sections keep durable identities across re-indexing as long as path, heading text, and heading level are unchanged.
 
 **The outcome.** The unit of access changes from *file* to *section*. An agent retrieves the installation section, one configuration block, or a specific heading subtree — and nothing else.
+
+---
+
+## What makes it different
+
+### Section-first retrieval
+Search and retrieve documentation by section, not just file path or keyword match.
+
+### Byte-precise extraction
+Full content is pulled on demand from exact byte offsets into the original file.
+
+### Stable section IDs
+Sections retain durable identities across re-indexing when path, heading text, and heading level remain unchanged.
 
 ---
 
@@ -202,7 +215,15 @@ Individual developers and non-commercial projects need no license. Organizations
 
 ### 1.x compatibility commitment
 
-Every 1.x license entitles you to every future 1.x release. No 1.x version will remove or rename an MCP tool, drop a `Section` field, force a reindex without auto-migrating, break an existing consumer of the JSON wire format, or make a previously-default behavior raise. Anything requiring one of those is reserved for 2.x. The contract is machine-checked by `tests/test_server.py` and a replay-fixture gate on every release.
+Every 1.x license entitles you to every future 1.x release. We will never ship a 1.x version that:
+
+- removes or renames an MCP tool (deprecated tool names keep their aliases),
+- drops a `Section` field from the response shape,
+- forces a reindex without auto-migrating your existing index on first load,
+- changes the JSON wire format of any tool response in a way that breaks an existing consumer,
+- or makes a previously-default behavior raise.
+
+Anything that would require breaking these promises is reserved for a future major version (2.x). The full machine-checked contract is enforced via `tests/test_server.py` (tool-name and required-field invariants) and the replay-fixture gate that runs on every release.
 
 ---
 

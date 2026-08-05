@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.123.1] - 2026-08-05 - README rewritten as a landing page; TOKEN_SAVINGS.md rebuilt from measured runs
+
+- README restructured to identity -> value -> evidence -> install -> quickstart -> capabilities -> architecture -> security -> limitations -> licensing; 793 -> 226 lines. New Limitations section.
+- TOKEN_SAVINGS.md: three of four tables were illustrative figures presented as measurements and are removed. Replaced with results traceable to benchmarks/ (Kubernetes, wiki, SciPy, LangChain) including the 5,987-31,757 per-query spread.
+- TOKEN_SAVINGS.md cost model corrected: `claude_opus` was documented at $15.00/1M, the retired Opus 4.0/4.1 rate. The shipped code uses $5.00/1M, so the published avoided-cost figure overstated threefold. `claude_sonnet` and `claude_haiku` were undocumented; all four now match token_tracker.py.
+- No code change. Docs only.
+
 ## [1.123.0] - 2026-08-04 - offloadable-work annotation, off by default
 
 `get_section` and `get_sections` can now tell you whether the work their payload
