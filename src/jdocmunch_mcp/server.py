@@ -2535,6 +2535,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             result = {"error": f"Unknown tool: {name}"}
 
+        # jdoc#104 / v1.124.1: an argument we ignored cannot back an absence
+        # claim. This MUST run before the absence block below reads the verdict,
+        # or a call whose scoping argument was silently dropped can still reach
+        # `absent` and mint a citable ref. Suite parity with jcm v1.108.175 and
+        # jdata; v1.124.0 disclosed the ignored argument but skipped this half.
+        try:
+            if _ignored_args:
+                from .tools import _arg_contract as _ac
+                _ac.degrade_absent_verdict(result, _ignored_args)
+        except Exception:
+            pass
+
         # Absence evidence (#377 phase 3): record the verdict BEFORE
         # meta_fields filtering, which by default strips `_meta` entirely — the
         # v1.104.0 budget lesson. The citable ref is re-attached after
@@ -2627,8 +2639,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # the same reason the budget and absence blocks are — the default config
         # strips `_meta` entirely, and a warning the default deletes is no
         # warning at all. Omitted when empty, per omit-when-empty.
+        #
+        # ⚠ TOP-LEVEL is the suite shape for a `_meta`-stripping server (jdata
+        # documents the same reasoning). `_meta.ignored_arguments` is ALSO kept
+        # because v1.124.0 shipped it and the 1.x contract forbids removing a
+        # response key; it is what jcm emits, so a cross-server consumer reading
+        # either spelling works.
         try:
             if _ignored_args and isinstance(result, dict):
+                from .tools import _arg_contract as _ac2
+                _ac2.disclose(result, _ignored_args)
                 result.setdefault("_meta", {})["ignored_arguments"] = _ignored_args
         except Exception:
             pass

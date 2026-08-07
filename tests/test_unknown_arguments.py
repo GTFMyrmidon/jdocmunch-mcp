@@ -130,3 +130,64 @@ def test_get_toc_description_points_at_the_single_document_tool():
     toc = next(t for t in _all_tools() if t.name == "get_toc")
     assert "get_document_outline" in (toc.description or "")
     assert "doc_path" not in ((toc.inputSchema or {}).get("properties") or {})
+
+
+class TestIgnoredArgumentCannotBackAnAbsenceClaim:
+    """The half v1.124.0 MISSED (added in v1.124.1).
+
+    Disclosure alone does not stop the harm. jdoc mints citable `absent:<sha>`
+    refs (v1.117.0), so a call whose scoping argument was silently dropped could
+    reach `absent` and be cited as proof the target is not there. The call that
+    ran is not the call that was requested, so it cannot prove anything about
+    what was asked for.
+
+    Suite parity: jcm v1.108.175 and jdata both degrade; jdoc was the last.
+    """
+
+    def test_absent_is_downgraded_to_degraded(self):
+        from jdocmunch_mcp.tools import _arg_contract as ac
+        result = {"_meta": {"verdict": {"state": "absent", "scanned": {"sections": 9}}}}
+        ac.degrade_absent_verdict(result, ["doc_path"])
+        v = result["_meta"]["verdict"]
+        assert v["state"] == "degraded"
+        assert v["ignored_arguments"] == ["doc_path"]
+        assert "not the call that was requested" in v["note"]
+
+    @pytest.mark.parametrize("state", ["ok", "degraded", "low_confidence"])
+    def test_other_states_are_left_alone(self, state):
+        """Only the absence CLAIM is refused; everything else is untouched."""
+        from jdocmunch_mcp.tools import _arg_contract as ac
+        result = {"_meta": {"verdict": {"state": state}}}
+        ac.degrade_absent_verdict(result, ["zzz"])
+        assert result["_meta"]["verdict"]["state"] == state
+
+    def test_no_ignored_arguments_changes_nothing(self):
+        from jdocmunch_mcp.tools import _arg_contract as ac
+        result = {"_meta": {"verdict": {"state": "absent"}}}
+        ac.degrade_absent_verdict(result, [])
+        assert result["_meta"]["verdict"]["state"] == "absent"
+
+    def test_degrade_runs_before_the_absence_block_reads_the_verdict(self):
+        """Ordering is the whole fix. If the downgrade ran after the absence
+        block, a citable ref would already have been minted."""
+        import inspect
+        from jdocmunch_mcp import server as S
+        src = inspect.getsource(S.call_tool)
+        assert "degrade_absent_verdict" in src
+        assert src.index("degrade_absent_verdict") < src.index("note_absence"), (
+            "the verdict downgrade must precede absence minting"
+        )
+
+    def test_top_level_disclosure_matches_the_suite_shape(self):
+        """jdata documents top-level for a `_meta`-stripping server; jdoc is one."""
+        from jdocmunch_mcp.tools import _arg_contract as ac
+        result = {}
+        ac.disclose(result, ["doc_path"])
+        assert result["ignored_arguments"] == ["doc_path"]
+        assert "ignored_arguments_note" in result
+
+    def test_note_text_is_shared_with_the_siblings(self):
+        """One sentence, three servers. Drift here is drift in an agent contract."""
+        from jdocmunch_mcp.tools import _arg_contract as ac
+        note = ac.note(["doc_path"])
+        assert "cannot be read as evidence the target is absent" in note

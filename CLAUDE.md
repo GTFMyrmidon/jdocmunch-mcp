@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.124.0 |
+**Version:** 1.124.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,35 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.124.1 — an ignored argument must not be able to back an absence claim
+
+Completes #104. ⚠⚠ **v1.124.0 shipped the SMALLER half.** It disclosed ignored
+arguments and did not degrade the absence verdict — and jdoc mints citable
+`absent:<sha>` refs (v1.117.0), so a call whose scoping argument was silently
+dropped could still reach `absent` and be cited as proof the target is not
+there. Per #104's own logic that call returns a **wider** result than requested,
+which makes "not found" the claim it is least entitled to make.
+
+⚠⚠ **This contract already existed in the other two servers and I did not look.**
+jcm shipped it in v1.108.175 (found live: `search_text` passed `regex=true` when
+the parameter is `is_regex`); jdata carries the port. **jdoc was the one server
+without it, which is exactly why #104 was reportable here and not there.** The
+v1.124.0 fix was written from the REPORT instead of from the sibling
+implementations, so it reproduced the disclosure and missed the refusal.
+**Check the siblings before implementing a suite-relevant fix**; a defect
+reportable in only one of three is a parity gap until proven otherwise.
+
+`tools/_arg_contract.py` now exists in all three with the shared note text.
+`degrade_absent_verdict` runs BEFORE the absence block reads the verdict, so
+`note_absence` refuses to mint rather than minting and retracting — **ordering
+is the fix**, and a test asserts the call order in the dispatcher source. Only
+the absence CLAIM is refused; `ok`/`degraded`/`low_confidence` are untouched.
+Disclosure is now ALSO top-level (`ignored_arguments` + `ignored_arguments_note`,
+jdata's shape, chosen for the same reason: this server strips `_meta` by
+default); `_meta.ignored_arguments` is RETAINED because v1.124.0 shipped it and
+1.x forbids removing a response key. Tests: `test_unknown_arguments.py` 15 -> 23.
+Suite **2152 passed / 6 skipped / 0 failed**.
 
 ## v1.124.0 — four reported defects (#102/#103/#104/#105), all from fresh reporters
 

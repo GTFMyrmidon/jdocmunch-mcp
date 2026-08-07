@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.124.1] - 2026-08-07 - an ignored argument must not be able to back an absence claim
+
+Completes #104. v1.124.0 disclosed ignored arguments and stopped there. That is
+the smaller half.
+
+jDocMunch mints citable `absent:<sha>` references (v1.117.0). A call whose
+scoping argument was silently dropped could still reach `state: "absent"` and be
+cited as proof the target is not there -- and the whole point of #104 is that
+such a call returns a WIDER result than requested, so "not found" is exactly the
+claim it is least entitled to make. The call that ran is not the call that was
+requested; it cannot prove anything about what was asked for.
+
+**This contract already existed in the other two servers.** jcodemunch shipped
+it in v1.108.175 after finding the defect live (a `search_text` call passing
+`regex=true` when the parameter is `is_regex`), and jdatamunch carries the port.
+jDocMunch was the one server without it, which is why #104 was reportable here
+and not there. The v1.124.0 fix was written from the report rather than from the
+sibling implementations, so it reproduced the disclosure and missed the refusal.
+
+`tools/_arg_contract.py` is now present in all three, with the shared note text:
+
+> The call that ran is not the call that was requested, so this result cannot be
+> read as evidence the target is absent.
+
+- `degrade_absent_verdict` downgrades `absent` to `degraded` and records why.
+  It runs BEFORE the absence-evidence block reads the verdict, so `note_absence`
+  refuses to mint rather than minting and retracting. Ordering is the fix; a
+  test asserts the call order in the dispatcher source.
+- Only the absence CLAIM is refused. `ok`, `degraded` and `low_confidence` are
+  untouched, so a caller does not lose a usable result over a typo'd flag.
+- Disclosure is now also TOP-LEVEL (`ignored_arguments` +
+  `ignored_arguments_note`), matching jdatamunch, which documented that shape
+  for the same reason it applies here: this server strips `_meta` by default.
+  `_meta.ignored_arguments` is retained because v1.124.0 shipped it and the 1.x
+  contract forbids removing a response key -- it is also what jcodemunch emits,
+  so a cross-server consumer reading either spelling works.
+
+Tests: `tests/test_unknown_arguments.py` grows to 23.
+
 ## [1.124.0] - 2026-08-07 - four reported defects: ignored dot-directories, an unbounded sidecar, silent argument drops, and a verification that verified the wrong bytes
 
 Closes #102, #103, #104, #105.
