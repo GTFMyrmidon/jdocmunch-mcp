@@ -1137,6 +1137,34 @@ def _count_skip(skip_counts: Optional[dict], reason: str) -> None:
         skip_counts[reason] = skip_counts.get(reason, 0) + 1
 
 
+def _walk_rel(dir_rel: str, name: str = "") -> str:
+    """Root-relative POSIX path for an os.walk entry, as gitignore matching sees it.
+
+    ⚠⚠ This exists because `f"{dir_rel}/{name}".lstrip("./")` was WRONG, and
+    wrong in a way that read as correct (jdoc#102, @faxik). ``str.lstrip`` takes
+    a CHARACTER SET, not a prefix, so it eats the leading dot of the first path
+    component along with the "./" it was meant to remove::
+
+        "./.worktrees/".lstrip("./")            -> "worktrees/"     # pattern misses
+        ".worktrees/a/copy.md".lstrip("./")     -> "worktrees/a/copy.md"
+
+    Undotted directories were pruned correctly, which is exactly why this
+    survived: only a gitignored directory whose name STARTS WITH A DOT leaked,
+    and those are the common ones — `.venv/`, `.tox/`, `.next/`, `.cache/`,
+    `.worktrees/`. The reporter's repo indexed 9,813 documents where ~3,100
+    exist, roughly 48 copies of one corpus, because git worktrees lived under a
+    gitignored `.worktrees/`.
+
+    Duplicate copies are not merely a cost: near-identical sections from stale
+    branches compete with the live one, so retrieval quality degrades too.
+
+    Both the directory-pruning and the per-file check must use this, or files
+    nested under a leaked dot-directory escape the fallback as well.
+    """
+    base = "" if dir_rel in ("", ".") else f"{dir_rel}/"
+    return f"{base}{name}"
+
+
 def discover_doc_files(
     folder_path: Path,
     max_files: int = 10_000,
@@ -1189,12 +1217,15 @@ def discover_doc_files(
             dirnames.clear()
             continue
 
-        # Prune skipped directories in-place so os.walk won't descend into them
+        # Prune skipped directories in-place so os.walk won't descend into them.
+        # ⚠ Build the relative path with _walk_rel, never `lstrip("./")` — see
+        # its docstring (jdoc#102). Every ignore check below must see the SAME
+        # string git would match, or an ignored directory is silently walked.
         dirnames[:] = [
             d for d in dirnames
-            if not _should_skip(f"{dir_rel}/{d}/".lstrip("./"))
-            and not (gitignore_spec and gitignore_spec.match_file(f"{dir_rel}/{d}/".lstrip("./")))
-            and not (extra_spec and extra_spec.match_file(f"{dir_rel}/{d}/".lstrip("./")))
+            if not _should_skip(_walk_rel(dir_rel, f"{d}/"))
+            and not (gitignore_spec and gitignore_spec.match_file(_walk_rel(dir_rel, f"{d}/")))
+            and not (extra_spec and extra_spec.match_file(_walk_rel(dir_rel, f"{d}/")))
         ]
 
         for filename in filenames:
@@ -1213,7 +1244,7 @@ def discover_doc_files(
                 _count_skip(skip_counts, "path_traversal")
                 continue
 
-            rel_path = f"{dir_rel}/{filename}".lstrip("./") if dir_rel != "." else filename
+            rel_path = _walk_rel(dir_rel, filename)
 
             if _should_skip(rel_path):
                 _count_skip(skip_counts, "skip_pattern")
@@ -2291,12 +2322,18 @@ def index_local(
             pass
 
         # v1.34.0: section near-duplicate detector sidecar.
+        # jdoc#103: all-pairs Jaccard, ~O(n^2.3). It is guarded by a section
+        # ceiling now, and a skip is REPORTED -- the bare `except: pass` below
+        # means a silent skip is indistinguishable from "no duplicates found",
+        # which is what made the cost invisible on large corpora.
+        dedup_skipped = None
         try:
-            from ..retrieval.dedup import write as _write_dedup
+            from ..retrieval.dedup import write as _write_dedup, last_skip_reason
             _write_dedup(storage_path, owner, repo_name,
                          [s.to_dict() | {"content": getattr(s, "content", "") or ""} for s in all_sections])
-        except Exception:
-            pass
+            dedup_skipped = last_skip_reason()
+        except Exception as _e:
+            dedup_skipped = {"reason": "error", "detail": str(_e)[:200]}
 
         # v1.29.0: opt-in autotune. Runs the v1.23 weight tuner on this
         # repo's accumulated ranking events; no-op when telemetry isn't
@@ -2338,6 +2375,10 @@ def index_local(
         _add_commit_fields(result, saved)
         if autotune_result is not None:
             result["autotune"] = autotune_result
+        # jdoc#103: disclose a skipped near-duplicate sidecar. Additive key,
+        # omitted when the sidecar ran, per the omit-when-empty convention.
+        if dedup_skipped:
+            result["dedup_skipped"] = dedup_skipped
 
         # jdoc#80 Part B (B1): disclose reconciliation quarantine. A provisional
         # index was created because Git lineage could not be verified; it is

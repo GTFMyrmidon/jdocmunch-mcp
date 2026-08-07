@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.123.2 |
+**Version:** 1.124.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -32,9 +32,68 @@ count did not move (1988 → 1988), which is the check that matters** — nothin
 that ever executed was removed. If that design is ever revived, write the tests
 against the API that exists.
 
-⚠ **#101 (@vondecron) shipped in 1.121.0 and CLOSED 2026-08-03. ZERO open
-issues again.** The `coordinated-retirement` hold is OVER** — #92 merged as
-`3037428`, branch deleted from the workflow. Nothing is held; ship from `master`.
+⚠ **2026-08-07: #102/#103/#104/#105 all CLOSED in 1.124.0.** ⚠ Re-run
+`gh issue list --state open` before quoting any tracker state; never transcribe
+a count into this file. **The `coordinated-retirement` hold is OVER** — #92
+merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
+from `master`.
+
+## v1.124.0 — four reported defects (#102/#103/#104/#105), all from fresh reporters
+
+⚠⚠ **#102 `lstrip("./")` takes a character SET, not a prefix**, so
+`"./.worktrees/"` became `"worktrees/"` and **every gitignored DOT-directory was
+walked and indexed** (`.venv/`, `.tox/`, `.next/`, `.cache/`, `.worktrees/`).
+Undotted dirs pruned correctly, which is exactly why it read as working.
+Reported: **9,813 docs indexed where ~3,100 exist**, ~48 copies of one corpus;
+duplicates also DEGRADE retrieval (stale-branch sections compete with the live
+one). Fixed with a shared `_walk_rel`; the per-file fallback was corrupted the
+same way. ⚠ **Swept the suite first: 14 occurrences in jcm, 5 here — but jcm's
+indexer does NOT share it** (it prunes on the bare dir name). Verified, not
+assumed; jcm's are path normalizers, a separate lower-severity class.
+
+⚠⚠ **#103 the dedup sidecar was unbounded AND its skips were silent.**
+All-pairs Jaccard, ~O(n^2.3) measured (5,931→7.4s, 12,493→42.2s, 25,329→206.7s);
+the length pre-filter is a CONSTANT, not a change of asymptote. The code comment
+already said "fine up to a few thousand sections" and was right — **nothing
+ENFORCED or SURFACED that ceiling**, and the caller's bare `except: pass` meant
+a skip would be silent too. **The silence was the defect; the runtime was its
+symptom** — a skipped sidecar was indistinguishable from one that found no
+duplicates. Now: ceiling (20k default, `JDOCMUNCH_DEDUP_MAX_SECTIONS`, `0`
+disables, garbage→default so a typo cannot uncap it), `enabled` opt-out, and a
+`dedup_skipped` block naming count/ceiling/knob. ⚠ MinHash+LSH is the REAL fix
+and is deliberately NOT in this release.
+
+⚠ **#104 unknown arguments were silently dropped.** `get_toc{doc_path:...}`
+returned the WHOLE-CORPUS TOC (`doc_path` is `get_document_outline`'s param).
+⚠⚠ **The direction is the harm**: an agent that means to SCOPE and misnames the
+param silently gets a LARGER response. `additionalProperties:false` is forbidden
+by the 1.x contract (a previously-accepted call must not start raising), so it
+is additive `_meta.ignored_arguments`. ⚠ Built from the **UNFILTERED** catalog (a
+tier-hidden tool still has a schema) and attached **AFTER meta_fields
+filtering** — the default strips `_meta`, and a warning the default deletes is
+no warning at all.
+
+⚠⚠ **#105 `verify_index` verified the CACHED MIRROR while its docstring promised
+"its current on-disk content".** Both sides came from the index, so an edited /
+truncated / DELETED source still verified CLEAN (reporter proved it with a
+SAME-LENGTH modification, ruling out a size check). **The description was wrong,
+not the behaviour** — cache verification is a real check (B1/B2 of the v1.10
+audit) and flipping the default would silently change what existing CI gates on.
+Default kept and now honest; new `source="live"` checks the workspace under
+`source_root`; `_meta.verify_layer` names which ran on EVERY call and
+`_meta.verifies` says in words that clean is NOT proof the source is current.
+⚠ **Live with no `source_root` REFUSES (`no_source_root`) rather than falling
+back** — a fallback would answer the cache question under the live label, i.e.
+the exact confusion reported. Same discipline as v1.122.0's content tools.
+⚠ **OPEN for jjg, recorded not decided: should `live` be the DEFAULT?** v1.122.0
+flipped content tools to live-when-available (argues yes); it changes counts for
+anyone gating CI on `drift_count == 0` (argues do it deliberately).
+
+Tests: `test_gitignore_dot_directories.py` (20; **10 fail pre-fix**, 10 controls
+pass BOTH sides), `test_dedup_ceiling.py` (17), `test_unknown_arguments.py` (15,
+incl. a whole-catalog round-trip proving no tool flags its OWN declared args),
+`test_verify_index_source_layer.py` (19, the reporter's 4-file fixture).
+Suite **2144 passed / 6 skipped / 0 failed**. No INDEX_VERSION change.
 
 ## v1.123.0 — offloadable-work annotation, OFF BY DEFAULT
 

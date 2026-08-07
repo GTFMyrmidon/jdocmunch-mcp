@@ -1,5 +1,137 @@
 # Changelog
 
+## [1.124.0] - 2026-08-07 - four reported defects: ignored dot-directories, an unbounded sidecar, silent argument drops, and a verification that verified the wrong bytes
+
+Closes #102, #103, #104, #105.
+
+### #102 - gitignored dot-directories were walked and indexed (@faxik)
+
+`str.lstrip` takes a character SET, not a prefix, so
+`f"{dir_rel}/{d}/".lstrip("./")` ate the leading dot of the first path
+component:
+
+```
+"./.worktrees/".lstrip("./")   ->  "worktrees/"    # pattern no longer matches
+```
+
+`.venv/`, `.tox/`, `.next/`, `.cache/` and `.worktrees/` were therefore walked
+despite `.gitignore` listing them and `git check-ignore` agreeing. Undotted
+directories were pruned correctly, which is exactly why this read as working.
+The per-file fallback at the same site was corrupted the same way, so files
+nested under a leaked directory did not get caught there either.
+
+Reported impact: 9,813 documents indexed where ~3,100 exist, roughly 48 copies
+of one corpus, because git worktrees lived under a gitignored `.worktrees/`.
+Duplicates are not only a cost - near-identical sections from stale branches
+compete with the live one, so retrieval quality degrades too.
+
+Both sites now use a shared `_walk_rel` helper with prefix semantics.
+
+The idiom was swept across the suite before fixing: 14 occurrences in
+jcodemunch, 5 here. **jcodemunch's indexer does not share this defect** - it
+prunes on the bare directory name (`skip_dirs_regex.match(dir)`) rather than a
+constructed relative path. Its remaining occurrences are path normalizers, a
+separate and lower-severity class, deliberately not folded into this release.
+
+### #103 - the near-duplicate sidecar was unbounded and its skips were silent (@faxik)
+
+`retrieval/dedup.py::detect_clusters` is all-pairs Jaccard with a length
+pre-filter. The pre-filter prunes to ~30% of the space, which is a constant and
+not a change of asymptote. Measured wall clock grows ~O(n^2.3):
+
+| Sections | Wall clock |
+|---------:|-----------:|
+|    5,931 |      7.4 s |
+|   12,493 |     42.2 s |
+|   25,329 |    206.7 s |
+
+The code comment already said "fine up to a few thousand sections" and was
+right. Nothing enforced or surfaced that ceiling: the sidecar ran on every
+index with no flag and no size guard, and the caller's bare
+`except Exception: pass` meant a skip would have been silent too.
+
+**The silence was the defect; the runtime was its symptom.** A skipped sidecar
+was indistinguishable from one that found no duplicates.
+
+Now: a section ceiling (default 20,000, `JDOCMUNCH_DEDUP_MAX_SECTIONS`, `0`
+disables, an invalid value falls back to the default so a typo cannot uncap an
+O(n^2.3) loop), an `enabled` opt-out, and a `dedup_skipped` block in the
+`index_local` response naming the count, the ceiling and the knob that moves it.
+The default sits above every published benchmark corpus (largest 10.4k), so the
+guard fires where the curve has turned over rather than where it is merely
+non-linear.
+
+MinHash + LSH banding is the real fix and is deliberately NOT in this release.
+
+### #104 - unknown tool arguments were silently ignored (@faxik)
+
+`get_toc{doc_path: "CLAUDE.md"}` returned the entire corpus TOC. `doc_path` is
+`get_document_outline`'s parameter; `get_toc` scopes with `path_glob`.
+
+The direction is what makes it worth fixing: an agent that means to SCOPE a call
+and misnames the parameter silently gets a much LARGER response than it asked
+for, which is the failure this server exists to prevent.
+
+Rejecting unknown properties would be the stricter answer and is not available
+here - the 1.x contract does not permit a previously-accepted call to start
+raising. So the response now carries `_meta.ignored_arguments`, additive and
+omitted when empty.
+
+Two details that decide whether it works at all: the property sets are built
+from the UNFILTERED catalog, since a tool hidden by a tier filter or
+`JDOCMUNCH_DISABLED_TOOLS` still has a schema; and the block is attached AFTER
+meta_fields filtering, because the default config strips `_meta` entirely and a
+warning the default deletes is no warning at all.
+
+`get_toc`'s description now points at `get_document_outline` for the
+single-document case, per the reporter's docs-only suggestion.
+
+### #105 - verify_index verified the cached mirror while its docs promised the live source (@T0R0-xp)
+
+Confirmed. `verify_index` reads `store._content_dir()`, so both sides of the
+comparison come from the index and a source file edited, truncated or deleted
+after indexing still verifies clean. The reporter demonstrated this with a
+same-length modification, which rules out a size check passing for the wrong
+reason.
+
+The module docstring said it "byte-range-reads its current on-disk content",
+which reads as the workspace. **The description was wrong, not the behaviour.**
+Cache verification is a real check - corruption of `~/.doc-index` is what B1/B2
+of the v1.10 audit were about - and flipping the default would silently change
+what existing CI gates on.
+
+So the default is unchanged and now honest, and the other question is finally
+askable:
+
+- `source="cache"` (default): index integrity. `_meta.verifies` states in words
+  that a clean result is NOT proof the source is current.
+- `source="live"`: workspace integrity under the index's `source_root`. An
+  edited source drifts, a deleted one goes missing.
+- `_meta.verify_layer` names which one ran, on every call.
+
+A live check with no recorded `source_root` reports `no_source_root` for every
+section rather than falling back to the cache. Falling back would answer the
+cache question under the live label, which is the confusion being fixed.
+
+Same disclosure discipline as the v1.122.0 content tools, which hit this exact
+cached-mirror-vs-live-source split and resolved it the same way.
+
+**Open question for the maintainer**, recorded rather than decided: whether
+`live` should become the default. v1.122.0 flipped the content tools to
+live-when-available, which argues yes; it would change counts for anyone gating
+CI on `drift_count == 0`, which argues for doing it deliberately.
+
+### Tests
+
+2,144 passed, 6 skipped, 0 failed. New `tests/test_gitignore_dot_directories.py`
+(20; under the old semantics 10 fail and 10 pass, the latter being controls),
+`tests/test_dedup_ceiling.py` (17), `tests/test_unknown_arguments.py` (15,
+including a whole-catalog round-trip proving no tool flags its own declared
+arguments), `tests/test_verify_index_source_layer.py` (19, built on the
+reporter's four-file fixture).
+
+No INDEX_VERSION change. All additions are additive per the 1.x contract.
+
 ## [1.123.2] - 2026-08-05 - a 5.9 MB marketing image was 87% of the source distribution
 
 `tests/infographic.png` was a promotional graphic that had been sitting in the

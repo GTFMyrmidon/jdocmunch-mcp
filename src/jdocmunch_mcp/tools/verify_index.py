@@ -1,9 +1,34 @@
 """verify_index — byte-offset integrity check (v1.27.0).
 
-Walks every section in an indexed repo, byte-range-reads its current
-on-disk content, recomputes SHA-256, and compares to the stored
-``content_hash``. Surfaces drift loud and early — the kind of silent
-corruption that motivated B1 / B2 in the v1.10 audit.
+Walks every section in an indexed repo, byte-range-reads the bytes, recomputes
+SHA-256, and compares to the stored ``content_hash``.
+
+⚠⚠ **WHICH bytes is the whole question, and this docstring used to answer it
+wrongly** (jdoc#105, @T0R0-xp). It said "its current on-disk content", which
+reads as the workspace file. The default reads the CACHED RAW MIRROR under
+``store._content_dir()``, so both sides of the comparison come from the index
+and a source file that was edited, truncated or DELETED after indexing still
+verifies CLEAN.
+
+That default is deliberate and unchanged — it is a real check (it catches
+corruption of ``~/.doc-index`` itself, which is what B1/B2 of the v1.10 audit
+were about) and flipping it would silently change what existing CI gates on.
+What was wrong was the description, and the absence of any way to ask the other
+question. Both are fixed:
+
+* ``source="cache"`` (default) — index integrity. A clean result proves the
+  cached mirror still matches the recorded hashes. **It does NOT prove the
+  source document is current.**
+* ``source="live"`` — workspace integrity. Reads the real file under the
+  index's ``source_root``, so an edited source is ``drift`` and a deleted one is
+  ``missing``. Requires a recorded ``source_root``; without one every section
+  reports ``no_source_root`` rather than quietly falling back to the cache and
+  answering a question nobody asked.
+
+``_meta.verify_layer`` names which one answered, on every call, so a caller
+never has to infer it. Same disclosure discipline as the v1.122.0 content
+tools, which hit this exact cached-mirror-vs-live-source split and resolved it
+the same way.
 
 Output:
 
@@ -45,13 +70,19 @@ def verify_index(
     repo: str,
     storage_path: Optional[str] = None,
     sample: Optional[int] = None,
+    source: str = "cache",
 ) -> dict:
-    """Verify every section's stored hash against its current byte range.
+    """Verify every section's stored hash against its byte range.
 
     Args:
         repo: jdocmunch repo identifier.
         storage_path: Override DOC_INDEX_PATH for tests.
         sample: When set, verify only the first N sections (cheap CI mode).
+        source: ``"cache"`` (default) verifies the indexed raw mirror — index
+            integrity, and NOT evidence the source is current. ``"live"``
+            verifies the workspace files under the index's ``source_root``, so
+            an edited source drifts and a deleted one goes missing. See the
+            module docstring for why the default is what it is (jdoc#105).
     """
     t0 = time.perf_counter()
     store = DocStore(base_path=storage_path)
@@ -70,14 +101,28 @@ def verify_index(
     skipped: list[dict] = []
     error_count = 0
 
+    source = (source or "cache").strip().lower()
+    if source not in ("cache", "live"):
+        return {"error": f"source must be 'cache' or 'live', got {source!r}"}
+
     # Cache file bytes per doc_path so we hash each file at most once.
     file_cache: dict[str, Optional[bytes]] = {}
     content_dir = store._content_dir(owner, name)
+    source_root = (getattr(index, "source_root", "") or "").strip()
+    # ⚠ A live check with no source_root must REFUSE, not fall back to the cache.
+    # Falling back would answer the cache question under the live label, which is
+    # the exact confusion jdoc#105 reported.
+    live_unavailable = source == "live" and not source_root
 
     def _bytes_for(doc_path: str) -> Optional[bytes]:
         if doc_path in file_cache:
             return file_cache[doc_path]
-        path = store._safe_content_path(content_dir, doc_path)
+        if source == "live":
+            from pathlib import Path as _Path
+            root = _Path(source_root)
+            path = store._safe_content_path(root, doc_path)
+        else:
+            path = store._safe_content_path(content_dir, doc_path)
         if not path or not path.exists():
             file_cache[doc_path] = None
             return None
@@ -90,6 +135,13 @@ def verify_index(
     for sec in sections:
         sid = sec.get("id", "")
         doc_path = sec.get("doc_path", "")
+        if live_unavailable:
+            missing.append({
+                "section_id": sid, "doc_path": doc_path,
+                "reason": "no_source_root",
+            })
+            continue
+
         if not doc_path:
             missing.append({"section_id": sid, "doc_path": "", "reason": "no_doc_path"})
             continue
@@ -146,5 +198,13 @@ def verify_index(
             "latency_ms": latency_ms,
             "files_read": sum(1 for v in file_cache.values() if v is not None),
             "sample": sample,
+            # jdoc#105: never make the caller infer which bytes were compared.
+            "verify_layer": source,
+            "verifies": (
+                "workspace source files under source_root"
+                if source == "live"
+                else "cached index mirror only; NOT proof the source is current"
+            ),
+            "source_root": source_root or None,
         },
     }

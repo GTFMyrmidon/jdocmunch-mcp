@@ -53,6 +53,43 @@ _LOCK = threading.Lock()
 _SCHEMA_VERSION = 1
 _DEFAULT_K = 5
 _DEFAULT_MIN_JACCARD = 0.85
+
+# jdoc#103 (@faxik): `detect_clusters` is all-pairs Jaccard with a length
+# pre-filter. The pre-filter prunes to ~30% of the space -- a constant, not a
+# change of asymptote -- and measured wall clock grows as ~O(n^2.3):
+#
+#     5,931 sections   7.4 s      12,493 -> 42.2 s      25,329 -> 206.7 s
+#
+# On a 187,985-section corpus the fit predicts ~5.5 hours, and the run gives no
+# diagnostic: one core at 100% with no progress output.
+#
+# The code comment always said "fine up to a few thousand sections" and was
+# right. What was missing is that nothing ENFORCED or SURFACED that ceiling: the
+# sidecar ran unconditionally on every index with no flag and no size guard, and
+# the caller's bare `except Exception: pass` meant a skip would have been silent
+# too. The ceiling is now a number the caller can see and move.
+_DEFAULT_SECTION_CEILING = 20_000
+SECTION_CEILING_ENV_VAR = "JDOCMUNCH_DEDUP_MAX_SECTIONS"
+
+
+def section_ceiling() -> int:
+    """Section count above which the sidecar is skipped. 0 disables the guard.
+
+    Env-only and deliberately generous: 20k sits above every published benchmark
+    corpus (largest 10.4k) and above the reporter's 25.3k-section single-repo
+    case only slightly, so the guard fires where the curve has actually turned
+    over rather than where it is merely non-linear. An invalid value falls back
+    to the default -- a typo must not silently uncap an O(n^2.3) loop.
+    """
+    import os
+    raw = os.environ.get(SECTION_CEILING_ENV_VAR)
+    if raw is None:
+        return _DEFAULT_SECTION_CEILING
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_SECTION_CEILING
+    return value if value >= 0 else _DEFAULT_SECTION_CEILING
 # Skip sections shorter than this many tokens — the shingle set is too
 # small to produce stable Jaccard.
 _MIN_TOKENS = 10
@@ -176,6 +213,18 @@ def detect_clusters(
     return clusters
 
 
+_LAST_SKIP: Optional[dict] = None
+
+
+def last_skip_reason() -> Optional[dict]:
+    """Why the most recent `write` produced no clusters, or None if it ran.
+
+    A skipped sidecar that reports nothing is indistinguishable from one that
+    found no duplicates.
+    """
+    return _LAST_SKIP
+
+
 def write(
     base_path: Optional[str],
     owner: str,
@@ -184,8 +233,34 @@ def write(
     *,
     k: int = _DEFAULT_K,
     min_jaccard: float = _DEFAULT_MIN_JACCARD,
+    enabled: bool = True,
+    max_sections: Optional[int] = None,
 ) -> int:
-    """Detect + persist clusters. Returns cluster count."""
+    """Detect + persist clusters. Returns cluster count.
+
+    ``skipped`` is reported through ``last_skip_reason`` rather than raised: the
+    caller swallows exceptions, so raising here would restore the silence this
+    change exists to remove.
+    """
+    global _LAST_SKIP
+    _LAST_SKIP = None
+    if not enabled:
+        _LAST_SKIP = {"reason": "disabled"}
+        return 0
+    sections = list(sections)
+    ceiling = section_ceiling() if max_sections is None else max_sections
+    if ceiling and len(sections) > ceiling:
+        _LAST_SKIP = {
+            "reason": "section_count",
+            "sections": len(sections),
+            "ceiling": ceiling,
+            "detail": (
+                "Near-duplicate clustering is all-pairs and grows ~O(n^2.3); it was "
+                "skipped rather than run for hours. Raise or disable with "
+                f"{SECTION_CEILING_ENV_VAR} (0 disables the guard)."
+            ),
+        }
+        return 0
     clusters = detect_clusters(sections, k=k, min_jaccard=min_jaccard)
     path = _path(base_path, owner, name)
     path.parent.mkdir(parents=True, exist_ok=True)

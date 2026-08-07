@@ -462,7 +462,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_toc",
-            description="Get a flat table of contents for all sections in a repo, sorted by document order. Content is excluded — use get_section to retrieve content.",
+            description="Get a flat table of contents for all sections in a repo, sorted by document order. Content is excluded — use get_section to retrieve content. Scope with path_glob; for a SINGLE document use get_document_outline (this tool has no doc_path parameter).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1687,16 +1687,30 @@ def _all_tools() -> list[Tool]:
             name="verify_index",
             description=(
                 "Byte-offset integrity check. Walks every section, byte-range-reads "
-                "its current on-disk content, recomputes SHA-256, and compares to the "
-                "stored content_hash. Reports drift / missing / error counts plus the "
-                "drifting section ids. Sample N sections via the sample arg for cheap "
-                "CI checks."
+                "the bytes, recomputes SHA-256, and compares to the stored content_hash. "
+                "source='cache' (default) checks the INDEX MIRROR: a clean result proves "
+                "the index is internally consistent, NOT that the source document is "
+                "still current. source='live' checks the real workspace files under the "
+                "index source_root, so an edited source drifts and a deleted one goes "
+                "missing. _meta.verify_layer always names which one ran. Reports drift / "
+                "missing / error counts plus the drifting section ids. Sample N sections "
+                "via the sample arg for cheap CI checks."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "repo": {"type": "string"},
-                    "sample": {"type": "integer", "description": "Only verify the first N sections."}
+                    "sample": {"type": "integer", "description": "Only verify the first N sections."},
+                    "source": {
+                        "type": "string",
+                        "enum": ["cache", "live"],
+                        "description": (
+                            "Which bytes to verify. 'cache' (default) = the indexed raw "
+                            "mirror; clean means the index is self-consistent and says "
+                            "nothing about whether the source changed. 'live' = the "
+                            "workspace files under source_root."
+                        ),
+                    }
                 },
                 "required": ["repo"]
             }
@@ -1959,6 +1973,62 @@ async def list_prompts() -> list:
     return []
 
 
+
+# --- jdoc#104: unknown-argument disclosure -----------------------------------
+
+_SCHEMA_PROPS_CACHE: "dict[str, set[str]] | None" = None
+
+# Arguments consumed by the dispatcher itself rather than declared per tool.
+# Empty today; kept so a future cross-cutting knob is exempted deliberately by
+# name rather than by widening the check.
+_NON_SCHEMA_ARGS: "set[str]" = set()
+
+
+def _declared_properties(tool_name: str) -> "set[str] | None":
+    """Declared inputSchema property names for a tool, or None if unknown.
+
+    Built from `_all_tools()` — the UNFILTERED catalog — on purpose. A tool
+    hidden by `JDOCMUNCH_DISABLED_TOOLS` or a tier filter still has a schema,
+    and resolving against the visible list would report every argument of a
+    hidden tool as unknown.
+    """
+    global _SCHEMA_PROPS_CACHE
+    if _SCHEMA_PROPS_CACHE is None:
+        cache: "dict[str, set[str]]" = {}
+        try:
+            for t in _all_tools():
+                props = ((t.inputSchema or {}).get("properties") or {})
+                cache[t.name] = set(props.keys())
+        except Exception:
+            logger.debug("Could not build schema property cache", exc_info=True)
+            return None
+        _SCHEMA_PROPS_CACHE = cache
+    canonical = _ALIAS_TO_CANONICAL.get(tool_name, tool_name)
+    return _SCHEMA_PROPS_CACHE.get(canonical)
+
+
+def _unknown_arguments(tool_name: str, arguments: dict) -> "list[str]":
+    """Argument names the caller passed that the tool does not declare (jdoc#104).
+
+    ⚠ Reported, never rejected. `additionalProperties: false` would be the
+    stricter answer, but making a previously-accepted call raise is forbidden by
+    the 1.x compatibility contract, so this is additive disclosure instead.
+
+    The direction of the failure is what makes it worth surfacing at all: an
+    agent that means to SCOPE a call and misnames the parameter silently gets a
+    much LARGER response than it asked for. `get_toc{doc_path: ...}` returns the
+    whole-corpus TOC, because `doc_path` is `get_document_outline`'s parameter
+    name and `get_toc` scopes with `path_glob`. Dropping a scope is precisely
+    the outcome this server exists to prevent.
+    """
+    if not isinstance(arguments, dict) or not arguments:
+        return []
+    declared = _declared_properties(tool_name)
+    if declared is None:
+        return []  # unknown schema: silence beats a false accusation
+    return sorted(k for k in arguments if k not in declared and k not in _NON_SCHEMA_ARGS)
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls.
@@ -1974,6 +2044,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _t0 = _time.perf_counter()
     _ok = True
     _repo = arguments.get("repo") if isinstance(arguments, dict) else None
+    # jdoc#104: computed BEFORE dispatch, since a tool may mutate `arguments`.
+    _ignored_args = _unknown_arguments(name, arguments)
 
     # Honor JDOCMUNCH_DISABLED_TOOLS at call time. Tools in _UNDISABLEABLE_TOOLS
     # are exempt (currently empty; jdocmunch_guide is intentionally disable-able).
@@ -2427,6 +2499,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 repo=arguments["repo"],
                 sample=arguments.get("sample"),
                 storage_path=storage_path,
+                source=arguments.get("source", "cache"),
             )
         elif name == "find_similar_sections":
             result = find_similar_sections(
@@ -2547,6 +2620,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     else {"citable": False, "blocked_by": _absence_blocked}
                 )
                 result.setdefault("_meta", {})["absence_evidence"] = _blk
+        except Exception:
+            pass
+
+        # jdoc#104: unknown arguments, attached AFTER meta_fields filtering for
+        # the same reason the budget and absence blocks are — the default config
+        # strips `_meta` entirely, and a warning the default deletes is no
+        # warning at all. Omitted when empty, per omit-when-empty.
+        try:
+            if _ignored_args and isinstance(result, dict):
+                result.setdefault("_meta", {})["ignored_arguments"] = _ignored_args
         except Exception:
             pass
 
