@@ -14,6 +14,7 @@ from ..storage import DocStore
 from ..storage.doc_store import format_repo_at_sha, normalize_commit_sha
 from ..summarizer import summarize_sections
 from ..embeddings import embed_sections, get_provider_name, should_embed
+from ._embedding_coverage import attach_embedding_coverage as _attach_embedding_coverage
 from ._constants import SKIP_PATTERNS
 
 
@@ -417,7 +418,15 @@ async def index_repo(
 
             new_sections = summarize_sections(new_sections, use_ai=use_ai_summaries)
             if use_embeddings:
-                new_sections = embed_sections(new_sections)
+                # jdoc#107: owner/name were missing here, so the cache was
+                # disabled outright — every refresh re-embedded from scratch
+                # and the new vectors reached the sidecar only via the save
+                # safety net. Merge (no prune): `new_sections` is the changed
+                # documents, not the corpus.
+                new_sections = embed_sections(
+                    new_sections,
+                    owner=owner, name=index_name, storage_path=storage_path,
+                )
 
             updated = store.incremental_save(
                 owner=owner, name=index_name,
@@ -440,6 +449,10 @@ async def index_repo(
                 "sha_certified": sha_certified,
                 "_meta": {"latency_ms": latency_ms},
             }
+            _attach_embedding_coverage(  # jdoc#107
+                result, storage_path=storage_path, owner=owner,
+                name=index_name, index=updated, warnings=warnings,
+            )
             if warnings:
                 result["warnings"] = warnings
             if updated.head_sha:
@@ -477,7 +490,12 @@ async def index_repo(
 
         all_sections = summarize_sections(all_sections, use_ai=use_ai_summaries)
         if use_embeddings:
-            all_sections = embed_sections(all_sections)
+            # Full corpus in hand — authoritative, so prune stale vectors.
+            all_sections = embed_sections(
+                all_sections,
+                owner=owner, name=index_name, storage_path=storage_path,
+                prune=True,
+            )
 
         saved = store.save_index(
             owner=owner,
@@ -504,6 +522,10 @@ async def index_repo(
             "sha_certified": sha_certified,
             "_meta": {"latency_ms": latency_ms},
         }
+        _attach_embedding_coverage(  # jdoc#107
+            result, storage_path=storage_path, owner=owner,
+            name=index_name, index=saved, warnings=warnings,
+        )
         if saved.head_sha:
             result["head_sha"] = saved.head_sha
         if saved.repo_at_sha:

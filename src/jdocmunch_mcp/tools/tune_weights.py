@@ -8,6 +8,7 @@ from typing import Optional
 from ..retrieval.tuning import (
     MAX_AGE_DAYS,
     MIN_EVENTS,
+    set_semantic_weight,
     tune_all_repos,
     tune_one_repo,
 )
@@ -19,6 +20,7 @@ def tune_weights(
     min_events: int = MIN_EVENTS,
     dry_run: bool = False,
     max_age_days: int = MAX_AGE_DAYS,
+    set_weight: Optional[float] = None,
     storage_path: Optional[str] = None,
 ) -> dict:
     """Run online weight tuning across one or every indexed repo.
@@ -27,8 +29,33 @@ def tune_weights(
     no ranking events to learn from; we report that and return without
     touching disk. ``max_age_days`` (default 90) windows the ledger read
     so stale events can't anchor the proposal; 0 = lifetime.
+
+    ``set_weight`` skips learning entirely and persists an explicit value
+    for ``repo`` (jdoc#106). ⚠ It does NOT require telemetry — that gate
+    exists because there is nothing to learn from without a ledger, and
+    writing down a value you already measured needs no ledger at all.
+    Requires ``repo``; a weight outside the bounds is clamped and the
+    response says so.
     """
     t0 = time.perf_counter()
+
+    if set_weight is not None:
+        if not repo:
+            return {
+                "status": "repo_required",
+                "hint": "set_weight applies to one repo; pass repo=owner/name.",
+                "_meta": {"latency_ms": int((time.perf_counter() - t0) * 1000)},
+            }
+        result = set_semantic_weight(repo, set_weight, base_path=storage_path)
+        return {
+            "results": [result],
+            "_meta": {
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+                "scope": "single_repo",
+                "mode": "set_weight",
+            },
+        }
+
     if not _telemetry_enabled():
         return {
             "status": "telemetry_disabled",

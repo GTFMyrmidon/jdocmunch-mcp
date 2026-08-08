@@ -431,6 +431,7 @@ def embed_sections(
     owner: Optional[str] = None,
     name: Optional[str] = None,
     storage_path: Optional[str] = None,
+    prune: bool = False,
 ) -> list:
     """Generate and attach embeddings to sections in-place.
 
@@ -441,6 +442,16 @@ def embed_sections(
 
     Cache header records (provider, model, dim); a mismatch on load
     purges the file and forces a full re-embed.
+
+    ⚠⚠ ``prune`` decides whether the sidecar is REWRITTEN from ``sections``
+    or MERGED into. It defaults to False (merge) because the sidecar is not
+    really a cache: since jdoc#75 the vectors are stripped from the monolith
+    at save time and live ONLY here, so dropping an entry destroys it.
+    jdoc#107: this rewrote unconditionally, and on an incremental refresh
+    ``sections`` holds only the changed documents — a reporter's 5,316-vector
+    sidecar came back with 21, exit 0, no warning. Pass ``prune=True`` ONLY
+    from a full-corpus pass, where ``sections`` is authoritative and stale
+    entries for deleted sections should go.
 
     Silently degrades to no-embeddings when no provider is configured.
     Backward-compatible with the v1.0–v1.14 signature
@@ -486,21 +497,24 @@ def embed_sections(
         except Exception:
             pass  # lexical search still works
 
-    # Rewrite cache when enabled — gathers all current (hash, vector) pairs.
+    # Persist. jdoc#107: start from what is already on disk unless this pass
+    # is authoritative for the whole corpus. `cached` is the identity-matched
+    # load from the top — on a provider/model rotation it is {} and this
+    # collapses back to a clean rewrite, so rotation still purges.
     if cache_enabled:
         from . import cache as _cache
-        entries = []
+        entries: dict = {} if prune else dict(cached)
         for sec in sections:
             k = _embed_cache_key(sec)
             vec = getattr(sec, "embedding", None)
             if k and vec:
-                entries.append((k, list(vec)))
+                entries[k] = list(vec)
         if entries:
             try:
                 _cache.write(
                     storage_path, owner, name,
                     provider=provider_name, model=model, dim=dim,
-                    entries=entries,
+                    entries=list(entries.items()),
                 )
             except Exception:
                 pass

@@ -15,6 +15,7 @@ from ..storage import DocStore
 from ..storage.doc_store import normalize_commit_sha
 from ..summarizer import summarize_sections
 from ..embeddings import embed_sections
+from ._embedding_coverage import attach_embedding_coverage as _attach_embedding_coverage
 from ._git import local_git_head, local_git_paths_dirty, local_git_paths_tracked
 
 
@@ -211,7 +212,16 @@ def index_file(
 
     # Preserve embedding parity: if the existing index has embeddings, embed new sections too.
     if index is not None and index._has_embeddings():
-        new_sections = embed_sections(new_sections)
+        # jdoc#107: owner/name were missing, so the cache was disabled and the
+        # vectors were persisted only by the save safety net — which used to
+        # bail whenever a sidecar already existed, i.e. always. Every vector
+        # this path produced was silently discarded, and this is the
+        # PostToolUse auto-reindex path, so it ran on every doc edit. Merge,
+        # never prune: one file is never authoritative for the corpus.
+        new_sections = embed_sections(
+            new_sections,
+            owner=owner, name=name, storage_path=storage_path,
+        )
 
     # Use incremental_save to update just this file
     updated = store.incremental_save(
@@ -240,6 +250,11 @@ def index_file(
         "exit_code": 0,
         "_meta": {"latency_ms": latency_ms},
     }
+    # jdoc#107: this path fires from the PostToolUse hook on every doc edit,
+    # so it is where a coverage collapse would be noticed first.
+    _attach_embedding_coverage(
+        result, storage_path=storage_path, owner=owner, name=name, index=updated,
+    )
     if updated and updated.head_sha:
         result["head_sha"] = updated.head_sha
     if updated:

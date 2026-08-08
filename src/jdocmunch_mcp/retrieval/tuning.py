@@ -10,8 +10,15 @@ Bounded:
 
   - `min_events` (default 50) gates against overfitting on a few
     early calls.
-  - Step size ±0.05 keeps drift gradual; clamped to [0.10, 0.85] so
+  - Step size ±0.05 keeps drift gradual; clamped to [0.10, 0.95] so
     we never fully disable either channel.
+
+    ⚠ The ceiling was 0.85 through v1.124.3. jdoc#106 measured a
+    5,315-section corpus where every slice improved monotonically to
+    0.95 and only 1.0 cost keyword recall (93.3% → 86.7%), so 0.85 sat
+    below the corpus optimum and the resolver silently clamped a
+    hand-written 0.95 back down to it. 1.0 is the value worth
+    excluding, not 0.95.
   - Threshold |delta_conf| >= 0.05 — smaller swings stay flat.
   - `max_age_days` (default 90) windows the ledger read so stale
     events can't anchor weights to an old query distribution
@@ -45,10 +52,16 @@ from typing import Optional
 from ..storage.token_tracker import ranking_db_query
 
 DEFAULT_SEMANTIC_WEIGHT = 0.5
-SEMANTIC_WEIGHT_BOUNDS = (0.10, 0.85)
+SEMANTIC_WEIGHT_BOUNDS = (0.10, 0.95)
 MIN_EVENTS = 50
 DELTA_CONF_THRESHOLD = 0.05
 STEP = 0.05
+# jdoc#106: the step scales with the measured gap. A flat 0.05 needed seven
+# successful rounds (350+ qualifying events) to cross the useful range.
+MAX_STEP = 0.20
+# Delta at which the step reaches MAX_STEP. Above this the evidence is
+# decisive and there is nothing gained by creeping.
+FULL_STEP_DELTA = 0.25
 # Recency window for ledger reads, in days. A repo's query distribution
 # drifts as the corpus and the agent's habits change; lifetime events act
 # as stale anchors that drag learned weights toward old behavior.
@@ -124,35 +137,144 @@ def reset_cache() -> None:
         _TUNING_CACHE_PATH = None
 
 
+def resolve_semantic_weight(
+    repo: str,
+    *,
+    explicit: Optional[float] = None,
+    base_path: Optional[str] = None,
+) -> dict:
+    """Resolve the semantic_weight for a repo AND say where it came from.
+
+    Resolution priority:
+      1. ``explicit`` — any caller value that isn't ``None``. ⚠ Unlike the
+         legacy :func:`get_semantic_weight`, a caller passing exactly 0.5
+         is honoured as a caller value rather than read as "unset". The
+         sentinel for unset is ``None``, and only ``None``.
+      2. Tuning override loaded from ``tuning.jsonc``, clamped to
+         ``SEMANTIC_WEIGHT_BOUNDS``.
+      3. ``DEFAULT_SEMANTIC_WEIGHT``.
+
+    Returns ``{"weight": float, "source": str, "clamped": bool}`` where
+    ``source`` is one of ``caller`` / ``tuning.jsonc`` / ``default``.
+
+    jdoc#106: the value alone was already in ``_meta``; its PROVENANCE was
+    not, so a user whose retrieval got worse after enabling embeddings had
+    no way to see that a weight — default or learned — was in play. An
+    out-of-bounds hand-edit is reported via ``clamped`` rather than applied
+    silently.
+    """
+    if explicit is not None:
+        return {"weight": float(explicit), "source": "caller", "clamped": False}
+    data = _load(base_path)
+    repos = data.get("repos") or {}
+    entry = repos.get(repo) or {}
+    val = entry.get("semantic_weight")
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        raw = float(val)
+        clamped = _clamp(raw)
+        return {
+            "weight": clamped,
+            "source": "tuning.jsonc",
+            "clamped": clamped != raw,
+        }
+    return {
+        "weight": DEFAULT_SEMANTIC_WEIGHT,
+        "source": "default",
+        "clamped": False,
+    }
+
+
 def get_semantic_weight(
     repo: str,
     *,
     explicit: Optional[float] = None,
     base_path: Optional[str] = None,
 ) -> float:
-    """Resolve the semantic_weight for a repo.
+    """Resolve the semantic_weight for a repo (legacy scalar form).
 
     Resolution priority:
       1. Explicit non-default caller value (anything that isn't ``None``
          and isn't exactly the v1.13 default 0.5).
       2. Tuning override loaded from ``tuning.jsonc``.
       3. Default 0.5.
+
+    ⚠ Retains the pre-jdoc#106 quirk in rule 1: an explicit 0.5 is
+    indistinguishable from "unset" and loses to a learned weight. Kept so
+    existing callers do not change behaviour. New code should call
+    :func:`resolve_semantic_weight`, which uses ``None`` as the sentinel
+    and reports provenance.
     """
     if explicit is not None and explicit != DEFAULT_SEMANTIC_WEIGHT:
         return float(explicit)
-    data = _load(base_path)
-    repos = data.get("repos") or {}
-    entry = repos.get(repo) or {}
-    val = entry.get("semantic_weight")
-    if isinstance(val, (int, float)):
-        lo, hi = SEMANTIC_WEIGHT_BOUNDS
-        return max(lo, min(hi, float(val)))
-    return DEFAULT_SEMANTIC_WEIGHT
+    return resolve_semantic_weight(repo, explicit=None, base_path=base_path)["weight"]
 
 
 def _clamp(val: float) -> float:
     lo, hi = SEMANTIC_WEIGHT_BOUNDS
     return max(lo, min(hi, val))
+
+
+def _step_for(delta: float) -> float:
+    """Signed step size, scaled to the strength of the measured gap.
+
+    jdoc#106: a flat ±0.05 meant crossing the useful range took seven
+    successful rounds of 50+ qualifying events each, which a real workload
+    never accumulates — the documented escape hatch effectively never
+    opened. The step now grows with the evidence: a delta at the decision
+    threshold still moves 0.05, a decisive one moves up to MAX_STEP.
+
+    ⚠ Deliberately still bounded. A single tuning round must never be able
+    to jump the whole range on one window of events, and the sign is all we
+    genuinely know — the magnitude of a confidence delta is not a
+    calibrated distance to the optimum.
+    """
+    mag = abs(delta)
+    if mag < DELTA_CONF_THRESHOLD:
+        return 0.0
+    # Linear ramp from STEP at the threshold to MAX_STEP at FULL_STEP_DELTA.
+    span = FULL_STEP_DELTA - DELTA_CONF_THRESHOLD
+    frac = 1.0 if span <= 0 else min(1.0, (mag - DELTA_CONF_THRESHOLD) / span)
+    size = STEP + frac * (MAX_STEP - STEP)
+    return size if delta > 0 else -size
+
+
+def set_semantic_weight(
+    repo: str,
+    weight: float,
+    *,
+    base_path: Optional[str] = None,
+) -> dict:
+    """Persist an explicit ``semantic_weight`` for one repo.
+
+    jdoc#106: the tuner was the only supported way to move a persisted
+    weight, and it is a slow gradient walk that needs a signal a
+    single-mode workload never produces. A user who has MEASURED the right
+    value for their corpus — which is exactly what #106's reporter did —
+    had no supported way to write it down. Hand-editing `tuning.jsonc`
+    worked but is a file this module owns and rewrites.
+
+    Returns the clamped value and whether clamping occurred; never raises
+    on an out-of-range input.
+    """
+    requested = float(weight)
+    applied = _clamp(requested)
+    data = _load(base_path)
+    repos = data.setdefault("repos", {})
+    entry = dict(repos.get(repo) or {})
+    entry["semantic_weight"] = applied
+    entry["source"] = "explicit"
+    entry["captured_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    entry.pop("learned_from_events", None)
+    repos[repo] = entry
+    _persist(data, base_path)
+    return {
+        "repo": repo,
+        "status": "set",
+        "semantic_weight": applied,
+        "requested": requested,
+        "clamped": applied != requested,
+        "bounds": list(SEMANTIC_WEIGHT_BOUNDS),
+    }
 
 
 def tune_one_repo(
@@ -190,12 +312,33 @@ def tune_one_repo(
             confidences_without.append(float(c))
 
     if not confidences_with or not confidences_without:
+        # jdoc#106: this is the common outcome, not an edge case. The tuner
+        # compares modes, so a workload that only ever runs one mode can
+        # never produce a signal no matter how long it runs. Saying
+        # "no_signal_split" and stopping left the user with a documented
+        # escape hatch that silently never opens; name the actual remedy.
+        only = "semantic" if confidences_with else "lexical"
         return {
             "repo": repo,
             "status": "no_signal_split",
             "events_seen": n,
             "with_semantic": len(confidences_with),
             "without_semantic": len(confidences_without),
+            "reason": (
+                f"Every event in the window ran {only}-only. This tuner "
+                f"learns by comparing confidence WITH vs WITHOUT the "
+                f"semantic channel, so a single-mode workload yields no "
+                f"signal however many events it accumulates."
+            ),
+            "remedy": (
+                "Set the weight directly with tune_weights(set_weight=...) "
+                "if you have measured the right value for this corpus, or "
+                "pass semantic_weight per call."
+            ),
+            "current_semantic_weight": float(
+                ((_load(base_path).get("repos") or {}).get(repo) or {})
+                .get("semantic_weight", DEFAULT_SEMANTIC_WEIGHT)
+            ),
         }
 
     mean_with = sum(confidences_with) / len(confidences_with)
@@ -206,11 +349,12 @@ def tune_one_repo(
     repos = data.setdefault("repos", {})
     current = float((repos.get(repo) or {}).get("semantic_weight", DEFAULT_SEMANTIC_WEIGHT))
 
-    if delta >= DELTA_CONF_THRESHOLD:
-        proposed = _clamp(current + STEP)
+    step = _step_for(delta)
+    if step > 0:
+        proposed = _clamp(current + step)
         decision = "semantic_helps"
-    elif delta <= -DELTA_CONF_THRESHOLD:
-        proposed = _clamp(current - STEP)
+    elif step < 0:
+        proposed = _clamp(current + step)
         decision = "semantic_hurts"
     else:
         return {
