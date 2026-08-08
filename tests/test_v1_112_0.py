@@ -28,7 +28,7 @@ class TestToolSurfaceStats:
         )
         assert stats["estimator"] == "bytes/4"
         assert stats["profile"] == "full"
-        assert "surface" not in stats
+        assert stats["surface"] == "full"
 
     def test_heaviest_tools_capped_and_sorted(self):
         stats = server._tool_surface_stats(top_n=5)

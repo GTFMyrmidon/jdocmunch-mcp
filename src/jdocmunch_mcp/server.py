@@ -10,6 +10,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
+logger = logging.getLogger(__name__)
+
 
 def _load_paths_from_arg(paths_from: str) -> tuple[Optional[list], Optional[str]]:
     """Read explicit paths from a file or stdin for the `index-local --paths-from` CLI flag.
@@ -39,6 +41,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.types import Tool, ToolAnnotations, TextContent, Resource
 
 from . import runtime_identity
+from . import counter as _counter
 from .tools.index_local import index_local
 from .tools.index_repo import index_repo
 from .tools.list_repos import list_repos
@@ -192,8 +195,129 @@ def _get_disabled_tools() -> frozenset[str]:
     return frozenset(t.strip() for t in raw.split(",") if t.strip())
 
 
+# --- The Counter: adaptive tool surface (front door) ----------------------- #
+_COUNTER_FRONT_DOOR: frozenset[str] = _counter.FRONT_DOOR
+VALID_TOOL_SURFACES = ("counter", "full")
+_UNRECOGNIZED_SURFACES_LOGGED: set = set()
+
+
+def _surface_resolution() -> tuple[str, str, bool]:
+    env = os.environ.get("JDOCMUNCH_TOOL_SURFACE")
+    if env:
+        requested = env.strip().lower()
+    else:
+        requested = "full"
+    if requested in VALID_TOOL_SURFACES:
+        return requested, requested, True
+    if requested not in _UNRECOGNIZED_SURFACES_LOGGED:
+        _UNRECOGNIZED_SURFACES_LOGGED.add(requested)
+        logging.warning(
+            "Unrecognized tool_surface %r; using 'full'. Valid values: %s.",
+            requested, ", ".join(VALID_TOOL_SURFACES),
+        )
+    return "full", requested, False
+
+
+def _effective_surface() -> str:
+    return _surface_resolution()[0]
+
+
+def _counter_front_door_tools() -> list[Tool]:
+    """Tool definitions for order / menu / route."""
+    return [
+        Tool(
+            name="order",
+            description=(
+                "Dispatch any jdocmunch action by name: order(action, args). The "
+                "single-verb front door to the full tool catalog. Read-only by "
+                "default — actions that change index/session state require "
+                "allow_state_change=true, and execution/file-write verbs are refused. "
+                "Call 'menu' to discover actions, or 'route' to pick one from a task."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Name of the catalog action to run (e.g. 'search_sections')."},
+                    "args": {"type": "object", "description": "Arguments for that action.", "default": {}},
+                    "allow_state_change": {"type": "boolean", "description": "Opt in to dispatching an index/session state-changing action.", "default": False},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="menu",
+            description=(
+                "Discover catalog actions without keeping the full tool catalog "
+                "resident: menu(query?). Returns compact rows (action, summary, "
+                "required args, state_changing). With no query, lists the catalog. "
+                "Pair with 'order' to dispatch the chosen action."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Optional. Keywords describing what you want to do; ranks matching actions."},
+                    "limit": {"type": "integer", "description": "Max actions to return.", "default": 25},
+                },
+            },
+        ),
+        Tool(
+            name="route",
+            description=(
+                "Map a natural-language task to the best catalog action(s): "
+                "route(task, repo?, execute?). Returns ranked recommendations with "
+                "ready-to-run argument templates. With execute=true, dispatches the "
+                "top recommendation and returns its result in the same call."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "What you're trying to do, in plain language."},
+                    "repo": {"type": "string", "description": "Repository identifier."},
+                    "execute": {"type": "boolean", "description": "If true, dispatch the top recommended action and return its result.", "default": False},
+                },
+                "required": ["task"],
+            },
+        ),
+        Tool(
+            name="get_tool_details",
+            description=(
+                "Fetch full parameter schema, docstring, required args, and "
+                "usage examples for a specific catalog action: get_tool_details(name)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the catalog tool or action to inspect."},
+                },
+                "required": ["name"],
+            },
+        ),
+    ]
+
+
+def _catalog_rows() -> list[dict]:
+    """Menu-shaped rows for every real action (front door excluded)."""
+    rows = []
+    for t in _all_tools():
+        if t.name in _COUNTER_FRONT_DOOR:
+            continue
+        row = _counter.catalog_entry(t.name, t.description or "", t.inputSchema or {})
+        row["_description"] = t.description or ""
+        rows.append(row)
+    return rows
+
+
+def _catalog_names() -> set[str]:
+    return {t.name for t in _all_tools() if t.name not in _COUNTER_FRONT_DOOR}
+
+
 def _filter_tools(tools: list[Tool]) -> list[Tool]:
-    """Apply tool_profile + disabled_tools filtering. Preserves order."""
+    """Apply tool_surface + tool_profile + disabled_tools filtering."""
+    if _effective_surface() == "counter":
+        front_door = _apply_readonly_annotations(_counter_front_door_tools())
+        always = [t for t in tools if t.name in _ALWAYS_PRESENT_TOOLS]
+        return front_door + always
+
     profile = _get_tool_profile()
     allowed = _PROFILE_TIERS.get(profile)
     if allowed is not None:
@@ -207,13 +331,7 @@ def _filter_tools(tools: list[Tool]) -> list[Tool]:
 
 
 def _tool_surface_stats(top_n: int = 15) -> dict:
-    """Schema token weight of the visible tool surface vs the full catalog.
-
-    Suite parity with jcodemunch-mcp v1.108.153. Estimated at the meter's
-    bytes/4 scale over the {name, description, inputSchema} serialization.
-    Advisory receipt only — never blocks, nothing persisted. jDoc has no
-    Counter surface, so the block carries `profile` but no `surface` key.
-    """
+    """Schema token weight of the visible tool surface vs the full catalog."""
     import json as _json
 
     def _weight(tool: Tool) -> int:
@@ -234,7 +352,9 @@ def _tool_surface_stats(top_n: int = 15) -> dict:
     visible_total = sum(visible.values())
     catalog_total = sum(catalog.values())
     heaviest = dict(sorted(visible.items(), key=lambda kv: -kv[1])[:top_n])
-    return {
+    _surface, _requested, _recognized = _surface_resolution()
+    out = {
+        "surface": _surface,
         "profile": _get_tool_profile(),
         "visible_tools": len(visible),
         "catalog_tools": len(catalog),
@@ -244,6 +364,197 @@ def _tool_surface_stats(top_n: int = 15) -> dict:
         "heaviest_tools": heaviest,
         "estimator": "bytes/4",
     }
+    if not _recognized:
+        out["surface_requested"] = _requested
+        out["surface_unrecognized"] = True
+    return out
+
+
+async def _handle_counter_tool(name: str, arguments: dict) -> list[TextContent]:
+    """Dispatch the Counter front door (order / menu / route / get_tool_details)."""
+    if name == "menu":
+        return _handle_menu(arguments)
+    if name == "route":
+        return await _handle_route(arguments)
+    if name == "order":
+        return await _handle_order(arguments)
+    if name == "get_tool_details":
+        return _handle_get_tool_details(arguments)
+    return [TextContent(type="text", text=json.dumps({"error": f"Unknown front-door action '{name}'."}))]
+
+
+def _handle_get_tool_details(arguments: dict) -> list[TextContent]:
+    """get_tool_details(name): Fetch full parameter schema and documentation for a tool/action."""
+    tool_name = arguments.get("name") or arguments.get("action")
+    if not tool_name or not isinstance(tool_name, str):
+        return [TextContent(type="text", text=json.dumps({"error": "get_tool_details requires a 'name' string."}, indent=2))]
+
+    for t in _all_tools():
+        if t.name == tool_name:
+            details = _counter.get_tool_details(t.name, t.description or "", t.inputSchema or {})
+            return [TextContent(type="text", text=json.dumps(details, indent=2))]
+
+    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool or action '{tool_name}'."}, indent=2))]
+
+
+
+_ORDER_ARG_ALIASES: dict[str, tuple[str, ...]] = {
+    "path": ("doc_path", "folder_path", "doc_paths", "path"),
+    "file": ("doc_path", "doc_paths", "file_path"),
+    "files": ("doc_paths", "file_paths"),
+    "folder": ("folder_path", "path"),
+    "doc": ("doc_path", "doc_paths"),
+    "docs": ("doc_paths",),
+    "section": ("section_id", "section_ids"),
+    "sections": ("section_ids",),
+    "id": ("section_id", "doc_path"),
+    "ids": ("section_ids",),
+    "text": ("query",),
+    "search": ("query",),
+    "url": ("repo", "url"),
+    "name": ("doc_path", "section_id"),
+}
+
+
+def _order_action_properties(action: str) -> dict:
+    """The action's declared inputSchema properties, from the UNFILTERED catalog."""
+    for t in _all_tools():
+        if t.name == action:
+            schema = t.inputSchema or {}
+            props = schema.get("properties")
+            return props if isinstance(props, dict) else {}
+    return {}
+
+
+def _normalize_order_args(action: str, args: dict) -> dict:
+    """Map near-miss arg names onto the action's declared schema.
+
+    Agents calling order() work without resident schemas, so they guess arg
+    names ('path' for 'doc_path') and the downstream tool blows up. Rules,
+    applied only when the given key is absent from the schema and the target is not:
+      1. alias table  2. pluralize  3. singularize  4. unique '_<key>' suffix.
+    Then coerce scalar<->single-item-list to match the target's declared type.
+    """
+    props = _order_action_properties(action)
+    if not props:
+        return args
+    out = dict(args)
+    for key in list(out):
+        if key in props:
+            continue
+        target = None
+        satisfied = False
+        for cand in _ORDER_ARG_ALIASES.get(key, ()):
+            if cand not in props:
+                continue
+            if cand in out:
+                satisfied = True
+                break
+            target = cand
+            break
+        if satisfied:
+            continue
+        if target is None and key + "s" in props and key + "s" not in out:
+            target = key + "s"
+        if target is None and key.endswith("s") and key[:-1] in props and key[:-1] not in out:
+            target = key[:-1]
+        if target is None:
+            suffix_hits = [p for p in props if p.endswith("_" + key) and p not in out]
+            if len(suffix_hits) == 1:
+                target = suffix_hits[0]
+        if target is not None:
+            out[target] = out.pop(key)
+    for k, v in list(out.items()):
+        prop = props.get(k)
+        if not isinstance(prop, dict):
+            continue
+        if (
+            prop.get("type") == "string"
+            and isinstance(v, list)
+            and len(v) > 1
+            and isinstance(props.get(k + "s"), dict)
+            and props[k + "s"].get("type") == "array"
+            and k + "s" not in out
+        ):
+            out[k + "s"] = out.pop(k)
+        elif prop.get("type") == "array" and isinstance(v, str):
+            out[k] = [v]
+        elif prop.get("type") == "string" and isinstance(v, list) and len(v) == 1 and isinstance(v[0], str):
+            out[k] = v[0]
+    return out
+
+
+async def _handle_order(arguments: dict) -> list[TextContent]:
+    """order(action, args): validate against catalog + charter gate, then call_tool."""
+    action = arguments.get("action")
+    args = arguments.get("args") or {}
+    if not isinstance(args, dict):
+        return [TextContent(type="text", text=json.dumps({"error": "order 'args' must be an object."}, indent=2))]
+    allow = bool(arguments.get("allow_state_change", False))
+    err = _counter.order_gate(action, _catalog_names(), allow)
+    if err is not None:
+        return [TextContent(type="text", text=json.dumps({"error": err, "tool": "order"}, indent=2))]
+    return await call_tool(action, _normalize_order_args(action, dict(args)))
+
+
+
+def _handle_menu(arguments: dict) -> list[TextContent]:
+    """menu(query?, limit?): search/browse the action catalog."""
+    query = arguments.get("query")
+    try:
+        limit = int(arguments.get("limit", 25))
+    except (TypeError, ValueError):
+        limit = 25
+    limit = max(1, min(limit, 200))
+    rows = _counter.search_catalog(_catalog_rows(), query, limit)
+    clean = [{k: v for k, v in r.items() if k != "_description"} for r in rows]
+    payload = {
+        "tool": "menu",
+        "query": query or None,
+        "count": len(clean),
+        "total_actions": len(_catalog_names()),
+        "actions": clean,
+        "hint": "Dispatch with order(action, args). Inspect schema with get_tool_details(name). Get a task->action pick with route(task).",
+    }
+    return [TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))]
+
+
+async def _handle_route(arguments: dict) -> list[TextContent]:
+    """route(task, repo?, execute?): intent -> recommended action(s)."""
+    task = arguments.get("task")
+    if not task or not isinstance(task, str):
+        return [TextContent(type="text", text=json.dumps({"error": "route requires a 'task' string."}, indent=2))]
+    repo = arguments.get("repo")
+    execute = bool(arguments.get("execute", False))
+    names = _catalog_names()
+    recs = _counter.classify_intent(task, names)
+    if not recs:
+        for r in _counter.search_catalog(_catalog_rows(), task, 3):
+            recs.append({"action": r["action"], "why": r["summary"]})
+    for r in recs:
+        tmpl = _counter.shape_execute_args(r["action"], repo, task)
+        if tmpl is None:
+            ex = _counter.example_for(r["action"])
+            tmpl = ex if ex is not None else {"repo": repo or "<repo>", "_hint": "see menu for args"}
+        r["args_template"] = tmpl
+        r["state_changing"] = _counter.is_state_changing(r["action"])
+    payload = {"tool": "route", "task": task, "recommended": recs}
+    if not recs:
+        payload["hint"] = "No confident action match. Call menu(query=...) to browse."
+        return [TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))]
+    if execute:
+        action = recs[0]["action"]
+        exec_args = _counter.shape_execute_args(action, repo, task)
+        if exec_args is None:
+            payload["executed"] = False
+            payload["execute_error"] = f"Cannot auto-build args for '{action}' from (repo, task). Call order('{action}', args) explicitly."
+            return [TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))]
+        if _counter.is_state_changing(action):
+            payload["executed"] = False
+            payload["execute_error"] = f"Top action '{action}' is state-changing; dispatch explicitly via order(allow_state_change=true)."
+            return [TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))]
+        return await call_tool(action, exec_args)
+    return [TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))]
 
 
 # --- MCP read-only annotations (suite parity with jcodemunch PR #361) --------
@@ -2037,6 +2348,42 @@ def _unknown_arguments(tool_name: str, arguments: dict) -> "list[str]":
     return sorted(k for k in arguments if k not in declared and k not in _NON_SCHEMA_ARGS)
 
 
+_BOOL_TRUE = frozenset(("true", "1", "yes", "on"))
+_BOOL_FALSE = frozenset(("false", "0", "no", "off"))
+
+
+def _coerce_arguments(arguments: dict, schema: dict) -> dict:
+    """Coerce stringified values to their expected types per JSON schema.
+
+    Handles boolean ("true"/"false"), integer ("5"), and number ("3.14")
+    without eval. Unknown or already-correct types are passed through unchanged.
+    """
+    props = schema.get("properties", {})
+    if not props:
+        return arguments
+    result = {}
+    for k, v in arguments.items():
+        if k in props and isinstance(v, str):
+            expected = props[k].get("type")
+            if expected == "boolean":
+                if v.lower() in _BOOL_TRUE:
+                    v = True
+                elif v.lower() in _BOOL_FALSE:
+                    v = False
+            elif expected == "integer":
+                try:
+                    v = int(v)
+                except (ValueError, TypeError):
+                    pass
+            elif expected == "number":
+                try:
+                    v = float(v)
+                except (ValueError, TypeError):
+                    pass
+        result[k] = v
+    return result
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls.
@@ -2054,6 +2401,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _repo = arguments.get("repo") if isinstance(arguments, dict) else None
     # jdoc#104: computed BEFORE dispatch, since a tool may mutate `arguments`.
     _ignored_args = _unknown_arguments(name, arguments)
+
+    if name in _COUNTER_FRONT_DOOR:
+        return await _handle_counter_tool(name, arguments)
+
+    if isinstance(arguments, dict):
+        schema_props = _order_action_properties(name)
+        if schema_props:
+            arguments = _coerce_arguments(arguments, {"properties": schema_props})
+
 
     # Honor JDOCMUNCH_DISABLED_TOOLS at call time. Tools in _UNDISABLEABLE_TOOLS
     # are exempt (currently empty; jdocmunch_guide is intentionally disable-able).
@@ -2683,19 +3039,120 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         )
 
 
-async def run_server():
-    """Run the MCP server."""
+import contextvars
+import hashlib
+import hmac
+
+_HTTP_PRINCIPAL: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "jdocmunch_http_principal", default=None
+)
+
+
+def _principal_from_authorization(auth_header: Optional[str]) -> Optional[str]:
+    """Derive a stable, non-reversible state key from an Authorization header.
+
+    Never stores or logs the raw credential. None when no header was sent.
+    """
+    if not auth_header:
+        return None
+    digest = hashlib.sha256(auth_header.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"principal-{digest[:16]}"
+
+
+_no_principal_logged = False
+
+
+def _note_no_principal_session() -> None:
+    global _no_principal_logged
+    if _no_principal_logged:
+        return
+    _no_principal_logged = True
+    logger.info(
+        "HTTP session created with no Authorization header; once MCP transports "
+        "go stateless, per-session state will not persist for unauthenticated callers."
+    )
+
+
+def _make_auth_middleware():
+    """Return a Starlette middleware class that checks JDOCMUNCH_HTTP_TOKEN if set."""
+    token = os.environ.get("JDOCMUNCH_HTTP_TOKEN")
+    if not token:
+        return None
+
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+
+    class BearerAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            auth = request.headers.get("authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {token}"):
+                return JSONResponse(
+                    {"error": "Unauthorized. Set Authorization: Bearer <JDOCMUNCH_HTTP_TOKEN> header."},
+                    status_code=401,
+                )
+            return await call_next(request)
+
+    return Middleware(BearerAuthMiddleware)
+
+
+def _make_rate_limit_middleware():
+    """Return a Starlette middleware that rate-limits by IP (optional, opt-in)."""
+    try:
+        limit = int(os.environ.get("JDOCMUNCH_RATE_LIMIT", "0"))
+    except (ValueError, TypeError):
+        limit = 0
+    if limit <= 0:
+        return None
+
+    import collections
+    import time as _time
+
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+
+    _WINDOW = 60.0  # seconds
+    _buckets: dict[str, collections.deque] = {}
+    _MAX_TRACKED_IPS = 10_000
+    _last_touched: dict[str, float] = {}
+
+    class RateLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            ip = request.client.host if request.client else "unknown"
+            now = _time.monotonic()
+            bucket = _buckets.setdefault(ip, collections.deque())
+            _last_touched[ip] = now
+            while bucket and now - bucket[0] >= _WINDOW:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                retry_after = int(_WINDOW - (now - bucket[0])) + 1
+                return JSONResponse(
+                    {"error": f"Rate limit exceeded. Max {limit} requests per minute per IP."},
+                    status_code=429,
+                    headers={"Retry-After": str(retry_after)},
+                )
+            bucket.append(now)
+            if not bucket:
+                _buckets.pop(ip, None)
+                _last_touched.pop(ip, None)
+            elif len(_buckets) > _MAX_TRACKED_IPS:
+                oldest_ip = min(_last_touched, key=_last_touched.get)
+                _buckets.pop(oldest_ip, None)
+                _last_touched.pop(oldest_ip, None)
+            return await call_next(request)
+
+    return Middleware(RateLimitMiddleware)
+
+
+async def run_stdio_server():
+    """Run the MCP server with stdio transport."""
     import contextlib
     from jdocmunch_mcp import __version__
     from jdocmunch_mcp.embeddings.provider import warmup as _embedding_warmup
     from mcp.server.stdio import stdio_server
     print(f"jdocmunch-mcp {__version__} by jgravelle · https://github.com/jgravelle/jdocmunch-mcp", file=sys.stderr)
 
-    # Warm slow-cold-loading embedding providers before stdio_server takes over
-    # stdout. Without this, sentence-transformers' first-call model load can
-    # exceed the MCP client's tool-call timeout AND leak download/progress
-    # chatter to stdout, corrupting JSON-RPC framing. Redirect stdout to stderr
-    # for the warmup so any noisy library writes land somewhere safe (jdoc#19).
     with contextlib.redirect_stdout(sys.stderr):
         warmed = _embedding_warmup()
     if warmed:
@@ -2707,6 +3164,280 @@ async def run_server():
             write_stream,
             server.create_initialization_options()
         )
+
+
+async def run_server():
+    """Backwards-compatible alias for run_stdio_server."""
+    await run_stdio_server()
+
+
+async def run_sse_server(host: str, port: int):
+    """Run the MCP server with SSE transport (persistent HTTP mode)."""
+    import contextlib
+    import sys
+    try:
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.routing import Mount, Route
+    except ImportError as e:
+        raise ImportError(
+            f"SSE transport requires additional packages: {e}. "
+            'Install them with: pip install "jdocmunch-mcp[http]"'
+        ) from e
+    from mcp.server.sse import SseServerTransport
+    from jdocmunch_mcp import __version__
+    from jdocmunch_mcp.embeddings.provider import warmup as _embedding_warmup
+
+    with contextlib.redirect_stdout(sys.stderr):
+        warmed = _embedding_warmup()
+    if warmed:
+        print(f"jdocmunch-mcp: warmed embedding provider ({warmed})", file=sys.stderr)
+
+    sse_transport = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Request):
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+
+    middleware = []
+    auth_mw = _make_auth_middleware()
+    if auth_mw:
+        middleware.append(auth_mw)
+    rate_mw = _make_rate_limit_middleware()
+    if rate_mw:
+        middleware.append(rate_mw)
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ],
+        middleware=middleware,
+    )
+
+    print(
+        f"jdocmunch-mcp {__version__} by jgravelle · SSE server at http://{host}:{port}/sse",
+        file=sys.stderr,
+    )
+    if not os.environ.get("JDOCMUNCH_HTTP_TOKEN") and host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"WARNING: SSE bound to non-loopback host {host!r} without "
+            f"JDOCMUNCH_HTTP_TOKEN — anyone on the network can drive this MCP server. "
+            f"Set JDOCMUNCH_HTTP_TOKEN to require bearer auth.",
+            file=sys.stderr,
+        )
+    logger.info(
+        "startup version=%s transport=sse host=%s port=%d storage=%s",
+        __version__, host, port,
+        os.path.expanduser(os.environ.get("DOC_INDEX_PATH", "~/.cache/jdocmunch/")),
+    )
+    config = uvicorn.Config(starlette_app, host=host, port=port, log_level="warning")
+    await uvicorn.Server(config).serve()
+
+
+async def run_streamable_http_server(host: str, port: int):
+    """Run the MCP server with streamable-http transport (persistent HTTP mode)."""
+    import contextlib
+    import sys
+    import uuid
+    try:
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.routing import Route
+    except ImportError as e:
+        raise ImportError(
+            f"Streamable-http transport requires additional packages: {e}. "
+            'Install them with: pip install "jdocmunch-mcp[http]"'
+        ) from e
+    from mcp.server.streamable_http import StreamableHTTPServerTransport, MCP_SESSION_ID_HEADER
+    from jdocmunch_mcp import __version__
+    from jdocmunch_mcp.embeddings.provider import warmup as _embedding_warmup
+
+    with contextlib.redirect_stdout(sys.stderr):
+        warmed = _embedding_warmup()
+    if warmed:
+        print(f"jdocmunch-mcp: warmed embedding provider ({warmed})", file=sys.stderr)
+
+    _sessions: dict[str, StreamableHTTPServerTransport] = {}
+    _session_tasks: dict[str, asyncio.Task] = {}
+    _session_last_seen: dict[str, float] = {}
+
+    try:
+        _MAX_SESSIONS = int(os.environ.get("JDOCMUNCH_MAX_SESSIONS", "1024"))
+    except (ValueError, TypeError):
+        _MAX_SESSIONS = 1024
+    try:
+        _SESSION_IDLE_TIMEOUT = float(os.environ.get("JDOCMUNCH_SESSION_IDLE_TIMEOUT", "300"))
+    except (ValueError, TypeError):
+        _SESSION_IDLE_TIMEOUT = 300.0
+
+    def _drop_session(sid: str) -> None:
+        _sessions.pop(sid, None)
+        _session_last_seen.pop(sid, None)
+        t = _session_tasks.pop(sid, None)
+        if t and not t.done():
+            t.cancel()
+
+    async def _idle_session_sweeper() -> None:
+        import time as _t
+        try:
+            while True:
+                await asyncio.sleep(max(30.0, _SESSION_IDLE_TIMEOUT / 4))
+                now = _t.monotonic()
+                stale = [
+                    sid for sid, ts in list(_session_last_seen.items())
+                    if now - ts > _SESSION_IDLE_TIMEOUT
+                ]
+                for sid in stale:
+                    logger.info("evicting idle MCP session %s (idle > %.0fs)", sid, _SESSION_IDLE_TIMEOUT)
+                    _drop_session(sid)
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.create_task(_idle_session_sweeper())
+
+    class _AlreadySent:
+        async def __call__(self, scope, receive, send):
+            pass
+
+    _ALREADY_SENT = _AlreadySent()
+
+    async def handle_mcp(request: Request):
+        import time as _t
+        session_id = request.headers.get(MCP_SESSION_ID_HEADER)
+
+        if session_id and session_id in _sessions:
+            transport = _sessions[session_id]
+            _session_last_seen[session_id] = _t.monotonic()
+            await transport.handle_request(request.scope, request.receive, request._send)
+            if transport._terminated:
+                _drop_session(session_id)
+            return _ALREADY_SENT
+
+        if len(_sessions) >= _MAX_SESSIONS:
+            from starlette.responses import Response as StarletteResponse
+            return StarletteResponse(
+                f"Server at session capacity (max {_MAX_SESSIONS}); retry later.",
+                status_code=503,
+                headers={"Retry-After": "30"},
+            )
+
+        _HTTP_PRINCIPAL.set(_principal_from_authorization(request.headers.get("authorization")))
+        if _HTTP_PRINCIPAL.get() is None:
+            _note_no_principal_session()
+
+        new_id = uuid.uuid4().hex
+        transport = StreamableHTTPServerTransport(mcp_session_id=new_id)
+        _sessions[new_id] = transport
+        _session_last_seen[new_id] = _t.monotonic()
+
+        streams_ready: asyncio.Event = asyncio.Event()
+
+        async def _session_runner() -> None:
+            try:
+                async with transport.connect() as (read_stream, write_stream):
+                    streams_ready.set()
+                    await server.run(
+                        read_stream,
+                        write_stream,
+                        server.create_initialization_options(),
+                    )
+            except asyncio.CancelledError:
+                pass
+            finally:
+                _sessions.pop(new_id, None)
+                _session_tasks.pop(new_id, None)
+                _session_last_seen.pop(new_id, None)
+
+        task = asyncio.create_task(_session_runner())
+        _session_tasks[new_id] = task
+
+        try:
+            await asyncio.wait_for(streams_ready.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            _drop_session(new_id)
+            from starlette.responses import Response as StarletteResponse
+            return StarletteResponse("Session setup timed out", status_code=500)
+
+        try:
+            await transport.handle_request(request.scope, request.receive, request._send)
+        except Exception:
+            task.cancel()
+            raise
+        return _ALREADY_SENT
+
+    middleware = []
+    auth_mw = _make_auth_middleware()
+    if auth_mw:
+        middleware.append(auth_mw)
+    rate_mw = _make_rate_limit_middleware()
+    if rate_mw:
+        middleware.append(rate_mw)
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/mcp", endpoint=handle_mcp, methods=["GET", "POST", "DELETE"]),
+        ],
+        middleware=middleware,
+    )
+
+    print(
+        f"jdocmunch-mcp {__version__} by jgravelle · streamable-http server at http://{host}:{port}/mcp",
+        file=sys.stderr,
+    )
+    if not os.environ.get("JDOCMUNCH_HTTP_TOKEN") and host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"WARNING: streamable-http bound to non-loopback host {host!r} without "
+            f"JDOCMUNCH_HTTP_TOKEN — anyone on the network can drive this MCP server. "
+            f"Set JDOCMUNCH_HTTP_TOKEN to require bearer auth.",
+            file=sys.stderr,
+        )
+    logger.info(
+        "startup version=%s transport=streamable-http host=%s port=%d storage=%s",
+        __version__, host, port,
+        os.path.expanduser(os.environ.get("DOC_INDEX_PATH", "~/.cache/jdocmunch/")),
+    )
+    config = uvicorn.Config(starlette_app, host=host, port=port, log_level="warning")
+    await uvicorn.Server(config).serve()
+
+
+def _resolve_serve_endpoint(args) -> tuple[str, str, int]:
+    """Resolve (transport, host, port) for `serve` with precedence:
+    CLI flag > env var (JDOCMUNCH_TRANSPORT / _HOST / _PORT) > hardcoded default.
+    """
+    def _as_port(raw) -> Optional[int]:
+        if raw is None or raw == "":
+            return None
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return None
+
+    transport = (
+        getattr(args, "transport", None)
+        or os.environ.get("JDOCMUNCH_TRANSPORT")
+        or "stdio"
+    )
+    host = (
+        getattr(args, "host", None)
+        or os.environ.get("JDOCMUNCH_HOST")
+        or "127.0.0.1"
+    )
+    port = (
+        (args.port if getattr(args, "port", None) is not None else None)
+        or _as_port(os.environ.get("JDOCMUNCH_PORT"))
+        or 8902
+    )
+    return str(transport), str(host), int(port)
+
 
 
 def _force_utf8_stdio() -> None:
@@ -2767,7 +3498,24 @@ def main(argv: Optional[list] = None):
     subparsers = parser.add_subparsers(dest="command")
 
     # --- serve (default) ---
-    subparsers.add_parser("serve", help="Run the MCP server (default)")
+    serve_parser = subparsers.add_parser("serve", help="Run the MCP server (default)")
+    serve_parser.add_argument(
+        "--transport",
+        default=None,
+        choices=["stdio", "sse", "streamable-http"],
+        help="Transport mode: stdio (default), sse, or streamable-http (also via JDOCMUNCH_TRANSPORT env var)",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default=None,
+        help="Host to bind to in HTTP transport mode (also via JDOCMUNCH_HOST env var, default: 127.0.0.1)",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to listen on in HTTP transport mode (also via JDOCMUNCH_PORT env var, default: 8902)",
+    )
 
     # --- init ---
     init_parser = subparsers.add_parser(
@@ -2930,7 +3678,14 @@ def main(argv: Optional[list] = None):
 
     # Default to serve when no subcommand given
     if args.command is None or args.command == "serve":
-        asyncio.run(run_server())
+        transport, host, port = _resolve_serve_endpoint(args)
+        runtime_identity.set_transport(transport)
+        if transport == "sse":
+            asyncio.run(run_sse_server(host, port))
+        elif transport == "streamable-http":
+            asyncio.run(run_streamable_http_server(host, port))
+        else:
+            asyncio.run(run_stdio_server())
         return
 
     if args.command == "init":
