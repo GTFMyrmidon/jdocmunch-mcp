@@ -123,7 +123,7 @@ def _is_wsl() -> bool:
     if sys.platform != "linux":
         return False
     try:
-        return "microsoft" in Path("/proc/version").read_text(errors="ignore").lower()
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
     except OSError:
         return False
 

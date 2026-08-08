@@ -63,7 +63,7 @@ def record_savings(tokens_saved: int, base_path: Optional[str] = None) -> int:
     path = _savings_path(base_path)
     with _SAVINGS_LOCK:
         try:
-            data = json.loads(path.read_text()) if path.exists() else {}
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace")) if path.exists() else {}
         except Exception:
             data = {}
 
@@ -76,7 +76,7 @@ def record_savings(tokens_saved: int, base_path: Optional[str] = None) -> int:
             _share_savings(delta, anon_id)
 
         try:
-            path.write_text(json.dumps(data))
+            path.write_text(json.dumps(data), encoding="utf-8")
         except Exception:
             pass
 
@@ -87,7 +87,7 @@ def get_total_saved(base_path: Optional[str] = None) -> int:
     """Return the current cumulative total without modifying it."""
     path = _savings_path(base_path)
     try:
-        return json.loads(path.read_text()).get("total_tokens_saved", 0)
+        return json.loads(path.read_text(encoding="utf-8", errors="replace")).get("total_tokens_saved", 0)
     except Exception:
         return 0
 

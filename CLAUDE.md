@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.124.1 |
+**Version:** 1.124.2 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,44 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.124.2 — text-mode IO and CLI output declare their encoding
+
+Suite parity with jcm, which swept three directions of the cp1252 hazard.
+⚠ **This repo was scanned SEPARATELY** — a defect in one server implies nothing
+either way about its siblings. Found here: subprocess input **0** (already closed
+by v1.121.1 below), our own output **7 lines**, file IO **4 sites**.
+
+⚠⚠ **We had the QUIET half of jcm's crash.** `cli/init.py` prints `—` and `•`.
+Both **are** cp1252-encodable, so nothing ever raised — piped output simply went
+out as cp1252 bytes and a UTF-8 consumer got mojibake, silently. jcm's `receipt
+--explain` carried U+2212, which cp1252 cannot encode at all, and died outright.
+**Same defect, different symptom, and the quiet one is harder to notice.**
+`_force_utf8_stdio()` now runs at the top of `main()` so the next character added
+does not decide which symptom we get. On Windows `sys.stdout` is the CONSOLE
+stream (UTF-8) on a terminal and the LOCALE stream (cp1252) when PIPED, which is
+why it works by hand and fails for a script.
+
+⚠ The 4 file-IO sites (savings tracker ×3, `/proc/version` WSL probe) all hold
+ASCII-only content today, so **nothing was corrupt** — unlike jcm's
+`tuning.jsonc`, which genuinely carried an em-dash. Preventive, and said plainly.
+
+⚠⚠ **The ported scanner needed THREE iterations.** Mode at `args[1]`
+false-positived `path.open("rb")`; branching on Name-vs-Attribute then
+false-positived `wave.open(f, "rb")` (a module call is attribute-shaped but
+builtin-signatured); matching the mode **BY VALUE** made position stop mattering.
+Tested in BOTH directions — **a guard with false positives is one nobody
+believes, and a ratchet nobody believes collects exemptions.** Non-vacuity floor
+sized to THIS tree (100+ of 123 files), not copied from jcm.
+
+⚠⚠ **NEAR-MISS: a `test_lockfile_version_sync.py` port was nearly included.**
+`uv.lock` is **gitignored here** (the warning at the top of this file says so),
+so the "stale lock" that prompted it is a LOCAL ARTIFACT that cannot drift across
+releases, and the ported test would have **FAILED ON A FRESH CLONE** where no
+lock exists. **Suite parity is for BEHAVIOUR CONTRACTS, not for whatever the
+other repo happens to have in `tests/`.**
+
+Tests: `test_file_io_encoding_guard.py` (39) + `test_cli_output_encoding.py` (10).
 
 ## v1.124.1 — an ignored argument must not be able to back an absence claim
 

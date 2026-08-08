@@ -1,5 +1,77 @@
 # Changelog
 
+## [1.124.2] - 2026-08-07 - Text-mode IO and CLI output declare their encoding
+
+Suite parity with jcodemunch-mcp, which swept three directions of the same cp1252
+hazard. This repo was scanned separately; nothing about a defect living in one
+server implies it lives in its siblings, and nothing implies it does not.
+
+| Direction | Found here |
+|-----------|------------|
+| subprocess **input** | 0, already clean since the 2026-08-03 sweep |
+| our own **output** | 7 lines in `cli/init.py` |
+| **file IO** | 4 sites |
+
+### File IO
+
+`open()`, `Path.read_text()` and `Path.write_text()` use the platform default
+when no encoding is given, which is cp1252 on Windows. Reading a UTF-8 file then
+raises on the five bytes cp1252 leaves undefined (`81 8D 8F 90 9D`) and silently
+mangles everything else. Fixed at the savings tracker (3) and the WSL `/proc/version` probe.
+
+⚠ Every one of these holds ASCII-only content today (JSON with ASCII keys, and `/proc/version`), so nothing
+was corrupt. The exposure is a future non-ASCII value landing in one of them.
+Stated plainly rather than dressed up as a bug fix.
+
+### Output
+
+`cli/init.py` prints `—` and `•`. Both **are** cp1252-encodable, so nothing
+crashed -- piped output simply went out as cp1252 bytes and a UTF-8 consumer got
+mojibake, with nothing raised on our side. jcm had a character cp1252 cannot
+encode at all and died outright. Same defect, different symptom, and the quiet
+one is harder to notice.
+
+`_force_utf8_stdio()` now runs at the top of `main()`, before any subcommand can
+write, so the next character added does not decide which symptom this repo gets.
+`PYTHONIOENCODING` is honoured as an opt-out, `errors="replace"` guards against
+surrogates from path decoding, and the MCP stdio transport is unaffected because
+it wraps `sys.stdout.buffer` -- asserted by a test, not remembered.
+
+### Guards
+
+Two AST guards ported from jcodemunch-mcp, each with an **empty ratchet**: a new
+unencoded call fails, and a listed exemption that gets fixed must be deleted so
+the set cannot decay into a permanent excuse.
+
+The file-IO scanner matches the file mode **by value** rather than by argument
+position, because `open(file, mode)`, `path.open(mode)` and `wave.open(file,
+mode)` put it in three different slots -- and two earlier position-based versions
+each produced a different class of false positive. It is tested in both
+directions: correct code must not be flagged, broken code must be. A guard with
+false positives is one nobody believes, and a ratchet nobody believes collects
+exemptions.
+
+⚠ The non-vacuity floor is sized to THIS repo's tree (100+ files), not copied
+from jcm. A floor larger than the tree fails forever; a floor of 1 passes over a
+scan that collapsed to nothing.
+
+### A finding that turned out not to be one
+
+While bumping version pins I noticed `uv.lock` recording an older version than
+`pyproject.toml`, and started writing it up as drift that jcodemunch-mcp's
+`test_lockfile_version_sync.py` gate would have caught.
+
+It is not drift. **`uv.lock` is gitignored in this repo, deliberately** -- CI runs
+plain `uv sync`, not `uv sync --locked`, so a committed lock would silently change
+dependency resolution. The file is a local artifact and cannot drift across
+releases because it was never in a release.
+
+Recorded here because the near-miss is the useful part: porting jcm's lockfile
+gate would have shipped a test that fails on a fresh clone, where no `uv.lock`
+exists. jcm tracks its lock and this repo does not, and that asymmetry is a
+decision, not an oversight. Suite parity is for behaviour contracts, not for
+whatever the other repo happens to have in `tests/`.
+
 ## [1.124.1] - 2026-08-07 - an ignored argument must not be able to back an absence claim
 
 Completes #104. v1.124.0 disclosed ignored arguments and stopped there. That is

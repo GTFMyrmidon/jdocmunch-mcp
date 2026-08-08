@@ -2701,8 +2701,50 @@ async def run_server():
         )
 
 
+def _force_utf8_stdio() -> None:
+    """Make CLI output UTF-8 regardless of the platform locale.
+
+    Suite parity with jcodemunch-mcp v1.108.262, where this was a live crash.
+
+    ⚠⚠ On Windows, `sys.stdout` is the **console** stream (already UTF-8) when
+    attached to a terminal and the **locale** stream (cp1252) when piped or
+    redirected. So output containing any non-ASCII character works interactively
+    and goes out as cp1252 bytes the moment anything consumes it -- mojibake for
+    a UTF-8 reader, with nothing raised on our side. A character cp1252 cannot
+    encode at all crashes the command outright.
+
+    jdoc's `init` prints `—` and `•` today. Both ARE cp1252-encodable, so this
+    repo has the silent half and not (yet) the crash; the fix is at the entry
+    point precisely so the next character added cannot decide that for us.
+
+    ⚠ The MCP stdio transport is unaffected: it wraps `sys.stdout.buffer` in its
+    own TextIOWrapper and never reads the text layer reconfigured here.
+
+    ⚠ `errors="replace"` is deliberate -- filesystem paths can carry surrogates
+    from a `surrogateescape` decode, which raise even under UTF-8. Mangling one
+    display character beats killing the command.
+
+    ⚠ `PYTHONIOENCODING` is honoured as an explicit opt-out.
+    """
+    if os.environ.get("PYTHONIOENCODING"):
+        return
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # replaced by a test harness or captured buffer
+            continue
+        current = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if current in ("utf8", "utf8mb4"):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: Optional[list] = None):
     """Main entry point."""
+    _force_utf8_stdio()
     from .security import verify_package_integrity
     verify_package_integrity()
 
