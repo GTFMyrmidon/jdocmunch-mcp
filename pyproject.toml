@@ -28,6 +28,7 @@ minimax = ["openai>=1.0.0"]
 zhipu = ["openai>=1.0.0"]
 semantic = ["google-generativeai>=0.8.0"]
 office = ["markitdown[pdf,docx,pptx]>=0.1.6"]
+http = ["uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.0.0"]
 
 [project.scripts]
 jdocmunch-mcp = "jdocmunch_mcp.server:main"
