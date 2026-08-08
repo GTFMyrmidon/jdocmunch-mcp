@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.124.3] - 2026-08-07 - A lint gate, and the NameError it found
+
+CI had no lint job. It has one now, and adding it immediately surfaced a latent
+defect shipped in v1.124.0.
+
+### The defect
+
+```
+src/jdocmunch_mcp/server.py:2003  F821 Undefined name `logger`
+```
+
+`_declared_properties` logged through a module-level `logger` that this file has
+**never defined**. The call sits inside `except Exception:` -- the handler whose
+job is to swallow a failure -- so any real failure of `_all_tools()` raised
+`NameError` **out of** the handler and turned a handled error into a crash.
+
+`logging` was not imported at module scope either; the one other logging call in
+this file imports it locally inside its function. Both fixed, with four
+regression tests that force the error path and assert it survives.
+
+The other two F821s were `OrderedDict` inside **string annotations**, which are
+never evaluated at runtime and had a real local import. Not bugs, but
+unresolvable for `typing.get_type_hints`, so they now import under
+`TYPE_CHECKING`.
+
+### The gate
+
+`ruff check src/` runs once on Linux, outside the test matrix.
+
+⚠ **`select` is explicit**: `["E4", "E7", "E9", "F"]`. Ruff's DEFAULT rule set is
+not stable across versions, and this repo has no `uv.lock` to pin ruff with.
+Measured in a clean environment: an `ignore`-only config under ruff 0.16.2
+resolved **446 findings** where the intended set gives a handful. Widening the
+set is now a decision someone makes rather than something a ruff upgrade does.
+
+⚠ `ruff` is in the dev group, because `uv run ruff` fetching it on demand locally
+is precisely what hides its absence from CI.
+
+Fixed to make the gate green: 14 unused imports (each verified to have no
+importers elsewhere, since an unused import can still be a re-export).
+Grandfathered with counts and reasons: `E402` (65 deliberate lazy imports) and
+`F841` (2 dead locals).
+
+⚠ Not copied from jcodemunch-mcp: its lint job runs `uv sync --locked`, which
+would fail here because `uv.lock` is gitignored. This job uses plain
+`uv sync --group dev`, matching this repo's own test job.
+
+### The lesson is not "add a linter"
+
+jcodemunch-mcp HAD this check. It failed on four consecutive releases and nobody
+read it. A gate is worth exactly as much as the habit of reading it, which is why
+the release checklist now names both the lint step and reading the CI run.
+
 ## [1.124.2] - 2026-08-07 - Text-mode IO and CLI output declare their encoding
 
 Suite parity with jcodemunch-mcp, which swept three directions of the same cp1252

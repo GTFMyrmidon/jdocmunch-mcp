@@ -20,7 +20,6 @@ drags the whole score down — appropriate for "is this trustworthy."
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 WEIGHTS = {
     "gap": 0.35,

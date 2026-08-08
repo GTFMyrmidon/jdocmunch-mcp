@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import traceback
@@ -2000,7 +2001,14 @@ def _declared_properties(tool_name: str) -> "set[str] | None":
                 props = ((t.inputSchema or {}).get("properties") or {})
                 cache[t.name] = set(props.keys())
         except Exception:
-            logger.debug("Could not build schema property cache", exc_info=True)
+            # ⚠ `logging.getLogger(__name__)`, NOT a module-level `logger`:
+            # server.py has never defined one, so the original line raised
+            # NameError from inside the handler that exists to swallow errors,
+            # converting a handled failure into a crash. Shipped in v1.124.0 and
+            # invisible until this repo gained a lint job (ruff F821).
+            logging.getLogger(__name__).debug(
+                "Could not build schema property cache", exc_info=True
+            )
             return None
         _SCHEMA_PROPS_CACHE = cache
     canonical = _ALIAS_TO_CANONICAL.get(tool_name, tool_name)

@@ -1,6 +1,5 @@
 """Re-index a single file within an existing index."""
 
-import os
 import time
 from pathlib import Path
 from typing import Optional

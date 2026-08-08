@@ -1,6 +1,6 @@
 [project]
 name = "jdocmunch-mcp"
-version = "1.124.2"
+version = "1.124.3"
 description = "Token-efficient MCP server for structured documentation retrieval via section-level indexing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -58,8 +58,45 @@ dev = [
     # skipped on every CI run, and a divergence between the two would have
     # shipped unnoticed.
     "numpy>=1.24.0",
+    # Required by the `lint` job in .github/workflows/test.yml. Locally
+    # `uv run ruff` fetches it on demand, which is exactly why its absence here
+    # was invisible until CI ran: the job failed with "Failed to spawn: ruff"
+    # on its very first run.
+    "ruff>=0.6.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# ⚠⚠ EXPLICIT `select`. Ruff's DEFAULT rule set is not stable across versions,
+# and this repo has no `uv.lock` to pin ruff with, so `ignore`-only config means
+# the gate's strictness changes under you whenever ruff ships a release.
+# Measured 2026-08-07: config unchanged, ruff 0.16.2 resolved 446 findings
+# (YTT/ASYNC/S/BLE/B/UP/I) where the intended set gives 10.
+#
+# These four are pycodestyle E4/E7/E9 + pyflakes F: the high-signal correctness
+# rules (undefined names, unused imports, f-string bugs, duplicate keys,
+# redefinitions). Widening the set is a deliberate decision, not a ruff upgrade.
+select = ["E4", "E7", "E9", "F"]
+# Default rule set is pycodestyle E4/E7/E9 + pyflakes F. We keep the high-signal
+# correctness rules -- undefined names, unused imports, f-string bugs, duplicate
+# keys, redefinitions -- and grandfather the codes that reflect deliberate,
+# pervasive patterns here rather than defects.
+#
+# Added 2026-08-07 with v1.124.3. Adding the gate immediately surfaced an
+# undefined `logger` (F821) shipped in v1.124.0, sitting inside the `except`
+# block that exists to swallow errors: a real failure raised NameError out of
+# the handler. That is the whole argument for the gate.
+ignore = [
+    "E402",  # module-import-not-at-top: 65 deliberate lazy/local imports (startup cost)
+    "F841",  # local assigned but never used: 2 pre-existing dead locals, low risk
+]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py re-exports are the package's public API surface, not dead imports.
+"__init__.py" = ["F401"]

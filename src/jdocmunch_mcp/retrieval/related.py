@@ -27,7 +27,7 @@ Returned shape:
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Optional
 
 from ..embeddings import cosine_similarity
 

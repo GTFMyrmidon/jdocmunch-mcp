@@ -26,7 +26,6 @@ from __future__ import annotations
 import posixpath
 import re
 import time
-from pathlib import Path
 from typing import Optional
 
 from ..storage import DocStore

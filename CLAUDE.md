@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.124.2 |
+**Version:** 1.124.3 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,34 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.124.3 — a lint gate, and the NameError it found
+
+CI had no lint job. Adding one immediately surfaced a defect **we shipped in
+v1.124.0**: `server.py:2003` logged through a module-level `logger` **this file
+has never defined**, inside the `except Exception:` block that exists to swallow
+errors — so a real failure of `_all_tools()` raised `NameError` OUT of the
+handler. ⚠ `logging` was not imported at module scope either. Four regression
+tests force the error path.
+
+⚠ The other two F821s were `OrderedDict` in **string annotations** (never
+evaluated at runtime, real local import) — not bugs, but unresolvable for
+`get_type_hints`; now under `TYPE_CHECKING`.
+
+⚠⚠ **`select` is EXPLICIT** (`["E4","E7","E9","F"]`). Ruff's DEFAULT set is **not
+stable across versions** and this repo has no lock to pin ruff: measured, an
+`ignore`-only config under ruff 0.16.2 gave **446 findings** vs a handful
+intended. **Widening the set is now a DECISION, not a ruff upgrade.** ⚠ `ruff` is
+in the dev group — `uv run ruff` fetching on demand locally is exactly what hides
+its absence from CI (jdata shipped a lint job that could not spawn).
+
+⚠ Fixed 14 unused imports, **each verified to have no importers elsewhere**
+(an unused import can still be a re-export). Grandfathered WITH counts: `E402`
+(65), `F841` (2). ⚠ **Not copied from jcm**: its job runs `uv sync --locked`,
+which would FAIL here (lock gitignored); this uses plain `uv sync --group dev`.
+
+⚠⚠ **The lesson is NOT "add a linter".** jcm HAD the check; it failed on FOUR
+consecutive releases and nobody read it. [[feedback_a_green_suite_is_not_a_green_build]]
 
 ## v1.124.2 — text-mode IO and CLI output declare their encoding
 

@@ -1,6 +1,5 @@
 """Markdown parser: ATX + setext heading splitter with byte offsets."""
 
-import os
 import re
 from pathlib import Path
 
@@ -91,7 +90,6 @@ def _strip_mdx_plain(content: str) -> str:
 from .sections import (
     Section,
     slugify,
-    resolve_slug_collision,
     make_section_id,
     make_hierarchical_slug,
     compute_content_hash,

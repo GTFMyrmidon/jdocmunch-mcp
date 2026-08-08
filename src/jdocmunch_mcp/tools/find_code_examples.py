@@ -19,7 +19,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from ..retrieval.bm25 import _bm25_field, FIELD_WEIGHTS
+from ..retrieval.bm25 import _bm25_field
 from ..retrieval.tokenize import tokenize
 from ..storage import DocStore
 

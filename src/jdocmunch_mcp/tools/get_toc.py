@@ -4,7 +4,7 @@ import time
 from typing import Optional
 
 from ..storage import DocStore
-from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided, get_total_saved
+from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
 
 
 def get_toc(

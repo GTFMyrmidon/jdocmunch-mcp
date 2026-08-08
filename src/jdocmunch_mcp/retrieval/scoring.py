@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Shared regexes — compile once.

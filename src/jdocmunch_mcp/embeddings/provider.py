@@ -21,7 +21,10 @@ Set JDOCMUNCH_EMBEDDING_PROVIDER=none to disable all embedding.
 import logging
 import math
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # annotations below are strings; this makes them resolvable
+    from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
