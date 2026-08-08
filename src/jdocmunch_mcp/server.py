@@ -1671,15 +1671,19 @@ def _all_tools() -> list[Tool]:
                 "and proposes a per-repo semantic_weight step. dry_run=true skips "
                 "the disk write. min_events gates against early overfitting. "
                 "Learns from a recency window of the ledger (default 90 days) so "
-                "stale events can't anchor the weights."
+                "stale events can't anchor the weights. Learning compares "
+                "confidence WITH vs WITHOUT the semantic channel, so a workload "
+                "that only ever runs one mode produces no signal at all — use "
+                "set_weight there instead of waiting."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "repo": {"type": "string", "description": "Optional — single repo to tune. Omit to scan all repos with events."},
+                    "repo": {"type": "string", "description": "Optional — single repo to tune. Omit to scan all repos with events. Required with set_weight."},
                     "min_events": {"type": "integer", "default": 50},
                     "dry_run": {"type": "boolean", "default": False},
-                    "max_age_days": {"type": "integer", "default": 90, "description": "Only learn from ledger events newer than this many days. Keeps stale events from anchoring weights to an outdated query distribution. 0 = lifetime ledger."}
+                    "max_age_days": {"type": "integer", "default": 90, "description": "Only learn from ledger events newer than this many days. Keeps stale events from anchoring weights to an outdated query distribution. 0 = lifetime ledger."},
+                    "set_weight": {"type": "number", "description": "Persist this semantic_weight for repo directly, skipping the ledger. For when you have measured the right value for a corpus rather than waiting for the tuner to walk there. Does not require telemetry. Clamped to the allowed bounds, and the response reports whether clamping occurred."}
                 }
             }
         ),
@@ -2494,6 +2498,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 min_events=arguments.get("min_events", 50),
                 dry_run=arguments.get("dry_run", False),
                 max_age_days=arguments.get("max_age_days", 90),
+                set_weight=arguments.get("set_weight"),
                 storage_path=storage_path,
             )
         elif name == "list_repo_groups":

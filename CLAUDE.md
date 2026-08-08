@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.125.0 |
+**Version:** 1.126.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,56 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.126.0 — the tuner wasn't slow, it was walking the wrong way
+
+⚠⚠ **Opened by checking a claim WE made to a reporter.** On #106 we said the
+tuner "exists precisely to move" the weight, and disclosed only that it was
+slow (7 rounds × 50 events). Verifying that produced a worse finding.
+**Re-examine the workaround you recommended; it is the claim least likely to
+have been tested.**
+
+**`confidence`'s `strength` term reads a RAW top-1 score through a curve
+hardcoded to the BM25 scale**, and every mode went through it. BM25 tops out
+in the tens; RRF fused tops out at `1/(k+1)` ≈ 0.0164; cosine at 1.0. Measured
+on IDENTICAL relative separation: **lexical 0.6205 vs hybrid 0.0872, a 7×
+penalty from units alone.**
+
+⚠⚠ **Two consumers, and the tuner is the less important one.**
+`build_verdict`'s `low_confidence` REFUSES to mint a citable absence claim — so
+hybrid searches were disqualified from evidence they had earned. And
+`tune_one_repo` subtracts the two means: delta **−0.53** ⇒ `semantic_hurts` ⇒
+step DOWN, **every round, to the 0.10 floor, on data where the semantic channel
+was the one answering.** Measured over 7 consecutive rounds pre-fix; 1 round
+post-fix (`no_significant_signal`, delta −0.0139).
+
+Fix: each scorer declares its ceiling; `_strength(t, ceiling) = 1-exp(-3t/c)`.
+⚠ **The BM25 path is byte-identical** — `1-exp(-3t/12)` IS `1-exp(-t/4)`, so
+only the modes that were wrong move, and there is a test on that algebra.
+⚠ An unknown mode falls back to the BM25 ceiling, so an un-updated caller is
+unchanged rather than newly wrong.
+
+⚠ **`_meta.confidence` moves UP for semantic modes, and some `low_confidence`
+verdicts with it.** Wire-visible; disclosed in the release notes. No existing
+test pinned a hybrid confidence value, which is itself the gap that let this
+live.
+
+**Reachability proper**, all three blockers:
+- **Proportional step**, 0.05 at the threshold ramping to a bounded `MAX_STEP`
+  0.20. ⚠ Still bounded on purpose — the ledger gives us the SIGN; the
+  magnitude of a confidence delta is not a calibrated distance to the optimum.
+- **`no_signal_split` names the remedy.** It is the COMMON outcome, not an edge
+  case: the tuner compares modes, so a single-mode workload never produces a
+  signal however long it runs.
+- **New `tune_weights(set_weight=...)`** persists a measured value. ⚠ It
+  deliberately does NOT require telemetry — that gate exists because there is
+  nothing to LEARN from without a ledger, and writing down a measured number
+  needs no ledger. Clamped, and says when it clamped.
+
+Tests `tests/test_tuner_reachability.py` (20; **18 fail pre-fix**). Suite
+**2265 passed / 6 skipped**. `ruff check src/` clean. Replay unchanged at
+0.9631 (⚠ the `stale pages` 0.631 is PRE-EXISTING — re-run the fixture on
+stashed HEAD before blaming your own prose).
 
 ## v1.125.0 — #107: a partial embed pass was destroying the vector store
 

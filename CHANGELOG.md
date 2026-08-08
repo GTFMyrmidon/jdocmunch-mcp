@@ -1,5 +1,75 @@
 # Changelog
 
+## [1.126.0] - 2026-08-08 - Retrieval confidence is scored on the right scale
+
+Follow-up to [#106](https://github.com/jgravelle/jdocmunch-mcp/issues/106). We
+told the reporter the weight tuner exists precisely to move the ranking weight
+off its default. Checking whether that was true found something worse than the
+slowness we had already disclosed.
+
+### The confidence signal was scale-corrupted
+
+The `strength` sub-signal of retrieval confidence reads a raw top-1 score
+through a curve that was hardcoded to the BM25 scale. BM25 tops out in the
+tens. A fused reciprocal-rank score tops out at `1/(k+1)`, about 0.0164. A
+cosine tops out at 1.0. All three were scored on the same curve.
+
+Measured on identical relative separation between the top two results:
+
+| scorer | top-1 | confidence |
+|---|---|---|
+| BM25 | 20.0 | 0.6205 |
+| fused | 0.0146 | 0.0872 |
+
+Same ranking quality, seven times the confidence, entirely from the units.
+
+Two consumers read that number, so the damage was not cosmetic:
+
+- The `low_confidence` verdict refuses to mint a citable absence claim.
+  Searches using the semantic channel were being disqualified from evidence
+  they had earned.
+- The weight tuner compares mean confidence with and without the semantic
+  channel. The scale gap swamped the real signal: it read `semantic_hurts`
+  with a delta of −0.53 and stepped the weight down every round, to the 0.10
+  floor, on data where the semantic channel was answering the queries. Not
+  slow to reach a better weight — actively walking away from one. Measured
+  over seven consecutive rounds before the fix, one round after.
+
+Each scorer now declares the score at which `strength` saturates. The BM25
+curve is unchanged: `1 - exp(-3t/12)` is algebraically identical to the old
+`1 - exp(-t/4)`, so lexical confidences are byte-identical to 1.125.0 and only
+the modes that were wrong move. An unknown mode falls back to the BM25 ceiling,
+so a caller that does not pass one is unchanged rather than newly wrong.
+
+**This changes `_meta.confidence` values upward for searches that use the
+semantic channel, and with them some `low_confidence` verdicts.** If you gate
+CI on a confidence threshold, re-check it.
+
+### The tuner takes a step proportional to the evidence
+
+A flat ±0.05 meant crossing the useful range took nine successful rounds of 50
+or more qualifying events each. The step now scales with the measured gap, from
+0.05 at the decision threshold up to a bounded 0.20 when the evidence is
+decisive. It stays bounded on purpose: the sign is what the ledger tells us,
+and the magnitude of a confidence delta is not a calibrated distance to the
+right answer.
+
+### A single-mode workload can now set the weight instead of waiting
+
+The tuner learns by comparing modes. A user who always runs one mode produces
+no signal at all, however long they run, and the old response said only
+`no_signal_split`. It now explains that the workload is single-mode, that
+waiting will not help, and what to do instead.
+
+New `tune_weights(repo=..., set_weight=...)` persists a measured value
+directly. It deliberately does not require telemetry — that gate exists because
+there is nothing to learn from without a ledger, and writing down a value you
+have already measured needs no ledger. Out-of-range values are clamped and the
+response reports it.
+
+Tests: `test_tuner_reachability.py` (20, 18 fail before the fix). Suite 2265
+passed / 6 skipped. No index version change.
+
 ## [1.125.0] - 2026-08-08 - A partial embed pass no longer discards saved vectors
 
 Two reports from @faxik ([#106](https://github.com/jgravelle/jdocmunch-mcp/issues/106),

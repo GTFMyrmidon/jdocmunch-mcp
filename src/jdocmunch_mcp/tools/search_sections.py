@@ -363,7 +363,10 @@ def search_sections(
 
     # v1.16.0: per-section freshness + retrieval confidence.
     from ..retrieval.freshness import FreshnessProbe
-    from ..retrieval.confidence import attach_confidence
+    from ..retrieval.confidence import (
+        attach_confidence,
+        ceiling_for_mode as _ceiling_for_mode,
+    )
 
     probe = FreshnessProbe(store, owner, name, index)
     for sec in results:
@@ -431,7 +434,15 @@ def search_sections(
         meta["min_byte_length"] = int(min_byte_length)
     if max_byte_length is not None:
         meta["max_byte_length"] = int(max_byte_length)
-    attach_confidence(query, results, meta)
+    # jdoc#106 follow-up: confidence's `strength` term reads a RAW top-1
+    # score, and BM25 / RRF / cosine differ by three orders of magnitude.
+    # Scoring them all on the BM25 curve made hybrid confidence ~7x too low,
+    # which disqualified hybrid searches from absence evidence and drove the
+    # weight tuner monotonically to its floor.
+    attach_confidence(
+        query, results, meta,
+        score_ceiling=_ceiling_for_mode(mode),
+    )
 
     # v1.33.0: per-result answerability + quotability scores. Read content
     # via the same byte-range lookup the BM25 engine uses (so we don't
