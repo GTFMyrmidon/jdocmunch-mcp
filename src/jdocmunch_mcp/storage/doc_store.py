@@ -791,30 +791,32 @@ class DocStore:
         The header identity is a placeholder (``_load_sidecar_vectors`` ignores
         the header); a subsequent real embed pass sees the mismatch and simply
         re-embeds, which is safe.
+
+        ⚠⚠ jdoc#107: this used to RETURN EARLY whenever a sidecar existed, on
+        the reasoning that ``embed_sections`` had already written the
+        authoritative one. That made the net unable to extend a sidecar — so
+        an incremental ``index_file`` pass, whose sections were embedded
+        outside the cache pipeline, had its vectors stripped by the save and
+        never persisted anywhere. It now APPENDS the missing keys instead,
+        which never removes a row and never overwrites a real provider header
+        with the ``__inline__`` placeholder (doing so would make the next
+        embed pass read an identity mismatch and purge the whole file).
         """
         try:
-            have_emb = any(
-                isinstance(s, dict) and s.get("embedding") and s.get("content_hash")
-                for s in sections
-            )
-            if not have_emb:
-                return
-            from ..embeddings.cache import _cache_path as _emb_cache_path
-            if _emb_cache_path(str(self.base_path), owner, name).exists():
-                return  # embed_sections already wrote the authoritative sidecar
             from ..embeddings.provider import _EMBED_TEXT_VERSION
-            from ..embeddings import cache as _emb_cache
             entries = [
                 (f"{s['content_hash']}#{_EMBED_TEXT_VERSION}", list(s["embedding"]))
                 for s in sections
                 if isinstance(s, dict) and s.get("embedding") and s.get("content_hash")
             ]
-            if entries:
-                _emb_cache.write(
-                    str(self.base_path), owner, name,
-                    provider="__inline__", model="__inline__", dim=None,
-                    entries=entries,
-                )
+            if not entries:
+                return
+            from ..embeddings import cache as _emb_cache
+            _emb_cache.append_entries(
+                str(self.base_path), owner, name,
+                entries=entries,
+                identity_if_new=("__inline__", "__inline__", None),
+            )
         except Exception:
             pass  # best-effort; never fail a save over the sidecar safety net
 

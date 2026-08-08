@@ -29,6 +29,7 @@ from ..storage import DocStore
 from ..storage.doc_store import normalize_commit_sha
 from ..summarizer import summarize_sections
 from ..embeddings import embed_sections, get_provider_name, should_embed
+from ._embedding_coverage import attach_embedding_coverage as _attach_embedding_coverage
 from ._git import local_git_head, local_git_paths_dirty, local_git_paths_tracked, stable_local_git_state
 from ._constants import SKIP_PATTERNS
 
@@ -2203,6 +2204,11 @@ def index_local(
                 "semantic_search": use_embeddings and get_provider_name() is not None,
                 "_meta": {"latency_ms": latency_ms},
             }
+            # jdoc#107: a coverage collapse must be visible in the response.
+            _attach_embedding_coverage(
+                result, storage_path=storage_path, owner=owner,
+                name=repo_name, index=updated, warnings=warnings,
+            )
             result.update(derivation_fields)
             result.update(reuse_fields)
             result.update(selection_changed_fields)
@@ -2258,9 +2264,14 @@ def index_local(
         all_sections = summarize_sections(all_sections, use_ai=use_ai_summaries)
         _annotate_roles(all_sections)
         if use_embeddings:
+            # jdoc#107: prune ONLY here. This pass holds the whole corpus, so
+            # the sidecar it writes is authoritative and stale vectors for
+            # removed sections should go. The incremental path above must NOT
+            # prune — its `sections` is just the changed documents.
             all_sections = embed_sections(
                 all_sections,
                 owner=owner, name=repo_name, storage_path=storage_path,
+                prune=True,
             )
 
         # v1.103.0: coverage contract from the full discovery walk. Recorded
@@ -2362,6 +2373,12 @@ def index_local(
             "semantic_search": use_embeddings and get_provider_name() is not None,
             "_meta": {"latency_ms": latency_ms},
         }
+        # jdoc#107: same disclosure on the full path. A prune that wrote fewer
+        # vectors than sections is exactly as invisible here.
+        _attach_embedding_coverage(
+            result, storage_path=storage_path, owner=owner,
+            name=repo_name, index=saved, warnings=warnings,
+        )
         result.update(derivation_fields)
         result.update(reuse_fields)
         # jdoc#82 invariant 4 disclosure on the full-replace path too.

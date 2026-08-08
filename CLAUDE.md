@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.124.3 |
+**Version:** 1.125.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,140 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.125.0 — #107: a partial embed pass was destroying the vector store
+
+⚠⚠ **Not a cache. Since jdoc#75 the sidecar IS the vector store** —
+`_index_to_dict` strips `embedding` from the monolith and
+`_rehydrate_embeddings` reads it back from `<name>.embeddings.jsonl`. @faxik
+filed this as a cache bug, following **our own naming**, and it is data loss.
+**Their severity read was conservative for the fourth time; verify UPWARD.**
+
+`embed_sections` ended with `cache.write`, documented as an atomic REWRITE of
+the whole sidecar. True on a full index, where `sections` is the corpus. On an
+incremental refresh `sections` is only the changed documents, so **every vector
+belonging to an untouched document was dropped**. Reported three times on one
+5,300-section corpus: **5,316 vectors → 21**, then 224, then 48. Exit 0, no
+warning, `search_sections` still answering — with a semantic channel ranking
+almost nothing. With a 30-minute reindex cron that lands within half an hour of
+any edit.
+
+⚠ **It does not reproduce on a toy corpus.** Under ~5 documents the incremental
+path re-materializes everything anyway, so the rewrite happens to contain the
+corpus and looks correct. The reporter says they failed to reproduce it at that
+scale first; **so would we have.** Fixtures are sized so the incremental pass
+genuinely skips.
+
+**Two more sites in the same family, neither filed, both found by asking who
+else writes this sidecar:**
+
+- ⚠⚠ **`index_file` passed NO owner/name**, so the cache was disabled and its
+  vectors reached disk only through the save-time safety net — which returned
+  early whenever a sidecar already existed, i.e. always. **Every vector that
+  path ever produced was discarded.** That is the PostToolUse auto-reindex
+  hook, so it ran on every doc edit.
+- **`index_repo` passed no owner/name either**, on both paths: no cache hits
+  ever, full re-embed every refresh.
+
+Fixes: `embed_sections(..., prune=False)` merges the identity-matched `cached`
+forward; **`prune=True` is passed ONLY from the two full-corpus call sites**,
+where pruning stale vectors is correct. ⚠ Merge is the DEFAULT so an
+unconverted caller cannot lose data — there is a test on the default itself.
+⚠ Provider rotation still purges, because `cache.load` already returns `{}` on
+an identity mismatch and the merge then has nothing to carry.
+
+New `cache.append_entries` for the safety net: appends missing keys and
+**never touches an existing header**. ⚠ Stamping the `__inline__` placeholder
+over a real provider identity would make the next embed pass see a mismatch and
+purge the entire file — the fix's own failure mode.
+
+⚠⚠ **The silence was the other half.** New `tools/_embedding_coverage.py` puts
+`embedded_sections` / `embedding_coverage` on every index response and warns
+below 50%. **The reporter had already built exactly this externally**, because
+we emitted nothing. Counted off sidecar KEYS, never vectors (26k sections cost
+no memory). ⚠ Omitted entirely when no sidecar exists — a lexical index must
+not grow a `0.0` that reads as a regression.
+
+⚠ Coverage is NOT `section_count`: sections are keyed by CONTENT hash, and
+empty `# Title` parents across many files share one. A test asserts the
+coverage ratio, not the row count, and says why.
+
+Tests `tests/test_embedding_sidecar_preservation.py` (18; **14 fail pre-fix**),
+including the end-to-end `index_local` refresh and a check at the ENTRY POINT
+that every section can still rank after it
+([[feedback_verify_at_the_users_entry_point]]).
+
+## v1.125.0 — #106: the weight declares where it came from
+
+@faxik measured a 5,315-section Markdown corpus: stock `semantic_weight=0.5`
+answered **0/15 paraphrased queries** in the top 5 — **worse than turning
+semantic off** (1/15) — while pure cosine over the *same stored vectors* got
+5/15. ⚠⚠ **The vectors were never the problem and neither, really, was 0.5.**
+The defect is that a first-time embeddings user watches retrieval get WORSE with
+nothing in the response indicating a weight is in play, so it reads as broken
+embeddings. They filed it explicitly as *not* a defect; it is three.
+
+⚠⚠ **RRF with `k=60` structurally penalises a single-channel win, and our
+`reciprocal_rank_fusion` makes it worse than the reporter modelled.** An absent
+item contributes **0**, not `1/(60+rank)` — they assumed a deep lexical rank:
+
+```
+excellent-in-one:  0.5/(60+1) + 0            = 0.00820   (they wrote 0.00836)
+mediocre-in-both:  0.5/(60+50) + 0.5/(60+50) = 0.00909   <- still wins
+```
+
+Compounded here because the lexical ranking only holds sections scoring `> 0`
+(`doc_store.py`) while `_semantic_scored` returns EVERY embedded section — so on
+a paraphrase the right answer is *guaranteed* single-channel. Their keyword
+recall was **flat at 93.3% from 0.0 through 0.95**, so the low default buys no
+keyword safety on that corpus; it only costs paraphrase recall.
+
+Three fixes, each with a pre-fix-failing test
+(`tests/test_semantic_weight_provenance.py`, 22; **17 fail pre-fix, 5 controls
+pass both sides**):
+
+- **Provenance.** `_meta.semantic_weight` already shipped — only the VALUE.
+  ⚠ Do not tell a reporter their suggestion is unimplemented when half of it is;
+  the missing half was `semantic_weight_source`
+  (`caller` / `tuning.jsonc` / `default`), plus `semantic_weight_clamped_to`
+  when a hand-edit is out of bounds. New `tuning.resolve_semantic_weight`
+  returns `{weight, source, clamped}`; `get_semantic_weight` stays as a legacy
+  scalar wrapper with its old quirk intact.
+- **Ceiling 0.85 → 0.95.** ⚠⚠ **The bound clamped INCONSISTENTLY**: a
+  `tuning.jsonc` value was clamped, but an explicit call argument returned
+  unclamped — so 0.95 was reachable per-call and impossible to persist, and the
+  reporter's 0.95/1.0 rows are valid measurements. 1.0 is the value worth
+  excluding (their keyword recall 93.3% → 86.7% only at 1.0).
+- **`None` is the sentinel for unset.** It used to be the literal `0.5`, so a
+  caller deliberately pinning the documented default was indistinguishable from
+  one who omitted the argument and silently lost to the tuner. ⚠ The schema's
+  `"default": 0.5` is REMOVED for the same reason — a client that materialises
+  schema defaults would make every call look explicit and permanently mute the
+  tuner. A test asserts both the schema and the dispatcher line.
+  ⚠ `0.0` is falsy but is a real caller value; there is a test.
+
+⚠ **`repo_group` fan-out reports weights PER MEMBER** in `per_repo`, not once —
+the tuner is per-repo, so a group has no single number and a fused ranking would
+otherwise be unexplainable. Same class as
+[[feedback_a_flag_that_fits_one_caller_breaks_on_the_second]].
+
+**Deliberately NOT changed, recorded so nobody "fixes" it by accident:**
+
+- ⚠⚠ **The tuner is the documented escape hatch and is close to unreachable.**
+  `tune_one_repo` steps ±0.05, needs `MIN_EVENTS=50` per round, and returns
+  `no_signal_split` unless the ledger holds BOTH semantic-used and
+  semantic-unused events. 0.5 → 0.85 is **seven successful rounds ≥ 350
+  qualifying events with a mode split** — a single-mode workload never gets
+  there. Raising the ceiling does not touch this. **Open, undecided.**
+- **The default 0.5 and `k=60`.** One corpus. The reporter said so themselves and
+  declined to argue for changing the default on their own evidence; matching that
+  restraint is correct. Score-based fusion / a smaller semantic `k` is the real
+  answer and is not in this change.
+
+⚠ Release suite (both issues) **2245 passed / 6 skipped**, was 2205/6.
+`uv run ruff check src/` clean. No INDEX_VERSION or tool-count change.
+⚠ `ruff check tests/` is 112 findings and always has been — **CI lints `src/`
+only**; do not read that as a regression.
 
 ## v1.124.3 — a lint gate, and the NameError it found
 

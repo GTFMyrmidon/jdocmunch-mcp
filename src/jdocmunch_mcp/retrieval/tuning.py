@@ -10,8 +10,15 @@ Bounded:
 
   - `min_events` (default 50) gates against overfitting on a few
     early calls.
-  - Step size ±0.05 keeps drift gradual; clamped to [0.10, 0.85] so
+  - Step size ±0.05 keeps drift gradual; clamped to [0.10, 0.95] so
     we never fully disable either channel.
+
+    ⚠ The ceiling was 0.85 through v1.124.3. jdoc#106 measured a
+    5,315-section corpus where every slice improved monotonically to
+    0.95 and only 1.0 cost keyword recall (93.3% → 86.7%), so 0.85 sat
+    below the corpus optimum and the resolver silently clamped a
+    hand-written 0.95 back down to it. 1.0 is the value worth
+    excluding, not 0.95.
   - Threshold |delta_conf| >= 0.05 — smaller swings stay flat.
   - `max_age_days` (default 90) windows the ledger read so stale
     events can't anchor weights to an old query distribution
@@ -45,7 +52,7 @@ from typing import Optional
 from ..storage.token_tracker import ranking_db_query
 
 DEFAULT_SEMANTIC_WEIGHT = 0.5
-SEMANTIC_WEIGHT_BOUNDS = (0.10, 0.85)
+SEMANTIC_WEIGHT_BOUNDS = (0.10, 0.95)
 MIN_EVENTS = 50
 DELTA_CONF_THRESHOLD = 0.05
 STEP = 0.05
@@ -124,30 +131,76 @@ def reset_cache() -> None:
         _TUNING_CACHE_PATH = None
 
 
+def resolve_semantic_weight(
+    repo: str,
+    *,
+    explicit: Optional[float] = None,
+    base_path: Optional[str] = None,
+) -> dict:
+    """Resolve the semantic_weight for a repo AND say where it came from.
+
+    Resolution priority:
+      1. ``explicit`` — any caller value that isn't ``None``. ⚠ Unlike the
+         legacy :func:`get_semantic_weight`, a caller passing exactly 0.5
+         is honoured as a caller value rather than read as "unset". The
+         sentinel for unset is ``None``, and only ``None``.
+      2. Tuning override loaded from ``tuning.jsonc``, clamped to
+         ``SEMANTIC_WEIGHT_BOUNDS``.
+      3. ``DEFAULT_SEMANTIC_WEIGHT``.
+
+    Returns ``{"weight": float, "source": str, "clamped": bool}`` where
+    ``source`` is one of ``caller`` / ``tuning.jsonc`` / ``default``.
+
+    jdoc#106: the value alone was already in ``_meta``; its PROVENANCE was
+    not, so a user whose retrieval got worse after enabling embeddings had
+    no way to see that a weight — default or learned — was in play. An
+    out-of-bounds hand-edit is reported via ``clamped`` rather than applied
+    silently.
+    """
+    if explicit is not None:
+        return {"weight": float(explicit), "source": "caller", "clamped": False}
+    data = _load(base_path)
+    repos = data.get("repos") or {}
+    entry = repos.get(repo) or {}
+    val = entry.get("semantic_weight")
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        raw = float(val)
+        clamped = _clamp(raw)
+        return {
+            "weight": clamped,
+            "source": "tuning.jsonc",
+            "clamped": clamped != raw,
+        }
+    return {
+        "weight": DEFAULT_SEMANTIC_WEIGHT,
+        "source": "default",
+        "clamped": False,
+    }
+
+
 def get_semantic_weight(
     repo: str,
     *,
     explicit: Optional[float] = None,
     base_path: Optional[str] = None,
 ) -> float:
-    """Resolve the semantic_weight for a repo.
+    """Resolve the semantic_weight for a repo (legacy scalar form).
 
     Resolution priority:
       1. Explicit non-default caller value (anything that isn't ``None``
          and isn't exactly the v1.13 default 0.5).
       2. Tuning override loaded from ``tuning.jsonc``.
       3. Default 0.5.
+
+    ⚠ Retains the pre-jdoc#106 quirk in rule 1: an explicit 0.5 is
+    indistinguishable from "unset" and loses to a learned weight. Kept so
+    existing callers do not change behaviour. New code should call
+    :func:`resolve_semantic_weight`, which uses ``None`` as the sentinel
+    and reports provenance.
     """
     if explicit is not None and explicit != DEFAULT_SEMANTIC_WEIGHT:
         return float(explicit)
-    data = _load(base_path)
-    repos = data.get("repos") or {}
-    entry = repos.get(repo) or {}
-    val = entry.get("semantic_weight")
-    if isinstance(val, (int, float)):
-        lo, hi = SEMANTIC_WEIGHT_BOUNDS
-        return max(lo, min(hi, float(val)))
-    return DEFAULT_SEMANTIC_WEIGHT
+    return resolve_semantic_weight(repo, explicit=None, base_path=base_path)["weight"]
 
 
 def _clamp(val: float) -> float:

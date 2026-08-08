@@ -22,7 +22,7 @@ def search_sections(
     max_results: int = 10,
     semantic: Optional[bool] = None,
     semantic_only: bool = False,
-    semantic_weight: float = 0.5,
+    semantic_weight: Optional[float] = None,
     lexical_engine: str = "bm25",
     role: Optional[str] = None,
     profile: Optional[str] = None,
@@ -58,6 +58,11 @@ def search_sections(
                        hybrid), False (force lexical-only).
       semantic_only:   Skip lexical; rank purely by embedding cosine similarity.
       semantic_weight: Weight (0.0–1.0) of semantic component in hybrid fusion.
+                       None (default) = unset: use the repo's learned weight
+                       from tuning.jsonc, else 0.5. jdoc#106: None is the ONLY
+                       sentinel for unset, so passing 0.5 explicitly now means
+                       0.5 and is no longer overridden by a learned weight.
+                       `_meta.semantic_weight_source` reports which won.
       compact:         Drop per-row fields the caller cannot act on (jdoc#101).
       fields:          Explicit field whitelist; wins over compact. `id` always
                        survives.
@@ -120,11 +125,21 @@ def search_sections(
                 snippet_bytes=snippet_bytes,
                 storage_path=storage_path,
             )
-            per_repo.append({
+            _sub_meta = sub.get("_meta") or {}
+            _entry = {
                 "repo": member,
                 "result_count": sub.get("result_count", 0),
                 "error": sub.get("error"),
-            })
+            }
+            # jdoc#106: each member resolves its OWN weight (the tuner is
+            # per-repo), so a group has no single number to report. Say it
+            # per member or the group's ranking is unexplainable.
+            if "semantic_weight" in _sub_meta:
+                _entry["semantic_weight"] = _sub_meta["semantic_weight"]
+                _entry["semantic_weight_source"] = _sub_meta.get(
+                    "semantic_weight_source"
+                )
+            per_repo.append(_entry)
             # jdoc#93 (suite parity with jcm v1.108.169): each member's own
             # verdict is already correctly wired for the rebuilding rule, and
             # this fan-out used to discard them — so a zero-result GROUP search
@@ -187,14 +202,16 @@ def search_sections(
 
     has_emb = index._has_embeddings()
 
-    # v1.23.0: when caller leaves semantic_weight at the default 0.5, ask
-    # the tuner for a per-repo learned override. Explicit non-default
-    # values always win.
-    from ..retrieval.tuning import DEFAULT_SEMANTIC_WEIGHT, get_semantic_weight
-    if semantic_weight == DEFAULT_SEMANTIC_WEIGHT:
-        semantic_weight = get_semantic_weight(
-            f"{owner}/{name}", explicit=None, base_path=storage_path
-        )
+    # v1.23.0: when the caller leaves semantic_weight unset, ask the tuner
+    # for a per-repo learned override. Explicit caller values always win.
+    # jdoc#106: the sentinel for "unset" is None. It used to be the literal
+    # default 0.5, which made a deliberate 0.5 indistinguishable from an
+    # omitted argument and silently handed it to the tuner.
+    from ..retrieval.tuning import SEMANTIC_WEIGHT_BOUNDS, resolve_semantic_weight
+    _weight = resolve_semantic_weight(
+        f"{owner}/{name}", explicit=semantic_weight, base_path=storage_path
+    )
+    semantic_weight = _weight["weight"]
 
     if semantic_only:
         mode = "semantic_only" if has_emb else "lexical"
@@ -371,6 +388,12 @@ def search_sections(
     }
     if mode == "hybrid":
         meta["semantic_weight"] = semantic_weight
+        # jdoc#106: the value alone does not tell a user whether retrieval is
+        # running on their number, a learned one, or the stock default — and
+        # that ambiguity is what made a bad weight read as bad embeddings.
+        meta["semantic_weight_source"] = _weight["source"]
+        if _weight["clamped"]:
+            meta["semantic_weight_clamped_to"] = list(SEMANTIC_WEIGHT_BOUNDS)
     meta["lexical_engine"] = lexical_engine
     meta["freshness"] = freshness_summary
     if index.head_sha:

@@ -1,5 +1,91 @@
 # Changelog
 
+## [1.125.0] - 2026-08-08 - A partial embed pass no longer discards saved vectors
+
+Two reports from @faxik ([#106](https://github.com/jgravelle/jdocmunch-mcp/issues/106),
+[#107](https://github.com/jgravelle/jdocmunch-mcp/issues/107)), both measured on
+a 5,300-section corpus.
+
+### #107 — incremental indexing dropped vectors for untouched documents
+
+`embed_sections` finished by calling `cache.write`, which is documented as an
+atomic rewrite of the whole sidecar. That is correct on a full index, where the
+sections it was handed are the entire corpus. On an incremental refresh it was
+handed only the changed documents, and every vector belonging to an untouched
+document was discarded.
+
+Observed three times on the same corpus: **5,316 vectors → 21**, then 224, then
+48. Each run exited 0 with no warning.
+
+Since v1.75 the sidecar is not a cache. Vectors are stripped from the index
+monolith at save time and read back from `<name>.embeddings.jsonl`, so losing
+an entry loses the vector. Queries kept returning results; the semantic channel
+ranked almost nothing.
+
+It does not reproduce on a small corpus — under about five documents the
+incremental path re-materializes everything anyway, so the rewrite happens to
+contain the corpus.
+
+- `embed_sections` now merges into what is already on disk. New `prune=True`
+  argument requests the old rewrite and is passed only from the two
+  full-corpus call sites, where stale vectors for removed sections should go.
+- Merging is the default, so a caller that does not opt in cannot lose data.
+- Provider or model rotation still purges: the identity check already returns
+  an empty set on a mismatch, so the merge has nothing to carry forward.
+- Two further call sites were passing no index identity at all, which disabled
+  the cache outright: `index_file` (the auto-reindex hook path, whose vectors
+  were therefore never persisted) and `index_repo` (which re-embedded from
+  scratch on every refresh). Both now use it.
+- New `cache.append_entries` lets the save-time safety net extend an existing
+  sidecar. It never rewrites rows and never replaces an existing identity
+  header.
+
+### #107 — indexing now reports embedding coverage
+
+The write bug was invisible from outside: exit 0, no warning. The reporter
+ended up instrumenting it themselves, comparing sidecar rows against
+`section_count` after every reindex.
+
+`index_local`, `index_repo` and `index_file` now return `embedded_sections` and
+`embedding_coverage`, and emit a warning below 50%. Both keys are omitted when
+the index has no sidecar, so a lexical-only index does not report `0.0`.
+Coverage is counted from sidecar keys, never its vectors.
+
+### #106 — the effective ranking weight now says where it came from
+
+With the stock `semantic_weight` of 0.5, none of 15 paraphrased queries were
+answered in the top 5 — worse than turning the semantic channel off entirely —
+while ranking the same stored vectors by cosine alone answered 5. Keyword
+recall was flat at 93.3% from 0.0 all the way through 0.95.
+
+Reciprocal rank fusion at `k=60` structurally penalises a result that is strong
+in one channel and absent from the other, which is the shape of a paraphrase
+answer. Nothing in the response indicated a weight was involved, so the failure
+read as broken vectors.
+
+- `_meta.semantic_weight_source` reports `caller`, `tuning.jsonc` or `default`.
+  The weight's value was already reported; its origin was not.
+- `_meta.semantic_weight_clamped_to` appears when a hand-written override was
+  out of bounds, instead of clamping silently.
+- The tuner's ceiling moves from 0.85 to 0.95. It was below the measured
+  optimum, and it was enforced inconsistently: a value in `tuning.jsonc` was
+  clamped, an explicit call argument was not. 1.0 is the value worth excluding
+  — keyword recall dropped only there.
+- Omitting the argument is now the only way to request the tuned weight.
+  Passing 0.5 explicitly used to be indistinguishable from omitting it and was
+  silently overridden. The tool schema no longer declares a default, so a
+  client that fills defaults in cannot mute the tuner.
+- A `repo_group` search reports the weight and its source per member, since
+  each member resolves its own.
+
+Not changed, deliberately: the 0.5 default itself and the `k=60` fusion
+constant. One corpus is not enough to move either, which the reporter said
+first.
+
+Tests: `test_embedding_sidecar_preservation.py` (18), 
+`test_semantic_weight_provenance.py` (22). Suite 2245 passed / 6 skipped. No
+INDEX_VERSION or tool-count change.
+
 ## [1.124.3] - 2026-08-07 - A lint gate, and the NameError it found
 
 CI had no lint job. It has one now, and adding it immediately surfaced a latent

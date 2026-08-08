@@ -553,8 +553,7 @@ def _all_tools() -> list[Tool]:
                     },
                     "semantic_weight": {
                         "type": "number",
-                        "description": "Weight (0.0–1.0) of semantic component in hybrid fusion. Lexical gets 1 - weight. Default 0.5.",
-                        "default": 0.5
+                        "description": "Weight (0.0–1.0) of semantic component in hybrid fusion. Lexical gets 1 - weight. Omit to use this repo's tuned weight, else 0.5; a value you pass is always honoured. _meta.semantic_weight and _meta.semantic_weight_source report which applied. Paraphrased queries usually want 0.7–0.95: RRF (k=60) structurally penalises an answer that is strong in only one channel, so 0.5 can rank below a section that is mediocre in both."
                     },
                     "role": {
                         "type": "string",
@@ -2152,7 +2151,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 max_results=arguments.get("max_results", 10),
                 semantic=arguments.get("semantic"),
                 semantic_only=arguments.get("semantic_only", False),
-                semantic_weight=arguments.get("semantic_weight", 0.5),
+                # jdoc#106: no default here. An omitted argument must reach
+                # search_sections as None so the tuner can answer; filling in
+                # 0.5 would make every call look explicit.
+                semantic_weight=arguments.get("semantic_weight"),
                 role=arguments.get("role"),
                 profile=arguments.get("profile"),
                 dedupe=arguments.get("dedupe", False),
