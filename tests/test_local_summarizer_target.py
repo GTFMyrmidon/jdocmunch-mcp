@@ -116,6 +116,10 @@ def test_nothing_configured_still_means_no_summarizer(monkeypatch):
 # --- construction ----------------------------------------------------------
 
 def test_the_summarizer_is_built_from_the_configured_endpoint(monkeypatch):
+    # ⚠ `openai` is an optional extra and is NOT installed on CI. Constructing
+    # the summarizer imports it, so these two must skip rather than fail —
+    # a dev box that happens to have it is not a fixture.
+    pytest.importorskip("openai")
     _configure_local(monkeypatch, "http://127.0.0.1:8000/v1", "llama-3.3-70b")
     monkeypatch.setenv("JDOCMUNCH_SUMMARIZER_API_KEY", "sekrit")
     built = bs._PROVIDERS["openai-compatible"]()
@@ -129,6 +133,7 @@ def test_the_summarizer_is_built_from_the_configured_endpoint(monkeypatch):
 
 def test_a_missing_key_falls_back_to_a_placeholder(monkeypatch):
     """Local runtimes ignore the key, but the client requires one."""
+    pytest.importorskip("openai")
     _configure_local(monkeypatch)
     assert bs._PROVIDERS["openai-compatible"]()._client.api_key == "local"
 

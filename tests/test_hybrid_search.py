@@ -151,6 +151,11 @@ def test_warmup_invokes_embed_query_for_sentence_transformers(monkeypatch):
 
     monkeypatch.setattr(emb_provider, "get_provider_name", lambda: "sentence-transformers")
     monkeypatch.setattr(emb_provider, "embed_query", fake_embed_query)
+    # jdoc#110: warmup now declines an UNCACHED model, so this has to state
+    # that the model is present. Without it the test passed only on machines
+    # that happened to have the real model downloaded -- it went red on every
+    # CI runner, which is a fair description of what the gate is for.
+    monkeypatch.setattr(emb_provider, "_st_model_is_cached", lambda m: True)
 
     result = emb_provider.warmup()
     assert result == "sentence-transformers"
@@ -161,13 +166,20 @@ def test_warmup_swallows_embed_query_failure(monkeypatch):
     """A warmup failure must not crash server startup; the real call will retry."""
     from jdocmunch_mcp.embeddings import provider as emb_provider
 
+    called = {"n": 0}
+
     def boom(_q):
+        called["n"] += 1
         raise RuntimeError("model load failed")
 
     monkeypatch.setattr(emb_provider, "get_provider_name", lambda: "sentence-transformers")
     monkeypatch.setattr(emb_provider, "embed_query", boom)
+    # ⚠ Without this the gate returns "" for an uncached model and the test
+    # passes WITHOUT ever reaching `boom` — green for the wrong reason.
+    monkeypatch.setattr(emb_provider, "_st_model_is_cached", lambda m: True)
 
     assert emb_provider.warmup() == ""
+    assert called["n"] == 1, "the swallow path was never exercised"
 
 
 # ---------------------------------------------------------------------------

@@ -696,6 +696,13 @@ def warmup() -> str:
     if name != "sentence-transformers":
         return ""
     if not _st_model_is_cached(_st_model_name()):
+        # ⚠⚠ Deferring the load hands the chatter problem to the first tool
+        # call, which is precisely the framing hazard warmup was built to
+        # avoid — and by then stdout belongs to JSON-RPC and cannot be
+        # redirected. Silence the progress bars at the source instead. Only
+        # set what is unset: a user who configured these owns them.
+        for var in ("HF_HUB_DISABLE_PROGRESS_BARS", "TQDM_DISABLE"):
+            os.environ.setdefault(var, "1")
         logger.info(
             "embedding model %s is not in the local cache; skipping startup "
             "warmup so the MCP handshake is not blocked by a download "

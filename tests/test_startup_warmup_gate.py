@@ -168,3 +168,34 @@ def test_a_failing_warmup_is_still_swallowed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(prov, "embed_query", boom)
     assert prov.warmup() == ""
+
+
+def test_deferring_a_load_silences_progress_bars(tmp_path, monkeypatch):
+    """⚠⚠ Skipping hands the chatter problem to the first tool call.
+
+    By then stdout belongs to JSON-RPC and cannot be redirected, so a download
+    printing a progress bar would corrupt framing — the exact hazard warmup was
+    built to avoid. Silence it at the source when we choose to defer.
+    """
+    monkeypatch.setenv("HF_HUB_CACHE", str(_hub(tmp_path)))
+    monkeypatch.setenv("JDOCMUNCH_ST_MODEL", "BAAI/bge-base-en-v1.5")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+    monkeypatch.delenv("TQDM_DISABLE", raising=False)
+    monkeypatch.setattr(prov, "get_provider_name", lambda: "sentence-transformers")
+
+    assert prov.warmup() == ""
+    import os
+    assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+    assert os.environ["TQDM_DISABLE"] == "1"
+
+
+def test_a_users_own_progress_setting_is_not_overwritten(tmp_path, monkeypatch):
+    """⚠ Only set what is unset — a user who configured these owns them."""
+    monkeypatch.setenv("HF_HUB_CACHE", str(_hub(tmp_path)))
+    monkeypatch.setenv("JDOCMUNCH_ST_MODEL", "BAAI/bge-base-en-v1.5")
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.setattr(prov, "get_provider_name", lambda: "sentence-transformers")
+
+    prov.warmup()
+    import os
+    assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "0"
