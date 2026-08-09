@@ -550,7 +550,7 @@ All errors return:
 | `JDOCMUNCH_ST_MODEL`              | sentence-transformers model name (default: `all-MiniLM-L6-v2`)      | No       |
 | `JDOCMUNCH_EMBED_CHARS`           | Max characters of section prose fed to the embedder (default: `1000`). Raising it re-embeds the corpus on the next index, since the cap is part of the embedding identity. | No |
 | `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS` | Allow auto-detect to select a paid cloud embedding provider, and allow an embedding-identity change to re-embed the corpus automatically on such a provider (default: off) | No |
-| `JDOCMUNCH_EMBED_WARMUP`          | Set to `0` to skip the startup embedding-provider warmup and load the model lazily on first use (default: on; automatically skipped when the model is not in the local cache) | No |
+| `JDOCMUNCH_EMBED_WARMUP`          | Set to `0` to skip the background embedding-provider warmup entirely and load the model lazily on first use (default: on; runs off the startup path and is skipped when the model is not in the local cache) | No |
 | `JDOCMUNCH_SUMMARIZER_PROVIDER`   | Force summarizer provider: `anthropic`, `gemini`, `openai`, `minimax`, `glm`, `openai-compatible`, or `none` | No |
 | `JDOCMUNCH_SUMMARIZER_URL`        | Base URL for the `openai-compatible` summarizer, e.g. `http://localhost:11434/v1` (Ollama, llama.cpp, vLLM, LM Studio) | No |
 | `JDOCMUNCH_SUMMARIZER_MODEL`      | Model name served at `JDOCMUNCH_SUMMARIZER_URL`. Both must be set for auto-detect to select it | No |

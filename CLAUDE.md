@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.128.0 |
+**Version:** 1.129.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,30 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.129.0 — #110 CLOSED: JSON-RPC owns a PRIVATE stdout (fd swap)
+
+⚠⚠ **`redirect_stdout` was never enough and this is why.** It rebinds
+`sys.stdout` ONLY — it cannot catch a C extension calling `write(1, ...)`
+(tqdm/tokenizers/torch), a subprocess that inherited fd 1, or another thread.
+Those are exactly what a model download emits, which is why warmup HAD to
+finish before the transport existed, which is what pinned provider init to the
+startup path at ~7.6s.
+
+`stdio_guard.claim_stdout()`: `os.dup(1)` → give the duplicate to
+`stdio_server(stdout=...)` (the transport already accepts it) →
+`os.dup2(stderr_fd, 1)`. After that fd 1 **IS** stderr process-wide. Warmup then
+runs in a **daemon thread**. Measured provider cost: **+7047ms → -94ms**.
+
+⚠ `_get_provider` is now LOCK-GUARDED — the warmup thread and an early tool
+call would otherwise both construct, i.e. two simultaneous model loads.
+⚠ **Do NOT delete the jdoc#19 / jdoc#65 guards.** They are belt-and-braces now;
+removing them in the same pass turns a safety win into an incident.
+⚠ Fails OPEN (pythonw / replaced stderr) and says so on stderr.
+⚠ Warmup still declines an UNCACHED model — backgrounding is not a licence to
+download hundreds of MB unasked at every start.
+⚠ Tests go through REAL SUBPROCESSES; an in-process test of an fd swap tests
+the mock. Handshake test asserts the DELTA, not an absolute time ([[jdoc#114]]).
 
 ## v1.128.0 — tracker to ZERO: #108, #110, #112, #114
 

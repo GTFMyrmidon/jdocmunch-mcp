@@ -1,5 +1,71 @@
 # Changelog
 
+## [1.129.0] - 2026-08-09 - JSON-RPC owns a private stdout, so provider init leaves the startup path
+
+Closes [#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110), reported
+by [@pnm-jgb](https://github.com/pnm-jgb). 1.128.0 fixed only the outage half;
+this is the rest, and it removes the reason the limitation existed.
+
+### The real constraint
+
+Warmup was never an optimization. It existed so a model load finished *before*
+`stdio_server` owned stdout, because any other write to that stream breaks a
+framed response. That is what pinned provider init to the startup path and cost
+~7.6 s on every launch.
+
+⚠⚠ `contextlib.redirect_stdout` could not lift the constraint: it rebinds
+`sys.stdout` and nothing more. It cannot catch a C extension calling
+`write(1, ...)` (tqdm, tokenizers, torch), a subprocess that inherited fd 1, or
+another thread — and those are exactly the writers a model download produces.
+
+### The fix
+
+`stdio_guard.claim_stdout()` duplicates the real stdout, points file descriptor
+1 at stderr, and hands the duplicate to the transport, which already accepts an
+explicit `stdout`. Afterwards fd 1 **is** stderr for the whole process — Python,
+native code and child processes alike — and the JSON-RPC stream is reachable
+only through the handle the transport holds. The guarantee is structural rather
+than a rule somebody has to remember at each new call site.
+
+Warmup then moves to a background daemon thread. It still declines an uncached
+model: downloading hundreds of megabytes unasked at every start, for a feature
+the session may never use, is not something to do in the background either.
+
+**Measured, same tree, provider vs `none`:**
+
+| | `none` | `sentence-transformers` | provider cost |
+|---|---:|---:|---:|
+| v1.128.0 | 6062 ms | 13109 ms | **+7047 ms** |
+| v1.129.0 | 4339 ms | 4245 ms | **-94 ms** |
+
+The +7.0 s matches the reporter's independently measured ~7.6 s. (Baselines
+differ between trees from cold-cache variance; the comparison that counts is
+provider-vs-`none` within each tree.)
+
+⚠ `_get_provider` is now lock-guarded. Construction became reachable from two
+threads at once — the warmup and a tool call arriving before it finishes — and
+without the lock both would build a provider, meaning two simultaneous model
+loads with one silently discarded.
+
+⚠ The existing guards stay. The jdoc#19 warmup ordering and the jdoc#65 CLI
+`redirect_stdout` wrappers are now belt-and-braces; removing them in the same
+pass is how a safety improvement becomes an incident.
+
+⚠ Fails open. Under pythonw, or a harness that replaced `sys.stderr` with a
+non-file object, the swap is skipped, the server starts as before, and it says
+so on stderr. A server that starts with the old hazard beats one that will not
+start.
+
+### Verification
+
+`tests/test_stdio_guard.py`, 10 tests, deliberately driven through real
+subprocesses — an in-process test of a descriptor-level swap would be testing
+the mock. Coverage includes the native `os.write(1, ...)` case, an inherited
+child process, a background thread, unbuffered delivery, buffered-output
+ordering, UTF-8, and both fail-open paths. The handshake test asserts the
+*delta* between providers rather than an absolute time, since an absolute bound
+would be a runner-speed assertion — the mistake jdoc#114 was about.
+
 ## [1.128.0] - 2026-08-09 - Every open issue closed: private corpora, startup cost, CLI opt-outs
 
 Closes [#108](https://github.com/jgravelle/jdocmunch-mcp/issues/108),

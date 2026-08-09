@@ -2698,23 +2698,49 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def run_server():
     """Run the MCP server."""
-    import contextlib
+    import threading
+
+    import anyio
+
     from jdocmunch_mcp import __version__
     from jdocmunch_mcp.embeddings.provider import warmup as _embedding_warmup
+    from jdocmunch_mcp.stdio_guard import claim_stdout
     from mcp.server.stdio import stdio_server
+
+    # jdoc#110: take the real stdout for JSON-RPC and point fd 1 at stderr
+    # BEFORE anything else runs. From here on no library, thread or child
+    # process can reach the framed stream, so the warmup no longer has to
+    # finish before the transport starts — which is what kept provider init on
+    # the startup path and cost ~7.6 s on every launch.
+    _private_stdout, _swapped = claim_stdout()
+
     print(f"jdocmunch-mcp {__version__} by jgravelle · https://github.com/jgravelle/jdocmunch-mcp", file=sys.stderr)
+    if not _swapped:
+        # ⚠ Worth saying out loud: this is the configuration where a stray
+        # library write can still corrupt a response.
+        print(
+            "jdocmunch-mcp: could not isolate stdout for JSON-RPC; "
+            "library output on stdout may corrupt framing",
+            file=sys.stderr,
+        )
 
-    # Warm slow-cold-loading embedding providers before stdio_server takes over
-    # stdout. Without this, sentence-transformers' first-call model load can
-    # exceed the MCP client's tool-call timeout AND leak download/progress
-    # chatter to stdout, corrupting JSON-RPC framing. Redirect stdout to stderr
-    # for the warmup so any noisy library writes land somewhere safe (jdoc#19).
-    with contextlib.redirect_stdout(sys.stderr):
-        warmed = _embedding_warmup()
-    if warmed:
-        print(f"jdocmunch-mcp: warmed embedding provider ({warmed})", file=sys.stderr)
+    # Warm off the critical path. Startup no longer waits on a model load, and
+    # any chatter it produces lands on stderr by construction. `warmup` itself
+    # still declines an uncached model — downloading hundreds of megabytes
+    # unasked, at every server start, for a feature the session may never use
+    # is not something to do in the background either.
+    def _warm() -> None:
+        try:
+            warmed = _embedding_warmup()
+        except Exception:
+            return
+        if warmed:
+            print(f"jdocmunch-mcp: warmed embedding provider ({warmed})", file=sys.stderr)
 
-    async with stdio_server() as (read_stream, write_stream):
+    threading.Thread(target=_warm, name="jdocmunch-embed-warmup", daemon=True).start()
+
+    _stdout_arg = anyio.wrap_file(_private_stdout) if _private_stdout is not None else None
+    async with stdio_server(stdout=_stdout_arg) as (read_stream, write_stream):
         await server.run(
             read_stream,
             write_stream,

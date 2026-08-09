@@ -21,6 +21,7 @@ Set JDOCMUNCH_EMBEDDING_PROVIDER=none to disable all embedding.
 import logging
 import math
 import os
+import threading
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # annotations below are strings; this makes them resolvable
@@ -457,6 +458,14 @@ _PROVIDER_FACTORIES: dict = {
 # Cache: {(provider_name, model_signature): provider_instance}
 _PROVIDER_CACHE: dict = {}
 
+# ⚠⚠ jdoc#110: construction is now reachable from two threads at once — the
+# background warmup and a tool call that arrives before it finishes. Without
+# this lock both would build a provider, meaning two simultaneous model loads
+# (~7.6 s each, and for sentence-transformers two copies in memory) with one
+# silently discarded. Guarding the whole construct-and-store, not just the
+# store, is the point: the expensive part is the factory call.
+_PROVIDER_LOCK = threading.Lock()
+
 
 def _provider_signature(name: str) -> tuple:
     """Compute a cache key that invalidates when env-driven model choice changes."""
@@ -493,12 +502,17 @@ def _get_provider():
     cached = _PROVIDER_CACHE.get(key)
     if cached is not None:
         return cached
-    try:
-        instance = factory()
-    except Exception:
-        return None
-    _PROVIDER_CACHE[key] = instance
-    return instance
+    with _PROVIDER_LOCK:
+        # Re-check inside the lock: the thread we waited on may have built it.
+        cached = _PROVIDER_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            instance = factory()
+        except Exception:
+            return None
+        _PROVIDER_CACHE[key] = instance
+        return instance
 
 
 def _provider_identity(name: str) -> tuple[str, Optional[int]]:
