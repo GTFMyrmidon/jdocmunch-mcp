@@ -1,5 +1,67 @@
 # Changelog
 
+## [1.126.1] - 2026-08-09 - Dotted directories are skipped by rule, not by a list of twelve
+
+Closes [#113](https://github.com/jgravelle/jdocmunch-mcp/issues/113). Found
+in-house when an index of 243 notes reported 486 documents.
+
+### The defect
+
+`SKIP_PATTERNS` was a twelve-entry denylist, so the walk skipped exactly the
+dotted directories somebody had thought of in advance and descended into every
+other one. Any tool writing a dotfile cache into a corpus had that cache
+ingested as documentation.
+
+⚠ **This is not [#102](https://github.com/jgravelle/jdocmunch-mcp/issues/102).**
+That was `lstrip("./")` eating the leading dot of a *gitignored* path. Here
+nothing is gitignored and the fixtures are not git repos, so there was no
+pattern to miss: the directories were never pruning candidates.
+
+**What it cost.** A sibling tool wrote a projection into `.jmemorymunch/` inside
+an indexed corpus. Every note was then indexed twice, and the second copy was
+not a copy: a lossy condensation roughly a fifth the size, frozen at the moment
+the projection was built. A section search could answer from the condensation
+with nothing marking it as a summary or as stale. `.claude/` is the same hazard
+in a code repo, where agent instructions come back as project documentation.
+
+### The rule
+
+`is_skipped_dot_dir()` in `tools/_constants.py`, called by both walkers.
+Directories whose name begins with a dot are pruned, which inverts the failure
+mode: the next tool to write a dotfile cache into an indexed tree needs no
+change here.
+
+- **`.github` is allowlisted.** It is dotted and legitimately holds
+  `CONTRIBUTING.md`, issue templates and often a docs tree. Skipping it would
+  trade one silent omission for another.
+- **`include_dot_dirs` is the opt-back-in**, on `index_local` and on the MCP
+  tool schema, taking directory names rather than paths.
+- **Pruned directories are counted** as `dot_directory` in `skip_counts`. The
+  silence was the reportable half: a walk that quietly drops a subtree looks
+  exactly like a corpus that never had one.
+- ⚠ **Both walkers, one rule.** `index_local` and `index_repo` each carried
+  their own `_should_skip`; `index_repo` filters a flat GitHub tree with no
+  `os.walk` to prune, so it checks every leading component instead.
+
+⚠ **`SKIP_PATTERNS` keeps its dotted members deliberately.** Removing `.venv/`
+and `.git/` looks redundant once the rule exists and is a regression: the list
+is matched as a path substring by callers this change does not touch.
+
+### Three cases pinned by test, because reasoning gets them wrong
+
+- **A corpus whose root is itself dotted** is unaffected. Matching on the
+  absolute path, or on the root's own name, empties such a corpus and reports
+  success.
+- **A dotted directory named in `paths` is still indexed.** Naming it is a
+  request, not a stray cache; only dotted directories below it prune.
+- **`.gitignore` is kept.** A dotfile file is not a directory.
+
+New `tests/test_dot_directory_pruning.py` (30). The file cannot import against
+pre-fix HEAD, so non-vacuity was proven with a behaviour-only subset there:
+**6 fail, 2 pass**, and both passing cases are the controls. Suite
+**2295 passed / 6 skipped**, `ruff check src/` clean. No INDEX_VERSION or
+tool-count change; `include_dot_dirs` is an additive optional argument.
+
 ## [1.126.0] - 2026-08-08 - Retrieval confidence is scored on the right scale
 
 Follow-up to [#106](https://github.com/jgravelle/jdocmunch-mcp/issues/106). We

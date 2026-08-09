@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.126.0 |
+**Version:** 1.126.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,33 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.126.1 — #113: dotted dirs skipped by RULE, not by a list of twelve
+
+⚠⚠ **`SKIP_PATTERNS` was a DENYLIST**, so the walk skipped the dotted dirs
+someone thought of and descended into every other one. **Not #102** — that was
+`lstrip("./")` on a *gitignored* path; here nothing is gitignored, so the dirs
+were never pruning candidates. Found in-house: a sibling tool's projection in
+`.jmemorymunch/` made a **243-note corpus index as 486 docs**, the second copy a
+**lossy condensation ~1/5 the size and frozen mid-day** — so `search_sections`
+could answer from a summary with nothing marking it as one. `.claude/` is the
+same hazard in a code repo (agent instructions returned as project docs).
+
+`is_skipped_dot_dir()` in `tools/_constants.py`, called by BOTH walkers.
+`.github` ALLOWLISTED (skipping it trades one silent omission for another);
+`include_dot_dirs` opts back in (names, not paths); pruned dirs counted as
+`dot_directory` in `skip_counts` — **the silence was the reportable half**.
+⚠ `index_repo` has no `os.walk` to prune, so it checks every leading component.
+⚠⚠ **`SKIP_PATTERNS` KEEPS its dotted members on purpose** — removing `.venv/`
+/`.git/` looks redundant and regresses callers that match it as a substring.
+
+⚠ Three cases pinned BY TEST because reasoning gets them wrong: **a corpus whose
+root is itself dotted** (`~/.claude/projects/<slug>/memory` — matching the
+absolute path EMPTIES it and reports success); a dotted dir named in `paths` is
+still indexed (a request, not a cache); `.gitignore` is kept (a dotfile FILE is
+not a directory). `tests/test_dot_directory_pruning.py` (30). ⚠ The file cannot
+IMPORT pre-fix, so non-vacuity was proven with a behaviour-only subset:
+**6 fail / 2 pass**, both passes being controls. Suite **2295 / 6 skipped**.
 
 ## v1.126.0 — the tuner wasn't slow, it was walking the wrong way
 

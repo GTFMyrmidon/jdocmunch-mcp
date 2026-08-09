@@ -31,7 +31,7 @@ from ..summarizer import summarize_sections
 from ..embeddings import embed_sections, get_provider_name, should_embed
 from ._embedding_coverage import attach_embedding_coverage as _attach_embedding_coverage
 from ._git import local_git_head, local_git_paths_dirty, local_git_paths_tracked, stable_local_git_state
-from ._constants import SKIP_PATTERNS
+from ._constants import SKIP_PATTERNS, is_skipped_dot_dir
 
 
 def _default_local_name(folder_name: str, folder_path: Optional[str] = None) -> str:
@@ -1174,8 +1174,14 @@ def discover_doc_files(
     follow_symlinks: bool = False,
     sort_by: str = "newest",
     skip_counts: Optional[dict] = None,
+    include_dot_dirs: Optional[list] = None,
 ) -> tuple:
     """Discover doc files (.md, .txt, .rst) with security filtering.
+
+    ``include_dot_dirs`` (jdoc#113): directory NAMES to index despite starting
+    with a dot, unioned with ``DOT_DIR_ALLOWLIST`` (``.github``). Dotted
+    directories are otherwise pruned by rule, so a tool that writes a dotfile
+    cache into the corpus cannot have it ingested as documentation.
 
     ``skip_counts`` (v1.103.0): optional dict the walk tallies per-reason skip
     counts into (``unsupported_extension``, ``oversize``, ``gitignored``, ...)
@@ -1222,12 +1228,23 @@ def discover_doc_files(
         # ⚠ Build the relative path with _walk_rel, never `lstrip("./")` — see
         # its docstring (jdoc#102). Every ignore check below must see the SAME
         # string git would match, or an ignored directory is silently walked.
-        dirnames[:] = [
-            d for d in dirnames
-            if not _should_skip(_walk_rel(dir_rel, f"{d}/"))
-            and not (gitignore_spec and gitignore_spec.match_file(_walk_rel(dir_rel, f"{d}/")))
-            and not (extra_spec and extra_spec.match_file(_walk_rel(dir_rel, f"{d}/")))
-        ]
+        kept_dirs = []
+        for d in dirnames:
+            # jdoc#113: dotted directories are pruned by RULE. Counted so the
+            # exclusion is reportable — a walk that silently drops a subtree is
+            # indistinguishable from a corpus that never had one.
+            if is_skipped_dot_dir(d, include_dot_dirs):
+                _count_skip(skip_counts, "dot_directory")
+                continue
+            walk_rel = _walk_rel(dir_rel, f"{d}/")
+            if _should_skip(walk_rel):
+                continue
+            if gitignore_spec and gitignore_spec.match_file(walk_rel):
+                continue
+            if extra_spec and extra_spec.match_file(walk_rel):
+                continue
+            kept_dirs.append(d)
+        dirnames[:] = kept_dirs
 
         for filename in filenames:
             file_path = dir_path / filename
@@ -1308,6 +1325,7 @@ def _resolve_explicit_paths(
     paths: list,
     max_files: int,
     follow_symlinks: bool,
+    include_dot_dirs: Optional[list] = None,
 ) -> tuple:
     """Resolve a caller-supplied list of paths into the doc-file shape that the
     downstream pipeline expects. Each entry may be:
@@ -1355,10 +1373,14 @@ def _resolve_explicit_paths(
             continue
 
         if p.is_dir():
+            # ⚠ `p` is this sub-walk's ROOT, so naming a dotted directory in
+            # `paths` still indexes it (an explicit request is not a stray
+            # cache). Only dotted directories BELOW it are pruned.
             sub_files, sub_warnings, _sub_discovered = discover_doc_files(
                 p,
                 max_files=max_files - len(files),
                 follow_symlinks=follow_symlinks,
+                include_dot_dirs=include_dot_dirs,
             )
             warnings.extend(sub_warnings)
             for f in sub_files:
@@ -1409,6 +1431,7 @@ def index_local(
     use_embeddings="auto",
     storage_path: Optional[str] = None,
     extra_ignore_patterns: Optional[list] = None,
+    include_dot_dirs: Optional[list] = None,
     follow_symlinks: bool = False,
     incremental: bool = True,
     max_files: int = 10_000,
@@ -1534,6 +1557,7 @@ def index_local(
                 list(paths),
                 max_files=max_files,
                 follow_symlinks=follow_symlinks,
+                include_dot_dirs=include_dot_dirs,
             )
             discovered_count = len(doc_files)
         else:
@@ -1541,6 +1565,7 @@ def index_local(
                 folder_path,
                 max_files=max_files,
                 extra_ignore_patterns=extra_ignore_patterns,
+                include_dot_dirs=include_dot_dirs,
                 follow_symlinks=follow_symlinks,
                 sort_by=sort_by,
                 skip_counts=walk_skip_counts,

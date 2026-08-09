@@ -321,6 +321,11 @@ def _all_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Additional gitignore-style patterns to exclude from indexing"
                     },
+                    "include_dot_dirs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "jdoc#113 - directory NAMES to index even though they start with a dot, e.g. [\".claude\"]. Dotted directories are skipped by default so a tool's dotfile cache cannot be ingested as documentation; .github is always indexed. Names only, not paths."
+                    },
                     "follow_symlinks": {
                         "type": "boolean",
                         "description": "Whether to follow symlinks. Default false for security.",
@@ -2090,6 +2095,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 use_embeddings=arguments.get("use_embeddings", "auto"),
                 storage_path=storage_path,
                 extra_ignore_patterns=arguments.get("extra_ignore_patterns"),
+                include_dot_dirs=arguments.get("include_dot_dirs"),
                 follow_symlinks=arguments.get("follow_symlinks", False),
                 incremental=arguments.get("incremental", True),
                 max_files=arguments.get("max_files", 10_000),
