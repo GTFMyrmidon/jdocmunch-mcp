@@ -301,7 +301,19 @@ class TestCLIDispatch:
         mock_result = {"status": "ok", "files_indexed": 0}
         with mock.patch("jdocmunch_mcp.tools.index_local.index_local", return_value=mock_result) as m:
             main(["index-local", "--path", str(tmp_path)])
-            m.assert_called_once_with(path=str(tmp_path), name=None, paths=None)
+            m.assert_called_once_with(
+                path=str(tmp_path), name=None, paths=None, incremental=True,
+            )
+
+    def test_index_local_rebuild_flag_forces_a_full_pass(self, tmp_path):
+        """jdoc#109: the CLI had no way to force a re-embed short of delete-index."""
+        from jdocmunch_mcp.server import main
+        with mock.patch("jdocmunch_mcp.tools.index_local.index_local",
+                        return_value={"status": "ok"}) as m:
+            main(["index-local", "--path", str(tmp_path), "--rebuild"])
+            m.assert_called_once_with(
+                path=str(tmp_path), name=None, paths=None, incremental=False,
+            )
 
     def test_init_hooks_dispatch(self):
         from jdocmunch_mcp.server import main

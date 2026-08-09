@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.126.1 |
+**Version:** 1.127.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,101 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.127.0 — #109 + #111: a model rotation left the index UNQUERYABLE, reporting success
+
+**#111 rode along** because it is the same hazard one layer down: a change to
+the embed-text derivation that the sidecar header cannot see. `JDOCMUNCH_EMBED_CHARS`
+(default **1000**, unchanged on purpose) now salts the cache key AND sits in the
+header identity, so a cap change escalates and discloses like a model rotation.
+⚠ Salting the key ALONE is not enough and the report's "minimum" framing
+under-states it: the header still matches, so old entries load and merge and the
+sidecar accumulates BOTH derivations — and on an unchanged corpus nothing
+reaches the embedder at all.
+
+⚠⚠ **Absence of `embed_chars` means 1000, NOT unknown — in the header AND in
+the key.** Every pre-1.127.0 sidecar lacks the field and was built at 1000.
+Reading absence as a mismatch would escalate EVERY existing index to a full
+re-embed on its next run — a corpus-wide bill for users who changed nothing.
+`_LEGACY_EMBED_CHARS` in `embeddings/cache.py` is the header half. The key half
+is `_embed_cache_key` returning the UNSALTED `h#pv1` at the default: salting
+unconditionally (as the report's sketch does) makes `h#pv1-1000` miss `h#pv1`
+and re-embeds the world for byte-identical vectors. **A cache-key format change
+is a migration, not a refactor** — check what is already on disk before
+changing one.
+
+The 41.2% figure is @pnm-jgb's measurement over 1,992 sections, not ours.
+
+
+⚠⚠ **The reported line was not the one that fired.** @pnm-jgb's analysis put
+the bug at the incremental path's `embed_sections` call (`entries` ends up
+empty, the `if entries:` guard skips the write). Real mechanism, wrong branch:
+with **zero changed files** `index_local` returns from **"No changes detected"**
+further up and never calls `embed_sections` at all. Fixing only the guard would
+have shipped with the reporter's own repro still broken. **Verify which branch
+a repro takes before fixing the line a reporter cites** — this report was
+unusually good and still pointed one branch too low.
+
+Detection therefore sits **before** the incremental branch, keyed on
+`cache.identity()`. ⚠ `load()` returned `{}` for both "no sidecar" and
+"different model", which is exactly why nothing could act on a rotation; the
+None-vs-dict split is the whole point and must not be "simplified" back.
+
+⚠⚠ **The numpy-free path was the worse bug and nobody had filed it.**
+`cosine_similarity` zips the two vectors, so a 768-dim query against a 384-dim
+vector truncates to the shorter and returns **0.707** — an ordinary-looking
+similarity. The numpy path raised `matmul: ... size 768 is different from 384`
+and was therefore visible; this one returned confident garbage silently. Note
+**numpy is dev-only here** (see the header), so the silent path is what a
+plain `pip install jdocmunch-mcp` user actually runs.
+
+Third site, also unfiled: a sidecar can hold **two widths at once** after a
+rotation that touched some files, and `np.asarray` on ragged rows raised before
+any query was scored. Matrices are now bucketed by width; a query scores only
+against the bucket it fits.
+
+⚠ **Degrading quietly would have been the same defect wearing a hat.** A width
+mismatch yields lexical results **plus** `_meta.embedding_stale` naming both
+dims and the fix. Same reasoning as #113's `skip_counts`: the silence is the
+reportable half. `semantic_search` is now on the no-change payload too — it was
+on the full-rebuild path only, so absence read as "fine" rather than "never
+looked at".
+
+Escalation to a full re-embed is **disclosed** as `embedding_rotation`.
+
+⚠⚠ **PAID providers (`openai`/`gemini`) are NEVER auto-escalated** — they get
+`action: "rebuild_required"`, keep their old vectors, and let search degrade +
+disclose. `watch.py` calls `index_local` from a **background daemon** on every
+file-change batch and prints only "re-indexed N file(s)", so an unattended
+service would re-send the whole corpus to a billed third party with the
+disclosure reaching nobody. ⚠ Identity can also flip with **no user action**:
+an `openai-compatible` endpoint restarted on another model reprobes a new dim.
+Gate reuses the EXISTING `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS` — do not mint a
+second consent knob. ⚠ The disclosure is attached to **all three** payloads
+(nochange / incremental / full); the gated path returns from the NOCHANGE
+branch, which is the one that most needs it.
+
+⚠⚠ **`embed_failed` gates the purge.** Purging on an empty pass is right when
+the corpus produced no vectors and is DATA LOSS when `embed_texts` threw: the
+sidecar empties, the NEW header lands on top, and the next run sees a matching
+identity and never re-embeds — permanent, silent, jdoc#107's exact shape. My
+own #109 purge introduced it; found while reviewing the paid-provider question,
+not by a test. **A "purge stale state" branch needs to know the difference
+between "nothing to write" and "the write failed."**
+
+⚠ The dollar cost is NOT the argument and I overstated it twice before
+checking: ~457k tokens ≈ **one cent** on text-embedding-3-small. The argument
+is unattended spend and undisclosed egress.
+
+⚠ The detector reads the provider name from `embeddings.provider`, **not** the
+name bound into `tools/index_local` at import. `embed_sections` writes the
+header from the provider module's view; reading it anywhere else let the
+detector disagree with the writer and report rotations that never happened —
+caught by the #107 suite, which went red on a false escalation.
+
+`tests/test_embedding_rotation.py` (24). Non-vacuity proven against the
+v1.126.1 tree in a throwaway worktree: 19 fail, and the three end-to-end
+indexing tests fail there **on behavior**, not on a missing helper.
 
 ## v1.126.1 — #113: dotted dirs skipped by RULE, not by a list of twelve
 

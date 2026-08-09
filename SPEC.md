@@ -546,6 +546,8 @@ All errors return:
 | `JDOCMUNCH_OPENAI_COMPAT_API_KEY` | Dedicated optional API key for `openai-compatible` embeddings        | No       |
 | `JDOCMUNCH_OPENAI_COMPAT_BATCH_SIZE` | Batch size for `openai-compatible` embeddings (default: `32`)      | No       |
 | `JDOCMUNCH_ST_MODEL`              | sentence-transformers model name (default: `all-MiniLM-L6-v2`)      | No       |
+| `JDOCMUNCH_EMBED_CHARS`           | Max characters of section prose fed to the embedder (default: `1000`). Raising it re-embeds the corpus on the next index, since the cap is part of the embedding identity. | No |
+| `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS` | Allow auto-detect to select a paid cloud embedding provider, and allow an embedding-identity change to re-embed the corpus automatically on such a provider (default: off) | No |
 | `DOC_INDEX_PATH`                  | Custom storage path (default: `~/.doc-index/`)                       | No       |
 | `JDOCMUNCH_GIT_TIMEOUT`           | Per-call `git` subprocess ceiling in seconds for local repo@sha probing (default: `10`; `<= 0` disables) | No |
 | `JDOCMUNCH_SHARE_SAVINGS`         | Set to `0` to disable anonymous token savings reporting              | No       |

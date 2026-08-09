@@ -37,6 +37,31 @@ logger = logging.getLogger(__name__)
 # embedding cache re-embeds instead of serving vectors built from the old text.
 _EMBED_TEXT_VERSION = "pv1"
 
+# jdoc#111: default kept at 1000 deliberately. Raising it would silently
+# invalidate every existing index and shift recall for every user who never
+# asked for it; opt-in via env leaves them untouched.
+_DEFAULT_EMBED_CHARS = 1000
+
+
+def _embed_chars() -> int:
+    """Max characters of prose fed to the embedder (``JDOCMUNCH_EMBED_CHARS``).
+
+    jdoc#111, reported by @pnm-jgb with measurements: on a 1,992-section corpus
+    the 1000-char cap withheld **41.2%** of available prose (778,236 → 457,284
+    tokens), and the median section already exceeded it. Because the cap sits
+    just under all-MiniLM-L6-v2's 256-token window, it also made longer-context
+    models nearly pointless — the text never reached their window, so the cap,
+    not the model, was the binding constraint.
+
+    ⚠ A bad value is ignored rather than raising: this runs inside the embed
+    loop, and failing a whole index over a typo'd env var is worse than
+    embedding at the documented default.
+    """
+    raw = os.environ.get("JDOCMUNCH_EMBED_CHARS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return _DEFAULT_EMBED_CHARS
+
 
 def _section_embed_text(section) -> str:
     """Build the text to embed for a section.
@@ -52,15 +77,36 @@ def _section_embed_text(section) -> str:
     if section.summary and section.summary != section.title:
         parts.append(section.summary)
     if section.content:
-        parts.append(prose_view(section.content).strip()[:1000])
+        parts.append(prose_view(section.content).strip()[:_embed_chars()])
     return "\n".join(parts)
 
 
 def _embed_cache_key(section) -> str:
     """Cache key for a section's embedding: content_hash salted with the embed
-    text-derivation version, so a derivation change (#58) invalidates cleanly."""
+    text-derivation version, so a derivation change (#58) invalidates cleanly.
+
+    jdoc#111: the char cap is part of the derivation, so it salts the key too.
+    Without it, raising ``JDOCMUNCH_EMBED_CHARS`` on an unchanged corpus would
+    serve vectors built from the shorter text while reporting success — the
+    same shape of failure as jdoc#109, one layer down.
+
+    ⚠⚠ The DEFAULT cap adds no salt, so the key stays byte-identical to every
+    key already on disk. Salting unconditionally — as the report's sketch does
+    — would make ``h#pv1`` miss against ``h#pv1-1000`` for every existing user
+    on the default, re-embedding every corpus in the world on upgrade to buy
+    nothing. The same reasoning as the header's legacy default: absence means
+    1000.
+
+    ⚠ The salt goes after the LAST ``#``: ``stored_hashes()`` recovers the bare
+    content hash with ``rsplit("#", 1)`` and must keep working.
+    """
     h = getattr(section, "content_hash", "") or ""
-    return f"{h}#{_EMBED_TEXT_VERSION}" if h else ""
+    if not h:
+        return ""
+    chars = _embed_chars()
+    if chars == _DEFAULT_EMBED_CHARS:
+        return f"{h}#{_EMBED_TEXT_VERSION}"
+    return f"{h}#{_EMBED_TEXT_VERSION}-{chars}"
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +509,15 @@ def embed_sections(
 
     provider_name = get_provider_name() or ""
     model, dim = _provider_identity(provider_name)
+    # jdoc#111: the char cap is part of the identity, not just the key salt.
+    chars = _embed_chars()
 
     cache_enabled = bool(owner and name)
     if cache_enabled:
         from . import cache as _cache  # local import to avoid circulars
         cached = _cache.load(
             storage_path, owner, name,
-            provider=provider_name, model=model, dim=dim,
+            provider=provider_name, model=model, dim=dim, embed_chars=chars,
         )
     else:
         cached = {}
@@ -487,6 +535,7 @@ def embed_sections(
             miss_indices.append(i)
 
     # Second pass: embed misses in one provider batch.
+    embed_failed = False
     if misses:
         texts = [_section_embed_text(s) for s in misses]
         try:
@@ -495,12 +544,24 @@ def embed_sections(
                 if emb:
                     sec.embedding = emb
         except Exception:
-            pass  # lexical search still works
+            # Lexical search still works. ⚠⚠ But this pass is now KNOWN to have
+            # produced nothing, which the purge below must not read as "the
+            # corpus legitimately has no vectors" (jdoc#109).
+            embed_failed = True
 
     # Persist. jdoc#107: start from what is already on disk unless this pass
-    # is authoritative for the whole corpus. `cached` is the identity-matched
-    # load from the top — on a provider/model rotation it is {} and this
-    # collapses back to a clean rewrite, so rotation still purges.
+    # is authoritative for the whole corpus.
+    #
+    # ⚠⚠ jdoc#109 corrects the claim that used to sit here — that `cached` is
+    # {} on rotation and so "this collapses back to a clean rewrite, so
+    # rotation still purges." It only purges when at least one section reaches
+    # this function. Hand it zero sections during a rotation and `entries` is
+    # empty, the guard below skips the write, and the stale sidecar survives
+    # under its OLD header with vectors of the wrong width.
+    #
+    # An empty write is therefore meaningful when the on-disk identity does not
+    # match: it is how the old vectors get purged. Only skip the write when
+    # there is nothing to say AND nothing stale to retract.
     if cache_enabled:
         from . import cache as _cache
         entries: dict = {} if prune else dict(cached)
@@ -509,12 +570,26 @@ def embed_sections(
             vec = getattr(sec, "embedding", None)
             if k and vec:
                 entries[k] = list(vec)
-        if entries:
+        stale_identity = False
+        if not entries and not embed_failed:
+            # ⚠⚠ `not embed_failed` is load-bearing. Purging on an empty pass is
+            # correct when the corpus genuinely produced no vectors, and is DATA
+            # LOSS when the provider merely threw: a transient outage during a
+            # rotation would delete the whole vector store, write the NEW header
+            # over it, and thereby convince the next run that nothing is stale.
+            # The loss would be permanent and silent — jdoc#107's exact shape.
+            # Leaving the old sidecar in place is recoverable: the vectors are
+            # the wrong width, which the query side now degrades and discloses.
+            stored = _cache.identity(storage_path, owner, name)
+            stale_identity = stored is not None and not _cache.identity_matches(
+                stored, provider_name, model, dim, chars
+            )
+        if entries or stale_identity:
             try:
                 _cache.write(
                     storage_path, owner, name,
                     provider=provider_name, model=model, dim=dim,
-                    entries=list(entries.items()),
+                    entries=list(entries.items()), embed_chars=chars,
                 )
             except Exception:
                 pass

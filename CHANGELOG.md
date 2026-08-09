@@ -1,5 +1,142 @@
 # Changelog
 
+## [1.127.0] - 2026-08-09 - An embedding-model rotation no longer leaves the index unqueryable
+
+Closes [#109](https://github.com/jgravelle/jdocmunch-mcp/issues/109) and
+[#111](https://github.com/jgravelle/jdocmunch-mcp/issues/111), both reported by
+[@pnm-jgb](https://github.com/pnm-jgb) with root-cause analysis read off the
+source and, for #111, measurements over a real 1,992-section corpus.
+
+### The defect
+
+Change the embedding model, re-index a corpus whose files have not changed, and
+the run reported `success: true` while leaving the old vectors on disk. Every
+search afterwards failed:
+
+```
+matmul: Input operand 1 has a mismatch in its core dimension 0 (size 768 is different from 384)
+```
+
+The index was unqueryable, not merely stale, and the only documented recovery
+was `delete-index` plus a full rebuild.
+
+⚠ **The reported line was not the one that fired.** The report locates the bug
+at the incremental path's `embed_sections` call, where `entries` ends up empty
+and an `if entries:` guard skips the write. That mechanism is real, but with
+zero changed files `index_local` returns from the **"No changes detected"**
+branch further up and never calls `embed_sections` at all. Fixing only the
+guard would have left the reported repro broken. Detection now sits before the
+incremental branch, so both paths are covered.
+
+Two further failure sites turned up while confirming it, neither of them filed:
+
+- **A sidecar can hold two widths at once**, after a rotation that touched some
+  files. The old single-matrix build called `np.asarray` on ragged rows, which
+  raised before any query was scored.
+- ⚠⚠ **Without numpy there was no error at all.** `cosine_similarity` zips the
+  two vectors, so a 768-dim query against a 384-dim vector truncates to the
+  shorter and returns `0.707` — an ordinary-looking similarity. The numpy path
+  failed loudly; this one returned confident garbage and recorded nothing. That
+  is the worse of the two, and it was invisible.
+
+### The fix
+
+**Indexing escalates.** `cache.identity()` reports the sidecar's stored
+`{provider, model, dim}`, or `None` when there is no sidecar. `load()` returned
+`{}` for both cases, which is precisely why nothing could act on a rotation —
+no caller could tell a first index from a model change. When the stored
+identity does not match the active one, the run re-embeds the whole corpus
+rather than the changed subset.
+
+**The escalation is disclosed**, as `embedding_rotation: {from, to, action}`. A
+caller who asked for an incremental refresh and got a full corpus re-embed is
+owed the reason.
+
+⚠⚠ **A paid cloud provider is never auto-escalated.** `watch.py` calls
+`index_local` from a long-running daemon on every file-change batch and prints
+only `re-indexed N file(s)`, so an unattended service would re-send the entire
+corpus to a billed third party with the disclosure reaching nobody. Identity
+can also change with no user action at all — an `openai-compatible` endpoint
+restarted on a different model reprobes a new dimension — so "they changed the
+model, so they want this" does not hold. Same reasoning as jcodemunch's
+`refresh` forcing summaries off: a scheduled job must not bill unasked.
+
+On `openai` or `gemini` the run instead returns
+`action: "rebuild_required"` with the old vectors left intact, and search
+degrades and discloses rather than failing. `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS=1`
+— the consent signal that already existed for this exact hazard, rather than a
+second knob — restores automatic escalation; `--rebuild` is the explicit
+one-shot override. Local providers are never gated.
+
+⚠ **A provider outage during a rotation must not destroy the vector store.**
+Purging on an empty pass is right when the corpus produced no vectors and is
+data loss when `embed_texts` merely threw: the sidecar would be emptied and the
+*new* header written over it, so the next run saw a matching identity and never
+re-embedded — permanent and silent, jdoc#107's exact shape. Found while
+reviewing the paid-provider question; the purge is now conditional on the embed
+pass having actually succeeded.
+
+**Querying degrades instead of dying.** Embedding matrices are bucketed by
+vector width, and a query is scored only against the bucket it fits. A width
+mismatch now yields lexical results plus `_meta.embedding_stale`, naming both
+dimensions and the command that fixes it. ⚠ Degrading quietly would have traded
+a loud failure for a silent one, which is the same defect wearing a hat.
+
+**`semantic_search` is reported on the no-change payload too.** It was present
+on the full-rebuild path and absent on the incremental ones, so a caller could
+not distinguish "embeddings are healthy" from "embeddings were never looked
+at". Absence is not a status.
+
+**`index-local --rebuild`** forces a full pass from the CLI, which previously
+had no way to express it short of `delete-index`.
+
+### #111 — the embed char cap is configurable, and part of the identity
+
+`_section_embed_text` truncated section prose at a hardcoded 1000 characters.
+Measured over 1,992 sections, that withheld **41.2%** of available prose
+(778,236 → 457,284 tokens), and the median section already exceeded the cap.
+Because 1000 characters is roughly 250 tokens — just under all-MiniLM-L6-v2's
+256-token window — the cap, not the model, was the binding constraint: moving
+to a longer-context embedding model recovered almost nothing, because the text
+never reached its window.
+
+**`JDOCMUNCH_EMBED_CHARS`**, default `1000`. The default is unchanged
+deliberately: raising it would invalidate every existing index and shift recall
+for users who never asked.
+
+**The cap is part of the embedding identity**, not merely a cache-key salt. The
+report proposed salting the per-section key and noted that adding the cap to
+the header would be more robust — it is in fact the part that works. Salting
+alone leaves the header matching, so the old entries still load and merge with
+the new ones and the sidecar accumulates *both* derivations. And on an
+unchanged corpus, nothing reaches the embedder at all, which is #109 again one
+layer down. Both are in: the cap salts the key *and* sits in the header, so a
+cap change escalates and discloses exactly like a model rotation.
+
+⚠⚠ **The migration rule is the risky part, and it bites twice.** Sidecars
+written before this release have no `embed_chars` field and were all built at
+1000, so absence means 1000, not "unknown". Reading absence as a mismatch would
+have escalated *every existing index* to a full re-embed on its next run — a
+corpus-wide bill for users who changed nothing.
+
+The same trap sits in the key salt, and the report's patch sketch walks into
+it: salting unconditionally makes the new `h#pv1-1000` miss against the `h#pv1`
+already on disk, so every user on the default re-embeds their entire corpus on
+upgrade to arrive at byte-identical vectors. **The default cap adds no salt.**
+Four tests pin both halves in both directions, including an end-to-end upgrade
+from a sidecar written exactly as 1.126.1 wrote it, asserting zero re-embeds.
+
+### Verification
+
+`tests/test_embedding_rotation.py`, 52 tests. Run against the unmodified
+v1.126.1 tree in a throwaway worktree, 19 fail — including the reporter's exact
+error string and payload shape. The three end-to-end indexing tests fail there
+on behavior, not on a missing helper, which is the point of writing them that
+way.
+
+Still open from these two reports: nothing. #109's four suggestions and #111's
+proposal are all in.
+
 ## [1.126.1] - 2026-08-09 - Dotted directories are skipped by rule, not by a list of twelve
 
 Closes [#113](https://github.com/jgravelle/jdocmunch-mcp/issues/113). Found

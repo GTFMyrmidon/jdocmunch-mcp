@@ -2079,6 +2079,90 @@ def index_local(
             source_dirty = True
         sha_certified = bool(head_sha and not source_dirty and paths_tracked)
 
+        # --- jdoc#109: embedding-model rotation forces a full re-embed ---
+        # ⚠⚠ This has to sit BEFORE the incremental branch, not inside it. The
+        # reported repro rotates the model and touches no file, so the branch
+        # below returns "No changes detected" without ever calling
+        # embed_sections — the stale 384-dim sidecar survives under a 768-dim
+        # encoder and every later search dies on the product. Escalating to the
+        # full path is what actually re-embeds, and it already passes
+        # prune=True, which is the only caller that purges the old identity.
+        embedding_rotation_fields: dict = {}
+        if use_embeddings and existing_index is not None:
+            from ..embeddings import cache as _emb_cache
+            from ..embeddings import provider as _emb_provider
+
+            # ⚠ Read the identity from the provider module, NOT the name bound
+            # into this module at import. `embed_sections` writes the sidecar
+            # header from the provider module's own view, so reading it from
+            # anywhere else lets the detector disagree with the writer and
+            # report a rotation that never happened.
+            _provider_identity = _emb_provider._provider_identity
+            _active_provider = _emb_provider.get_provider_name() or ""
+            if _active_provider:
+                _active_model, _active_dim = _provider_identity(_active_provider)
+                # jdoc#111: the embed char cap is part of the identity, so
+                # raising JDOCMUNCH_EMBED_CHARS escalates exactly like a model
+                # change. Without this, a cap change on an unchanged corpus
+                # would report success and keep the short-text vectors.
+                _active_chars = _emb_provider._embed_chars()
+                _stored = _emb_cache.identity(storage_path, owner, repo_name)
+                if _stored is not None and not _emb_cache.identity_matches(
+                    _stored, _active_provider, _active_model, _active_dim,
+                    _active_chars,
+                ):
+                    # ⚠⚠ A paid cloud provider is NOT auto-escalated. This path
+                    # is reachable from `watch.py`, a background daemon that
+                    # calls index_local on every file-change batch and prints
+                    # only "re-indexed N file(s)" — so an unattended service
+                    # would re-send the whole corpus to a billed third party
+                    # and the disclosure below would never reach a human.
+                    # Same reasoning as jcm's `refresh` forcing summaries off:
+                    # a scheduled job must not bill unasked. Identity can also
+                    # flip with no user action at all (an openai-compatible
+                    # endpoint restarted on another model reprobes a new dim),
+                    # so "they changed the model, they must want this" does not
+                    # hold. `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS` is the existing,
+                    # documented consent signal — reuse it rather than minting
+                    # a second one. `--rebuild` stays the explicit override.
+                    _is_paid = (
+                        _active_provider
+                        in _emb_provider._PAID_CLOUD_EMBEDDING_PROVIDERS
+                        and not _emb_provider._paid_embeddings_allowed()
+                    )
+                    embedding_rotation_fields = {
+                        "embedding_rotation": {
+                            "from": _stored,
+                            "to": {
+                                "provider": _active_provider,
+                                "model": _active_model,
+                                "dim": _active_dim,
+                                "embed_chars": _active_chars,
+                            },
+                            "action": "rebuild_required" if _is_paid
+                            else "full_re_embed",
+                        }
+                    }
+                    if _is_paid:
+                        # Left stale on purpose: the vectors are the wrong
+                        # width, which search degrades and discloses, and that
+                        # is recoverable. Silently spending is not.
+                        embedding_rotation_fields["embedding_rotation"]["reason"] = (
+                            f"{_active_provider} is a paid cloud provider; "
+                            "re-embedding the corpus was not performed "
+                            "automatically"
+                        )
+                        embedding_rotation_fields["embedding_rotation"]["fix"] = (
+                            "re-index with --rebuild (or incremental=false), or "
+                            "set JDOCMUNCH_ALLOW_PAID_EMBEDDINGS=1 to allow "
+                            "automatic re-embedding"
+                        )
+                        use_embeddings = False
+                    else:
+                        # A re-embed of the whole corpus is a real cost, so it
+                        # is disclosed above rather than done quietly.
+                        incremental = False
+
         # --- Incremental path ---
         if incremental and existing_index is not None:
             changed, new, deleted = store.detect_changes(owner, repo_name, current_files)
@@ -2161,11 +2245,21 @@ def index_local(
                     "repo": f"{owner}/{repo_name}",
                     "folder_path": str(folder_path),
                     "incremental": True,
+                    # jdoc#109: the full-rebuild payload has always reported
+                    # this and the incremental ones did not, so a caller could
+                    # not tell "embeddings are fine" from "embeddings were
+                    # never touched". Absence is not a status.
+                    "semantic_search": bool(use_embeddings) and get_provider_name() is not None,
                     "changed": 0, "new": 0, "deleted": 0,
                     "_meta": {"latency_ms": latency_ms},
                 }
                 nochange_result.update(derivation_fields)
                 nochange_result.update(reuse_fields)
+                # jdoc#109: a gated paid rotation returns HERE, not through the
+                # full path. Without this the one payload that most needs the
+                # disclosure — "nothing changed, and your vectors are stale" —
+                # would be the one that omits it.
+                nochange_result.update(embedding_rotation_fields)
                 _attach_reconciliation_outcome(
                     nochange_result, graduating, reconciliation_disclosure
                 )
@@ -2236,6 +2330,8 @@ def index_local(
             )
             result.update(derivation_fields)
             result.update(reuse_fields)
+            # jdoc#109: a gated paid rotation with changed files lands here.
+            result.update(embedding_rotation_fields)
             result.update(selection_changed_fields)
             _attach_reconciliation_outcome(
                 result, graduating, reconciliation_disclosure
@@ -2406,6 +2502,10 @@ def index_local(
         )
         result.update(derivation_fields)
         result.update(reuse_fields)
+        # jdoc#109: say that the run escalated and why. A caller who asked for
+        # an incremental refresh and silently got a full corpus re-embed has
+        # been billed for something it did not request.
+        result.update(embedding_rotation_fields)
         # jdoc#82 invariant 4 disclosure on the full-replace path too.
         if existing_index is not None:
             _stored_sel = getattr(existing_index, "corpus_selection", "") or "full"

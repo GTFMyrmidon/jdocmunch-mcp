@@ -2870,6 +2870,15 @@ def main(argv: Optional[list] = None):
             "Pipe-friendly with find / fd / fzf / rg."
         ),
     )
+    il_parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help=(
+            "Rebuild from scratch instead of diffing against the existing index "
+            "(equivalent to the MCP tool's incremental=false). Re-parses and "
+            "re-embeds every file. Use after changing the embedding model."
+        ),
+    )
 
     # --- verify-index (v1.27.0) ---
     vi_parser = subparsers.add_parser(
@@ -2993,7 +3002,13 @@ def main(argv: Optional[list] = None):
         # Guard stdout against provider/library chatter during computation; the
         # final JSON is the only thing that should reach stdout (jdoc#65).
         with contextlib.redirect_stdout(sys.stderr):
-            result = index_local(path=args.path, name=args.name, paths=paths_arg)
+            result = index_local(
+                path=args.path, name=args.name, paths=paths_arg,
+                # jdoc#109: without this the CLI had no way to force a full
+                # re-embed short of delete-index, which is the workaround the
+                # reporter had to use.
+                incremental=not getattr(args, "rebuild", False),
+            )
         print(json.dumps(result, indent=2))
         return
 
