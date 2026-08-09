@@ -303,6 +303,7 @@ class TestCLIDispatch:
             main(["index-local", "--path", str(tmp_path)])
             m.assert_called_once_with(
                 path=str(tmp_path), name=None, paths=None, incremental=True,
+                use_ai_summaries=True, use_embeddings="auto",
             )
 
     def test_index_local_rebuild_flag_forces_a_full_pass(self, tmp_path):
@@ -311,9 +312,34 @@ class TestCLIDispatch:
         with mock.patch("jdocmunch_mcp.tools.index_local.index_local",
                         return_value={"status": "ok"}) as m:
             main(["index-local", "--path", str(tmp_path), "--rebuild"])
-            m.assert_called_once_with(
-                path=str(tmp_path), name=None, paths=None, incremental=False,
-            )
+            assert m.call_args.kwargs["incremental"] is False
+
+    @pytest.mark.parametrize("argv,expected", [
+        (["--no-ai-summaries"], {"use_ai_summaries": False, "use_embeddings": "auto"}),
+        (["--no-embeddings"], {"use_ai_summaries": True, "use_embeddings": False}),
+        (["--embeddings", "off"], {"use_ai_summaries": True, "use_embeddings": False}),
+        (["--embeddings", "on"], {"use_ai_summaries": True, "use_embeddings": True}),
+        (["--embeddings", "auto"], {"use_ai_summaries": True, "use_embeddings": "auto"}),
+        (["--no-ai-summaries", "--no-embeddings"],
+         {"use_ai_summaries": False, "use_embeddings": False}),
+        # ⚠ A caller that NAMED a value never has it widened by the other flag's
+        # default: "off" wins whichever spelling asked for it.
+        (["--embeddings", "auto", "--no-embeddings"],
+         {"use_ai_summaries": True, "use_embeddings": False}),
+    ])
+    def test_index_local_privacy_opt_outs(self, tmp_path, argv, expected):
+        """jdoc#108: the documented CLI route could not decline the summarizer.
+
+        ⚠⚠ The gap only shows on a corpus you do not want leaving the machine.
+        `index-local` auto-detected a summarizer and sent section text to it
+        with no flag to refuse and nothing in --help saying it would.
+        """
+        from jdocmunch_mcp.server import main
+        with mock.patch("jdocmunch_mcp.tools.index_local.index_local",
+                        return_value={"status": "ok"}) as m:
+            main(["index-local", "--path", str(tmp_path), *argv])
+            for k, v in expected.items():
+                assert m.call_args.kwargs[k] == v, f"{k} was {m.call_args.kwargs[k]!r}"
 
     def test_init_hooks_dispatch(self):
         from jdocmunch_mcp.server import main

@@ -150,6 +150,62 @@ def _openai_compat_batch_size(default: int = 32) -> int:
     return batch_size if batch_size > 0 else default
 
 
+def _st_model_name() -> str:
+    return os.environ.get(
+        "JDOCMUNCH_ST_MODEL", _SentenceTransformersProvider.DEFAULT_MODEL
+    )
+
+
+def _st_model_is_cached(model: str) -> bool:
+    """Whether ``model`` already sits in the local HuggingFace cache (jdoc#110).
+
+    ⚠ Deliberately a filesystem check and not a hub API call: this runs on the
+    startup path, so a network probe would reintroduce the very stall it exists
+    to avoid. A local path is treated as cached.
+
+    ⚠ Fails OPEN — an unreadable or unusual cache layout returns True, keeping
+    the previous always-warm behaviour. Guessing "not cached" would skip the
+    warmup for someone whose model is fine, moving a model load into a tool
+    call, which is the outcome with the worse failure mode.
+    """
+    if not model:
+        return True
+    from pathlib import Path
+    # ⚠⚠ Do NOT treat a forward slash as "this is a path". On Windows
+    # `os.altsep` is "/", so `sentence-transformers/all-MiniLM-L6-v2` — an
+    # ordinary hub id — would be probed as a filesystem path, never found, and
+    # every org-qualified model would report uncached on Windows only.
+    looks_local = (
+        os.path.isabs(model)
+        or model.startswith(("." + os.sep, ".." + os.sep, "~"))
+        or model.startswith(("./", "../"))
+        or (os.sep != "/" and os.sep in model)
+    )
+    if looks_local:
+        return Path(model).expanduser().exists()
+    root = os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or ""
+    try:
+        base = Path(root) / "hub" if (root and not os.environ.get("HF_HUB_CACHE")) \
+            else (Path(root) if root else Path.home() / ".cache" / "huggingface" / "hub")
+        if not base.exists():
+            return False
+        # ⚠ A bare name is NOT the cache key. sentence-transformers resolves
+        # `all-MiniLM-L6-v2` to `sentence-transformers/all-MiniLM-L6-v2` on the
+        # hub, so it lands in `models--sentence-transformers--all-MiniLM-L6-v2`.
+        # Checking only the literal name reports the DEFAULT model as uncached
+        # on every machine that has it, skipping every warmup.
+        candidates = [model]
+        if "/" not in model:
+            candidates.append(f"sentence-transformers/{model}")
+        for cand in candidates:
+            snapshots = base / ("models--" + cand.replace("/", "--")) / "snapshots"
+            if snapshots.is_dir() and any(snapshots.iterdir()):
+                return True
+        return False
+    except OSError:
+        return True
+
+
 def _sentence_transformers_available() -> bool:
     """Return True if sentence-transformers is importable."""
     try:
@@ -613,9 +669,39 @@ def warmup() -> str:
     Network providers (gemini, openai, openai-compatible) are first-call-fast
     enough that warmup is unnecessary; warming them would add an avoidable
     network round-trip to startup.
+
+    jdoc#110: warmup is SKIPPED when the model is not already in the local
+    HuggingFace cache. A cached load costs ~7.6 s; an uncached one downloads
+    inside the same window, and a 440 MB model pushed a reporter past the MCP
+    client's 30 s connect timeout — the server never registered at all, and the
+    error said only "connection timed out", naming neither models nor
+    downloads. Deferring an uncached model turns a one-cycle outage into a slow
+    first tool call that can report a real error.
+
+    ⚠⚠ Warmup is not merely an optimization and must not be made unconditional
+    background work: it exists so the model load happens BEFORE `stdio_server`
+    owns stdout. `contextlib.redirect_stdout` is process-global, so a load
+    running concurrently with JSON-RPC cannot be redirected safely — chatter
+    would corrupt framing for every request. Skipping is safe; backgrounding
+    is not.
+
+    Set ``JDOCMUNCH_EMBED_WARMUP=0`` to skip entirely and accept a lazy first
+    load.
     """
+    if os.environ.get("JDOCMUNCH_EMBED_WARMUP", "").strip().lower() in (
+        "0", "false", "no", "off", "n", "f",
+    ):
+        return ""
     name = get_provider_name()
     if name != "sentence-transformers":
+        return ""
+    if not _st_model_is_cached(_st_model_name()):
+        logger.info(
+            "embedding model %s is not in the local cache; skipping startup "
+            "warmup so the MCP handshake is not blocked by a download "
+            "(jdoc#110). It will load on first use.",
+            _st_model_name(),
+        )
         return ""
     try:
         embed_query("jdocmunch warmup")

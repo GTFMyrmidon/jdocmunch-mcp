@@ -179,7 +179,8 @@ _AUTO_DETECT_ORDER = [
     ("ZHIPUAI_API_KEY", "glm"),
 ]
 
-_VALID_PROVIDERS = {"anthropic", "gemini", "openai", "minimax", "glm", "none"}
+_VALID_PROVIDERS = {"anthropic", "gemini", "openai", "minimax", "glm",
+                    "openai-compatible", "none"}
 
 # Providers that bill a remote cloud account per call. A bare env key for any of
 # these must NEVER auto-enable summarization — that silently spends real money
@@ -204,8 +205,10 @@ def _paid_summaries_allowed() -> bool:
 def get_provider_name() -> Optional[str]:
     """Return the active summarizer provider name, or None if disabled.
 
-    Priority: explicit JDOCMUNCH_SUMMARIZER_PROVIDER env var > auto-detect by API key.
-    Auto-detect order: Anthropic > Gemini > OpenAI > MiniMax > GLM-5.
+    Priority: explicit JDOCMUNCH_SUMMARIZER_PROVIDER env var > auto-detect.
+    Auto-detect order: a configured self-hosted openai-compatible target first
+    (jdoc#112 — it is free and local, so it outranks every cloud key), then
+    Anthropic > Gemini > OpenAI > MiniMax > GLM-5.
 
     Auto-detect NEVER selects a paid cloud provider from a bare env key unless
     JDOCMUNCH_ALLOW_PAID_SUMMARIES is set — a stray cloud key must not silently
@@ -214,6 +217,12 @@ def get_provider_name() -> Optional[str]:
     explicit = os.environ.get("JDOCMUNCH_SUMMARIZER_PROVIDER", "").lower().strip()
     if explicit in _VALID_PROVIDERS:
         return None if explicit == "none" else explicit
+
+    # jdoc#112: a configured local target wins over every cloud key. It costs
+    # nothing and sends nothing off the machine, so preferring it is strictly
+    # safer than falling through to a billed remote one.
+    if _openai_compat_summarizer_configured():
+        return "openai-compatible"
 
     allow_paid = _paid_summaries_allowed()
     for env_var, name in _AUTO_DETECT_ORDER:
@@ -234,6 +243,50 @@ def get_provider_name() -> Optional[str]:
     return None
 
 
+def _summarizer_url() -> str:
+    return os.environ.get("JDOCMUNCH_SUMMARIZER_URL", "").strip()
+
+
+def _summarizer_model() -> str:
+    return os.environ.get("JDOCMUNCH_SUMMARIZER_MODEL", "").strip()
+
+
+def _openai_compat_summarizer_configured() -> bool:
+    """Both URL and model must be set (jdoc#112).
+
+    Mirrors the embedding side's rule. Requiring an explicit endpoint AND model
+    is what makes this safe to auto-select: it cannot be reached by an ambient
+    key the way a cloud provider can, so it is deliberately NOT in
+    `_PAID_CLOUD_PROVIDERS` — configuring it IS the opt-in.
+    """
+    return bool(_summarizer_url() and _summarizer_model())
+
+
+def _make_openai_compat_summarizer():
+    """Build the self-hosted summarizer, or fail with a message that says why.
+
+    ⚠ Naming the provider explicitly bypasses the configured-check in
+    `get_provider_name`, so this is where a half-configured setup surfaces.
+    Constructing with an empty base_url would instead fail later, mid-index,
+    as an opaque connection error. `_create_summarizer` catches this, logs it,
+    and continues with heuristic summaries.
+    """
+    url, model = _summarizer_url(), _summarizer_model()
+    missing = [n for n, v in (("JDOCMUNCH_SUMMARIZER_URL", url),
+                              ("JDOCMUNCH_SUMMARIZER_MODEL", model)) if not v]
+    if missing:
+        raise ValueError(
+            "summarizer provider 'openai-compatible' needs " + " and ".join(missing)
+            + " (e.g. JDOCMUNCH_SUMMARIZER_URL=http://localhost:11434/v1)"
+        )
+    return _OpenAICompatSummarizer(
+        # Local runtimes usually ignore the key but the client requires one.
+        api_key=os.environ.get("JDOCMUNCH_SUMMARIZER_API_KEY", "").strip() or "local",
+        base_url=url,
+        model=model,
+    )
+
+
 def _make_openai_compat(env_var: str, base_url: str, model: str):
     """Factory helper for OpenAI-compatible providers."""
     api_key = os.environ.get(env_var)
@@ -248,6 +301,11 @@ _PROVIDERS = {
     "openai": lambda: _make_openai_compat("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini"),
     "minimax": lambda: _make_openai_compat("MINIMAX_API_KEY", "https://api.minimax.io/v1", "minimax-m2.7"),
     "glm": lambda: _make_openai_compat("ZHIPUAI_API_KEY", "https://api.z.ai/api/paas/v4/", "glm-5"),
+    # jdoc#112: a self-hosted target (Ollama, llama.cpp, vLLM, LM Studio). The
+    # client machinery already existed — `_make_openai_compat` serves openai,
+    # minimax and glm — only a configurable endpoint was missing, so a private
+    # corpus could have summaries or privacy but not both.
+    "openai-compatible": lambda: _make_openai_compat_summarizer(),
 }
 
 

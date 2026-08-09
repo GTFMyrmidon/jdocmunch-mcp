@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.127.0 |
+**Version:** 1.128.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,33 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.128.0 — tracker to ZERO: #108, #110, #112, #114
+
+**#112** `openai-compatible` summarizer (`JDOCMUNCH_SUMMARIZER_URL`+`_MODEL`).
+⚠ A configured local target **outranks every cloud key** in auto-detect, and is
+deliberately NOT in `_PAID_CLOUD_PROVIDERS` — an explicit URL+model cannot be
+reached by a stray ambient key, so configuring it IS the opt-in (embedding-side
+precedent). Explicit `none` and explicitly-named cloud still win.
+
+**#108** `index-local --no-ai-summaries` / `--embeddings auto|on|off`.
+
+**#110** ⚠⚠ **The report asked for background/lazy init and that is NOT what
+shipped.** Warmup exists so the model load finishes BEFORE `stdio_server` owns
+stdout; `redirect_stdout` is **process-global**, so a load racing JSON-RPC
+cannot be redirected and its chatter corrupts framing for EVERY request.
+**Skipping is safe, backgrounding is not.** So: skip warmup when the model is
+not in the HF cache (kills the 30s-connect-timeout outage), `JDOCMUNCH_EMBED_WARMUP=0`
+to opt out of the rest. The cached ~7.6s remains ON PURPOSE.
+⚠ Two probe bugs caught pre-release: a **bare name is not the cache key**
+(`all-MiniLM-L6-v2` → `models--sentence-transformers--all-MiniLM-L6-v2`, so the
+DEFAULT model read as uncached everywhere), and **`os.altsep` is `/` on Windows**
+so every org-qualified hub id was probed as a filesystem path — broken on
+Windows and nowhere else. Probe fails OPEN.
+
+**#114** `RECORD_LOCK_WAIT_SECONDS` named in `doc_store.py` and imported by the
+test. ⚠ A test asserted the whole call beat the budget of one step inside it.
+**Never restate a timing budget as a literal in a test.**
 
 ## v1.127.0 — #109 + #111: a model rotation left the index UNQUERYABLE, reporting success
 

@@ -2879,6 +2879,26 @@ def main(argv: Optional[list] = None):
             "re-embeds every file. Use after changing the embedding model."
         ),
     )
+    # jdoc#108: the MCP tool could express both of these per call and the CLI
+    # could express neither, so the documented CLI route sent a private corpus
+    # to whatever summarizer the environment happened to expose, with nothing
+    # in --help saying it would. Same flag spelling as `watch`.
+    il_parser.add_argument(
+        "--no-ai-summaries", action="store_true",
+        help="Skip AI section summaries (no summarizer calls, nothing leaves the machine)",
+    )
+    il_parser.add_argument(
+        "--embeddings", choices=("auto", "on", "off"), default="auto",
+        help=(
+            "Semantic embeddings: 'auto' (default) enables them when a provider "
+            "is configured, 'on' requests them even where auto-detect would "
+            "decline, 'off' keeps the index lexical-only"
+        ),
+    )
+    il_parser.add_argument(
+        "--no-embeddings", action="store_true",
+        help="Alias for --embeddings off",
+    )
 
     # --- verify-index (v1.27.0) ---
     vi_parser = subparsers.add_parser(
@@ -3002,12 +3022,20 @@ def main(argv: Optional[list] = None):
         # Guard stdout against provider/library chatter during computation; the
         # final JSON is the only thing that should reach stdout (jdoc#65).
         with contextlib.redirect_stdout(sys.stderr):
+            # jdoc#108: "off" beats "auto" whichever spelling asked for it —
+            # a caller that named a value never has it widened by a default.
+            _emb = getattr(args, "embeddings", "auto")
+            if getattr(args, "no_embeddings", False):
+                _emb = "off"
+            _use_embeddings = {"auto": "auto", "on": True, "off": False}[_emb]
             result = index_local(
                 path=args.path, name=args.name, paths=paths_arg,
                 # jdoc#109: without this the CLI had no way to force a full
                 # re-embed short of delete-index, which is the workaround the
                 # reporter had to use.
                 incremental=not getattr(args, "rebuild", False),
+                use_ai_summaries=not getattr(args, "no_ai_summaries", False),
+                use_embeddings=_use_embeddings,
             )
         print(json.dumps(result, indent=2))
         return

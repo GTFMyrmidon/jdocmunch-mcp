@@ -28,6 +28,16 @@ except ImportError:  # pragma: no cover - non-Windows
 from ..embeddings import embed_query, cosine_similarity
 
 INDEX_VERSION = 3
+
+# How long `delete_index(lock_wait=True)` may wait for a contended retirement
+# record before declaring the lifecycle busy.
+#
+# ⚠ jdoc#114: named because a test duplicated this as a bare `1.0` literal and
+# asserted the TOTAL round trip finished in under it — i.e. the whole call had
+# to beat the budget of one step inside it, leaving zero headroom by
+# construction. It went red at 1.588 s on a loaded Windows runner. Anything
+# asserting against this budget must import it, not restate it.
+RECORD_LOCK_WAIT_SECONDS = 1.0
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _UNSET = object()
 
@@ -1976,7 +1986,7 @@ class DocStore:
         if not try_void_retirements_referencing(
             self.base_path,
             f"{owner}/{name}",
-            timeout_seconds=1.0 if lock_wait else 0.0,
+            timeout_seconds=RECORD_LOCK_WAIT_SECONDS if lock_wait else 0.0,
         ):
             # A retirement owning this handle as its retained peer is inside
             # its destructive step right now. Retryable, and NOT missing.

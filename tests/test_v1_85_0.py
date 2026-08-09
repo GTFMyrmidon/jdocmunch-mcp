@@ -51,7 +51,7 @@ class TestCliStdoutGuard:
     def test_index_local_keeps_stdout_clean_json(self, capsys, tmp_path):
         from jdocmunch_mcp.server import main
 
-        def fake_local(path, name=None, paths=None, incremental=True):
+        def fake_local(path, name=None, paths=None, incremental=True, **kwargs):
             print("Loading weights: 100%|##########|")
             return {"success": True, "files_indexed": 0}
 

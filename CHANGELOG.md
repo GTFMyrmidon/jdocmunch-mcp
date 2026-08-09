@@ -1,5 +1,85 @@
 # Changelog
 
+## [1.128.0] - 2026-08-09 - Every open issue closed: private corpora, startup cost, CLI opt-outs
+
+Closes [#108](https://github.com/jgravelle/jdocmunch-mcp/issues/108),
+[#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110),
+[#112](https://github.com/jgravelle/jdocmunch-mcp/issues/112) and
+[#114](https://github.com/jgravelle/jdocmunch-mcp/issues/114). #110 and #112
+were reported by [@pnm-jgb](https://github.com/pnm-jgb).
+
+### #112 — a local summarizer target
+
+Every valid `JDOCMUNCH_SUMMARIZER_PROVIDER` was remote cloud, so a private
+corpus could have AI summaries or privacy, never both. This is not cosmetic:
+the summary is embedded alongside the section, and the content itself is capped,
+so for a long-section corpus the summary is the only channel through which
+anything past that cap reaches the vector — retrieval quality was gated behind
+exporting the corpus to a third party.
+
+`openai-compatible` now joins the summarizer providers, configured with
+`JDOCMUNCH_SUMMARIZER_URL` + `_MODEL` (+ optional `_API_KEY`), mirroring the
+embedding side. The client machinery already existed — `_make_openai_compat`
+serves openai, minimax and glm — only a configurable endpoint was missing.
+
+It is deliberately **not** in `_PAID_CLOUD_PROVIDERS`, matching the embedding
+precedent: requiring an explicit URL *and* model is itself the opt-in, and it
+cannot be reached by a stray ambient key. A configured local target now
+**outranks every cloud key** in auto-detect — falling through to a billed remote
+provider while a local model sits configured would be the wrong default. An
+explicit `none`, or an explicitly named cloud provider, still wins.
+
+⚠ Naming the provider bypasses the configured-check, so a half-configured setup
+fails at construction with a message naming the missing variable, rather than
+later as an opaque connection error mid-index. Indexing continues with heuristic
+summaries.
+
+### #108 — the CLI can decline
+
+`index-local` gained `--no-ai-summaries` (same spelling as `watch`) and
+`--embeddings auto|on|off`, with `--no-embeddings` as an alias. The MCP tool
+could express both per call and the CLI could express neither, so the documented
+route sent section text to whatever summarizer the environment exposed with
+nothing in `--help` saying so. Purely additive; no default changed.
+
+### #110 — an uncached model no longer blocks the handshake
+
+`serve` initialized the sentence-transformers provider before answering
+`initialize`: ~7.6 s on every start with a cached model, and with an **uncached**
+one the download landed in the same window. A 440 MB model pushed past the
+client's 30 s connect timeout, so the server never registered and the error said
+only "connection timed out" — naming neither models nor downloads. Changing one
+env var became a one-cycle outage.
+
+Warmup is now skipped when the model is not already in the local HuggingFace
+cache, so the load moves to first use where it can report a real error.
+`JDOCMUNCH_EMBED_WARMUP=0` skips it entirely.
+
+⚠⚠ **Not** done as background warming, which is what the report asked for.
+Warmup exists so the model load completes *before* `stdio_server` owns stdout;
+`contextlib.redirect_stdout` is process-global, so a load running concurrently
+with JSON-RPC cannot be redirected and its progress chatter would corrupt
+framing for every request. Skipping is safe, backgrounding is not, and the
+failure mode of getting that wrong is worse than the bug. The cached ~7.6 s
+therefore remains by default — the outage is fixed, the fixed cost is opt-out.
+
+⚠ Two bugs in the cache probe, both caught before release: a bare model name is
+not the cache key (`all-MiniLM-L6-v2` lives under
+`models--sentence-transformers--all-MiniLM-L6-v2`, so checking the literal name
+reported the *default* model uncached on every machine that has it), and
+`os.altsep` is `/` on Windows, so every org-qualified hub id was being probed as
+a filesystem path — uncached on Windows and nowhere else. The probe fails open.
+
+### #114 — a test asserted against a budget it did not own
+
+`test_internal_record_lock_coordination_keeps_bounded_wait` asserted the whole
+`delete_index` round trip finished in under 1.0 s while the step it waits on is
+permitted exactly 1.0 s — unsatisfiable at the boundary, not merely tight. It
+went red at 1.588 s on a Windows runner during the 1.127.0 release. The budget is
+now the named `RECORD_LOCK_WAIT_SECONDS`, imported by the tests instead of
+restated, and the upper bound distinguishes bounded from unbounded while the
+behavioural asserts carry the rest.
+
 ## [1.127.0] - 2026-08-09 - An embedding-model rotation no longer leaves the index unqueryable
 
 Closes [#109](https://github.com/jgravelle/jdocmunch-mcp/issues/109) and
