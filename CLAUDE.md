@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.129.0 |
+**Version:** 1.130.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -38,10 +38,9 @@ a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
 
-## UNRELEASED on master — #116 + #115: a corpus exclusion survives every re-entry point
+## v1.130.0 — #116 + #115: a corpus exclusion survives every re-entry point
 
-⚠ **Not yet on PyPI.** Two fixes on `master` above 1.129.0. Rename this heading
-to the version at release; do not quote a version for them before then.
+
 
 **#116** (@pnm-jgb): the `index-local` CLI could not express
 `extra_ignore_patterns`, so its call computed a `full` selection that

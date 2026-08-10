@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.130.0] - 2026-08-10 - A corpus exclusion survives every re-entry point
+
+Two independently reported defects with one shape: a narrower corpus established
+at index time was silently widened by a later entry point that said nothing
+about corpus shape.
+
+### The CLI destroyed a stored exclusion it could not express ([#116](https://github.com/jgravelle/jdocmunch-mcp/issues/116))
+
+Reported by @pnm-jgb. The MCP `index_local` tool accepts `extra_ignore_patterns`;
+the `index-local` CLI did not. Passing no patterns computed a `full` corpus
+selection that **overwrote** the stored `full+shape:<hash>`, re-admitting every
+deliberately excluded file. Third and last member of the
+[#108](https://github.com/jgravelle/jdocmunch-mcp/issues/108) set, and worse than
+the two fixed there: the CLI did not merely fail to *express* the setting, it
+*destroyed* one already persisted.
+
+⚠⚠ **The reported remedy would have been worse on its own.** "Preserve the
+stored selection" was the right target, but only the **digest** was persisted,
+never the patterns: `corpus_selection` records *that* a corpus was shaped and
+never *how*. An inherited descriptor would therefore assert an exclusion the walk
+could not reapply, giving an index that claims `full+shape:...` while containing
+the excluded file. The pre-fix behaviour at least **disclosed** the widening.
+Persisting the patterns is what makes inheritance honest.
+
+Three parts:
+
+1. **`corpus_shape_patterns` is persisted** beside the descriptor, through all
+   five persistence paths. Written only when non-empty, so unshaped and legacy
+   indexes gain no key and legacy files stay byte-identical.
+2. **`None` and `[]` now mean different things.** `None` ("the caller said
+   nothing" — the CLI, a watch refresh, every silent re-entry point) inherits.
+   `[]` ("explicitly none") widens with the `corpus_selection_changed`
+   disclosure. Resolved *before* discovery, because inheritance has to change
+   which files the walk visits, not merely which descriptor is stored.
+3. **`--extra-ignore-pattern`** (repeatable) and **`--no-extra-ignore-patterns`**.
+   The clear flag maps to `[]` rather than `None`, because mapping it to `None`
+   would mean "inherit" and do the opposite of its name.
+
+⚠⚠ **This reverses a deliberate earlier decision.** jdoc#82's
+`test_changed_ignore_selection_reconciles_and_discloses` asserted that a silent
+refresh widens *and* discloses — the behaviour #116 reports as the bug. jdoc#82's
+stated rule is "stored coverage never shifts under an unchanged identity", and
+inheritance satisfies it more strongly: neither side moves, so there is nothing
+to disclose. The old test pinned one *instance* of the rule, not the rule. It has
+been rewritten to assert the invariant, with the disclosure path moved onto the
+explicit `[]` branch. **Disclosure is not a safeguard when the entry point cannot
+avoid triggering it.**
+
+⚠ Indexes created before this release carry `full+shape:<hash>` with no stored
+patterns, so there is nothing to reapply and they still widen on the next
+refresh — but they now **warn** that the shape is unrecoverable and name the
+remedy. Re-run once with the patterns to make them durable.
+
+⚠ `_index_to_dict` is an explicit **allow-list**, not `asdict()`. The new field
+round-tripped as empty through the dataclass, `save_index`, `update_index` and
+`load` until it was named there. Any future field-adder hits this.
+
+### The watcher re-admitted what discovery excluded ([#115](https://github.com/jgravelle/jdocmunch-mcp/issues/115))
+
+Reported by @MotoMato85 with a complete two-session reproduction and acceptance
+criteria adopted verbatim. After a full index excluded a file via the source
+root's `.gitignore`, editing that file made `watch` add it, and its sections
+became retrieval candidates.
+
+⚠⚠ **The fix is in `watch.py`, not in `index_local`'s `paths=` branch, and the
+reporter said so first.** A caller naming a file explicitly and bypassing
+`.gitignore` is intentional and documented (SPEC.md, the 1.61.0 changelog): a
+human asking for a specific generated file should get it. The watcher is not that
+caller — it manufactures its path list from filesystem events, so the bypass
+fires for files nobody asked for. jCodeMunch splits the same way for
+`CACHEDIR.TAG`: explicit paths opt past the rules, the watcher fast path applies
+them. A test guards that contract and passes on both sides of this change.
+
+⚠ **The two fixes interlock**, and neither issue could have seen it because
+neither fix existed yet. Once #116 made exclusion patterns durable, a watcher
+ignoring them would reinstate pattern-excluded files. The filter applies both the
+source root's `.gitignore` and the stored `corpus_shape_patterns`.
+
+Filtering happens before `index_local` is called, so a batch of only-ignored
+edits cannot log "re-indexed 1 file(s)" for work that did not happen.
+
+### Tests
+
+`tests/test_jdoc_116_corpus_shape_inheritance.py` (10; 7 fail pre-fix) and
+`tests/test_jdoc_115_watch_respects_gitignore.py` (6; 4 fail pre-fix). Suite
+2423 passed, 6 skipped, 0 failed.
+
 ## [1.129.0] - 2026-08-09 - JSON-RPC owns a private stdout, so provider init leaves the startup path
 
 Closes [#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110), reported
