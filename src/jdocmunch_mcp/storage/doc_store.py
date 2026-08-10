@@ -312,6 +312,15 @@ class DocIndex:
     # forms the corpus identity index_local uses to prevent duplicate indexes.
     # Empty for legacy/GitHub indexes — legacy is presumed full-corpus.
     corpus_selection: str = ""
+    # jdoc#116: the corpus-shaping patterns THEMSELVES, not just their digest.
+    # `corpus_selection` records THAT a corpus was shaped ("full+shape:<hash>")
+    # and never HOW, so before this field a re-entry point that inherited the
+    # descriptor would have asserted an exclusion it could not reapply: the
+    # index would claim `full+shape:...` while containing the excluded files.
+    # Empty list = no shaping (legacy indexes included; absence is not evidence
+    # of a shaped corpus, and a legacy `full+shape:` with no stored patterns is
+    # therefore treated as unknown-shape, never as unshaped).
+    corpus_shape_patterns: list = field(default_factory=list)
     # jdoc#83 (Item B): worktree-translated identity evidence. lineage key =
     # sha1[:16] of the normalized Git common directory (linked-worktree
     # family); relative root = corpus location relative to the worktree top
@@ -926,6 +935,9 @@ class DocStore:
                 "source_root": getattr(index, "source_root", "") or "",
                 "source_repo": getattr(index, "source_repo", "") or "",
                 "corpus_selection": getattr(index, "corpus_selection", "") or "",
+                "corpus_shape_patterns": list(
+                    getattr(index, "corpus_shape_patterns", None) or []
+                ),
                 "worktree_lineage_key": getattr(index, "worktree_lineage_key", "") or "",
                 "repo_relative_root": getattr(index, "repo_relative_root", "") or "",
                 "reconciliation_state": getattr(index, "reconciliation_state", "") or "",
@@ -1177,6 +1189,7 @@ class DocStore:
         source_root: str = "",
         source_repo: str = "",
         corpus_selection: str = "",
+        corpus_shape_patterns: Optional[list] = None,
         worktree_lineage_key: str = "",
         repo_relative_root: str = "",
         corpus_identity_version: int = 0,
@@ -1211,6 +1224,7 @@ class DocStore:
             source_root=source_root or "",
             source_repo=source_repo or "",
             corpus_selection=corpus_selection or "",
+            corpus_shape_patterns=list(corpus_shape_patterns or []),
             worktree_lineage_key=worktree_lineage_key or "",
             repo_relative_root=repo_relative_root or "",
             corpus_identity_version=int(corpus_identity_version or 0),
@@ -1296,6 +1310,7 @@ class DocStore:
             source_root=data.get("source_root", ""),
             source_repo=data.get("source_repo", ""),
             corpus_selection=data.get("corpus_selection", ""),
+            corpus_shape_patterns=list(data.get("corpus_shape_patterns") or []),
             worktree_lineage_key=data.get("worktree_lineage_key", ""),
             repo_relative_root=data.get("repo_relative_root", ""),
             corpus_identity_version=int(data.get("corpus_identity_version", 0) or 0),
@@ -1388,6 +1403,7 @@ class DocStore:
         source_root=_UNSET,
         source_repo=_UNSET,
         corpus_selection=_UNSET,
+        corpus_shape_patterns=_UNSET,
         worktree_lineage_key=_UNSET,
         repo_relative_root=_UNSET,
         corpus_identity_version=_UNSET,
@@ -1486,6 +1502,11 @@ class DocStore:
                 getattr(index, "corpus_selection", "")
                 if corpus_selection is _UNSET
                 else (corpus_selection or "")
+            ),
+            corpus_shape_patterns=(
+                list(getattr(index, "corpus_shape_patterns", None) or [])
+                if corpus_shape_patterns is _UNSET
+                else list(corpus_shape_patterns or [])
             ),
             worktree_lineage_key=(
                 getattr(index, "worktree_lineage_key", "")
@@ -2153,6 +2174,13 @@ class DocStore:
             d["source_repo"] = index.source_repo
         if getattr(index, "corpus_selection", ""):
             d["corpus_selection"] = index.corpus_selection
+        # jdoc#116. Written only when non-empty, like its neighbours, so an
+        # unshaped index gains no key and legacy files are byte-identical.
+        # ⚠ This serializer is an explicit ALLOW-LIST, not asdict(): a field
+        # added to the dataclass and to every save/load signature still round-
+        # trips as empty until it is named HERE. That cost a debugging cycle.
+        if getattr(index, "corpus_shape_patterns", None):
+            d["corpus_shape_patterns"] = list(index.corpus_shape_patterns)
         if getattr(index, "worktree_lineage_key", ""):
             d["worktree_lineage_key"] = index.worktree_lineage_key
         if getattr(index, "repo_relative_root", ""):

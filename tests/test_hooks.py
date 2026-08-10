@@ -304,6 +304,12 @@ class TestCLIDispatch:
             m.assert_called_once_with(
                 path=str(tmp_path), name=None, paths=None, incremental=True,
                 use_ai_summaries=True, use_embeddings="auto",
+                # jdoc#116: None, NOT []. None means "the caller said nothing"
+                # and inherits any stored exclusion patterns; [] would mean
+                # "explicitly none" and would widen the corpus. A bare
+                # `index-local` must never clear an operator's exclusions, and
+                # this assertion is what pins the difference at the CLI seam.
+                extra_ignore_patterns=None,
             )
 
     def test_index_local_rebuild_flag_forces_a_full_pass(self, tmp_path):

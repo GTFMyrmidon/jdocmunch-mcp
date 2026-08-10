@@ -2913,6 +2913,29 @@ def main(argv: Optional[list] = None):
         "--no-ai-summaries", action="store_true",
         help="Skip AI section summaries (no summarizer calls, nothing leaves the machine)",
     )
+    # jdoc#116: the third and last member of the #108 set. Worse than the two
+    # fixed there, because the CLI did not merely fail to EXPRESS the setting,
+    # it DESTROYED one already persisted: passing nothing computed a `full`
+    # selection that overwrote the stored `full+shape:<hash>` and re-admitted
+    # every excluded file.
+    il_parser.add_argument(
+        "--extra-ignore-pattern", action="append", default=None,
+        metavar="PATTERN", dest="extra_ignore_pattern",
+        help=(
+            "Gitignore-style pattern to exclude from the corpus; repeatable. "
+            "Patterns are stored with the index, so a later refresh that omits "
+            "this flag INHERITS them rather than widening the corpus. Pass "
+            "--no-extra-ignore-patterns to deliberately clear them."
+        ),
+    )
+    il_parser.add_argument(
+        "--no-extra-ignore-patterns", action="store_true",
+        help=(
+            "Clear any stored exclusion patterns and index the full corpus. "
+            "Explicit, because omitting --extra-ignore-pattern now means "
+            "'inherit', not 'none'."
+        ),
+    )
     il_parser.add_argument(
         "--embeddings", choices=("auto", "on", "off"), default="auto",
         help=(
@@ -3062,6 +3085,13 @@ def main(argv: Optional[list] = None):
                 incremental=not getattr(args, "rebuild", False),
                 use_ai_summaries=not getattr(args, "no_ai_summaries", False),
                 use_embeddings=_use_embeddings,
+                # jdoc#116: None and [] mean different things downstream.
+                # None = "said nothing" = inherit the stored patterns;
+                # [] = "explicitly none" = widen, with the change disclosed.
+                extra_ignore_patterns=(
+                    [] if getattr(args, "no_extra_ignore_patterns", False)
+                    else getattr(args, "extra_ignore_pattern", None)
+                ),
             )
         print(json.dumps(result, indent=2))
         return

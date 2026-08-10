@@ -1546,6 +1546,28 @@ def index_local(
     claim_store = None
 
     try:
+        # jdoc#116: resolve the effective shaping patterns BEFORE discovery,
+        # because inheritance has to change which files the walk visits. A
+        # descriptor inherited without the patterns would assert an exclusion
+        # the walk did not apply, i.e. an index claiming `full+shape:<hash>`
+        # while containing the excluded file. That is worse than the widening
+        # it replaces, because today's widening is at least disclosed.
+        #
+        # None and [] are DIFFERENT and that distinction is the whole fix:
+        #   None -> caller said nothing  -> inherit whatever is stored
+        #   []   -> caller said "none"   -> widen, and disclose the change
+        # Every entry point that omits the argument (the CLI, a watch refresh)
+        # gets None, which is precisely the population this issue is about.
+        store = DocStore(base_path=storage_path)
+        _prior = store.load_index(owner, repo_name)
+        inherited_patterns: list = []
+        if extra_ignore_patterns is None and _prior is not None:
+            inherited_patterns = list(
+                getattr(_prior, "corpus_shape_patterns", None) or []
+            )
+            if inherited_patterns:
+                extra_ignore_patterns = inherited_patterns
+
         requested_rels: list = []
         # v1.103.0: per-reason skip tally from the full discovery walk — the
         # index-time half of the coverage contract. Only a full walk (no
@@ -1573,7 +1595,6 @@ def index_local(
         warnings.extend(discover_warnings)
 
         initial_git_state = (local_git_head(folder_path), False)
-        store = DocStore(base_path=storage_path)
         existing_index = store.load_index(owner, repo_name)
 
         # --- jdoc#81: corpus-identity resolution BEFORE any persistent write.
@@ -2188,6 +2209,16 @@ def index_local(
             # jdoc#81: a full-corpus refresh (re)asserts the durable selection;
             # a subset-scoped `paths` refresh never redefines it.
             selection_kwargs = {} if paths else {"corpus_selection": call_selection}
+            # jdoc#116: persist the patterns alongside the descriptor. Storing
+            # only the digest is what made this defect unfixable-in-place: the
+            # descriptor records THAT the corpus was shaped and never HOW, so
+            # nothing downstream could reapply the exclusion. Written on the
+            # same `not paths` branch as the descriptor, so the two can never
+            # disagree about whether this call redefined the selection.
+            if not paths:
+                selection_kwargs["corpus_shape_patterns"] = sorted(
+                    {p for p in (extra_ignore_patterns or []) if isinstance(p, str) and p}
+                )
             # jdoc#80 Part C: a graduating full refresh clears the provisional
             # flag (the incremental save otherwise carries it forward). The
             # `not paths` graduation gate means this only fires on a full
@@ -2213,6 +2244,25 @@ def index_local(
                             "to": call_selection,
                         }
                     }
+                    # jdoc#116: an index written before patterns were persisted
+                    # carries `full+shape:<hash>` with nothing to reapply. We
+                    # cannot inherit it, so this call widens the corpus exactly
+                    # as before — but silence here is what the issue is about.
+                    # Say that the shape is unrecoverable and name the remedy.
+                    if (
+                        extra_ignore_patterns is None
+                        and "+shape:" in stored_sel
+                        and not getattr(existing_index, "corpus_shape_patterns", None)
+                    ):
+                        warnings.append(
+                            f"This index was shaped ({stored_sel}) by an older "
+                            "version that recorded the descriptor but not the "
+                            "patterns, so the exclusion cannot be reapplied "
+                            "automatically and this refresh has WIDENED the "
+                            "corpus. Re-run once with the patterns to make them "
+                            "durable: index_local(extra_ignore_patterns=[...]) "
+                            "or --extra-ignore-pattern on the CLI."
+                        )
             if not changed and not new and not deleted:
                 updated = existing_index
                 if (
@@ -2427,6 +2477,13 @@ def index_local(
             sha_certified=sha_certified,
             source_root=str(folder_path),
             corpus_selection=call_selection,
+            # jdoc#116: the CREATE path needs this as much as the refresh path.
+            # Persisting only on refresh would mean a corpus shaped at creation
+            # (the common case, and the reporter's) still had nothing to
+            # inherit, so the very first CLI re-index would widen it anyway.
+            corpus_shape_patterns=sorted(
+                {p for p in (extra_ignore_patterns or []) if isinstance(p, str) and p}
+            ),
             reconciliation_state=provisional_state,
             coverage=coverage_block or None,
             **lineage_kwargs,
