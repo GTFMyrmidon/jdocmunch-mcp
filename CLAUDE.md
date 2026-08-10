@@ -38,6 +38,77 @@ a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
 
+## UNRELEASED on master — #116 + #115: a corpus exclusion survives every re-entry point
+
+⚠ **Not yet on PyPI.** Two fixes on `master` above 1.129.0. Rename this heading
+to the version at release; do not quote a version for them before then.
+
+**#116** (@pnm-jgb): the `index-local` CLI could not express
+`extra_ignore_patterns`, so its call computed a `full` selection that
+**OVERWROTE** the stored `full+shape:<hash>` and re-admitted every excluded
+file. Third and last member of the #108 set, and worse than the two fixed there:
+the CLI did not merely fail to EXPRESS the setting, it DESTROYED one already
+persisted.
+
+⚠⚠ **The reported remedy would have been WORSE on its own, and this is the part
+to remember.** "Preserve the stored selection" was the right target, but only
+the DIGEST was persisted, never the patterns: `corpus_selection` records THAT a
+corpus was shaped and never HOW. An inherited descriptor would therefore assert
+an exclusion the walk could not reapply — an index claiming `full+shape:...`
+while containing the excluded file. The pre-fix behaviour at least DISCLOSED the
+widening. **Persisting the patterns is what makes inheritance honest**, so it is
+part 1: `corpus_shape_patterns` through all five persistence paths.
+
+⚠⚠ **`None` and `[]` are DIFFERENT and that distinction IS the fix.** None
+("said nothing" — the CLI, a watch refresh, every silent re-entry point)
+INHERITS. `[]` ("explicitly none") widens WITH disclosure. Resolved BEFORE
+discovery, because inheritance must change which files the walk visits, not
+merely which descriptor is stored.
+
+⚠⚠ **THIS REVERSED A DELIBERATE PRIOR DECISION.** jdoc#82's
+`test_changed_ignore_selection_reconciles_and_discloses` asserted that a silent
+refresh widens AND discloses — the exact behaviour #116 reports as the bug.
+jdoc#82's stated rule is "stored coverage never shifts under an unchanged
+identity", and inheritance satisfies it MORE strongly: neither side moves, so
+there is nothing to disclose. **The old test pinned one INSTANCE of the rule,
+not the rule.** Rewritten to assert the invariant, with a comment block saying
+why, so nobody "restores" it without reading the argument.
+**Disclosure is not a safeguard when the entry point cannot avoid triggering it.**
+
+⚠ **`_index_to_dict` is an explicit ALLOW-LIST, not `asdict()`.** The new field
+round-tripped as EMPTY through the dataclass, `save_index`, `update_index` and
+`load` until it was named THERE. That cost a debugging cycle; a test now pins
+the serializer specifically. **Any future field-adder hits this.**
+
+⚠ Legacy indexes carry `full+shape:<hash>` with nothing to reapply, so they
+still widen — but now WARN that the shape is unrecoverable and name the remedy.
+
+**#115** (@MotoMato85): after full discovery excluded a file via the source
+root's `.gitignore`, editing it made `watch` add it.
+
+⚠⚠ **The fix is in `watch.py` and NOT in `index_local`'s `paths=` branch — the
+reporter said so before we did, and they were right.** A caller naming a file
+explicitly and bypassing `.gitignore` is INTENTIONAL and documented (SPEC.md,
+the 1.61.0 changelog): a human asking for a specific generated file should get
+it. The watcher is not that caller; it manufactures the path list from
+filesystem events, so the bypass fires for files nobody asked for. **jcodemunch
+splits the same way for `CACHEDIR.TAG`**: explicit paths opt past the rules, the
+watcher fast path applies them. `test_caller_supplied_path_still_indexes_an_ignored_file`
+guards that contract — if it ever fails, the filter leaked out of `watch.py`.
+
+⚠ **The two fixes INTERLOCK and neither issue could see it.** Once #116 made
+patterns durable, a watcher ignoring them would reinstate pattern-excluded files
+— #115's defect in a different costume. The watcher applies BOTH the source
+root's `.gitignore` and the stored `corpus_shape_patterns`.
+
+⚠ A batch of only-ignored edits is dropped BEFORE `index_local`, so the log
+cannot report "re-indexed 1 file(s)" for work that did not happen.
+
+Tests: `test_jdoc_116_corpus_shape_inheritance.py` (10; **7 fail pre-fix**) and
+`test_jdoc_115_watch_respects_gitignore.py` (6; **4 fail pre-fix**). ⚠ Of #116's
+3 both-side passes, `test_clearing_is_durable` passes pre-fix for the WRONG
+reason (everything widened back then) — a regression guard, not evidence.
+
 ## v1.129.0 — #110 CLOSED: JSON-RPC owns a PRIVATE stdout (fd swap)
 
 ⚠⚠ **`redirect_stdout` was never enough and this is why.** It rebinds
