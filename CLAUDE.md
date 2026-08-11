@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.130.0 |
+**Version:** 1.131.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,52 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.131.0 — #117: the sidecars refresh on every path, and say when they don't
+
+All four derived sidecars (glossary / related-graph / boilerplate / dedup) were
+written on the **full-index path ONLY**. The incremental path returns before
+reaching them, so an index kept alive by incremental refreshes served sidecars
+from whenever the last FULL index ran — `get_related_sections` answering off an
+arbitrarily old corpus, unbounded, and silent because the write was never
+ATTEMPTED. Found in-house: this repo's own memory-store index had four sidecars
+three days older than the `.json` beside them.
+
+⚠⚠ **The naive fix is a SILENT WIPE and is strictly worse than the staleness.**
+Persisted section dicts carry NO body text (`Section.to_dict` drops `content`;
+search re-reads it by byte range at query time). Rebuilding from them hands all
+four builders empty strings — glossary empties, boilerplate and dedup find
+nothing — **and every one of them reports success.** `_sidecar_view(...,
+content_for=...)` hydrates first: the store's byte-range loader for untouched
+docs, shadowed by THIS run's in-memory text for the files it just changed
+(their new bytes are not on disk under the old offsets yet).
+
+⚠ **The mtime check is NOT the regression test** — an empty rebuild passes it.
+The test that pins this asserts a term from an **UNTOUCHED** document survives
+an incremental refresh, which is only possible if the body was re-read.
+
+⚠ Three of the four sat behind a bare `except Exception: pass`, so a genuine
+failure was indistinguishable from a clean result. **#103 already made exactly
+this argument for the dedup sidecar and it was never generalised** — the other
+three kept the silence for four more months. New `sidecars_skipped` block on
+both paths. `dedup_skipped` is RETAINED beside it: 1.x forbids removing a
+shipping response key.
+
+⚠ Fixtures are 12 documents ON PURPOSE. Under ~5 the incremental path
+re-materializes everything and the defect hides — the jdoc#107 lesson.
+
+Tests `tests/test_jdoc_117_sidecar_refresh.py` (10). ⚠ The file cannot IMPORT
+pre-fix, so non-vacuity used a behaviour-only subset: **2 fail / 2 pass**.
+Suite **2433 / 6**; CI-equivalent **2430 / 9**; 11/11 CI jobs green at `3935c35`.
+
+⚠⚠ **The issue title was MINE and it was WRONG.** #117 was filed claiming
+`index_local` takes 40-70 min on a 253-file corpus. Measured in-process on the
+same corpus, arguments and index: **3 seconds** (6.4 s cold, 0.7 s warm). The
+stall is real but lives in the **MCP transport path**, not in this tool.
+**A 40-minute wall-clock through MCP is not evidence about the tool body** —
+measure the function directly before attributing the cost to it. The O(N^2)
+suspicion from #14/#62 was also dead: both fixes are present and working.
+#117 stays OPEN for the transport half, which is not this repo's bug.
 
 ## v1.130.0 — #116 + #115: a corpus exclusion survives every re-entry point
 
