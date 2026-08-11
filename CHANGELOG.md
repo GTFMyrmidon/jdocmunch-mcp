@@ -1,5 +1,61 @@
 # Changelog
 
+## [1.131.0] - 2026-08-11 - The derived sidecars refresh on every path, and say when they don't
+
+Found in-house on a 253-file corpus whose `.related.json`, `.terms.json`,
+`.boilerplate.json` and `.duplicates.json` were three days older than the index
+beside them, despite many refreshes in between.
+
+### An incremental refresh never rebuilt them ([#117](https://github.com/jgravelle/jdocmunch-mcp/issues/117))
+
+All four sidecar writes lived after `save_index` on the **full-index** path. The
+incremental path returns before reaching them, so any index kept alive by
+incremental refreshes served sidecars from whenever the last *full* index ran.
+`get_related_sections` reads that file through `related_persist.lookup`, so its
+answers described an arbitrarily old corpus. Staleness was unbounded, and
+silent: the path never attempted the write, so there was no failure to see.
+
+⚠⚠ **The naive fix is a silent WIPE, and it is worse than the staleness.**
+Persisted section dicts carry no body text — `Section.to_dict` drops `content`
+to keep the monolith small, and search re-reads it by byte range at query time.
+Rebuilding the sidecars from those dicts would hand all four builders empty
+strings: the glossary empties, boilerplate finds nothing, dedup finds nothing,
+and every one of them reports success. Sections are therefore **hydrated**
+before the rebuild — through the store's byte-range loader for untouched
+documents, shadowed by this run's in-memory text for the files it just changed,
+whose new bytes are not yet on disk under the old offsets.
+
+⚠ The regression test for this is not the mtime check, which an empty rebuild
+would also pass. It asserts that a term belonging to an **untouched** document
+survives an incremental refresh, which is only possible if the body was re-read.
+
+### A failed sidecar looked exactly like a clean one
+
+Three of the four were wrapped in a bare `except Exception: pass`. #103 already
+made this argument for the near-duplicate sidecar — "a silent skip is
+indistinguishable from *no duplicates found*" — and it was never generalised.
+All four now report through a new `sidecars_skipped` block on both paths, naming
+the sidecar and the reason.
+
+⚠ `dedup_skipped` is **retained** alongside it rather than folded in: it already
+ships, and 1.x forbids removing a response key.
+
+Both sidecar writes now go through one `_write_sidecars` helper, so the two
+paths cannot drift apart again. Tests `tests/test_jdoc_117_sidecar_refresh.py`
+(10). ⚠ The file cannot import pre-fix, so non-vacuity was proven with a
+behaviour-only subset: **2 fail / 2 pass** across the fix. Suite **2433 passed /
+6 skipped**; CI-equivalent (`uv run --python 3.13`) **2430 / 9**.
+
+⚠ Fixtures are sized at 12 documents on purpose. Under ~5 the incremental path
+re-materializes everything and the defect hides — the jdoc#107 lesson.
+
+### Not fixed here, and not this repo's bug
+
+#117 was filed claiming `index_local` takes 40–70 minutes on that corpus. It
+does not: measured in-process it is **3 seconds**, on the same corpus, arguments
+and index. The stall is real but lives in the MCP transport path between client
+and server, not in this tool. Recorded on the issue rather than left implied.
+
 ## [1.130.0] - 2026-08-10 - A corpus exclusion survives every re-entry point
 
 Two independently reported defects with one shape: a narrower corpus established

@@ -1125,6 +1125,85 @@ def _should_skip(rel_path: str) -> bool:
     return False
 
 
+def _sidecar_view(sections: list, content_for=None) -> list:
+    """Normalize sections to dicts carrying body text, for the sidecar builders.
+
+    jdoc#117: all four sidecars are derived from section CONTENT, and the two
+    call paths hand it over differently. The full path holds in-memory
+    ``Section`` objects whose ``.content`` is populated; the incremental path
+    holds persisted dicts, and ``Section.to_dict`` deliberately drops content to
+    keep the monolith small. Passing those dicts straight through would build
+    every sidecar from empty strings -- a silent wipe, worse than the staleness
+    it is meant to fix -- so the incremental caller supplies ``content_for`` to
+    re-read the body by byte range.
+
+    ``embedding`` is carried through when present because the related-graph's
+    semantic half reads it; the other three ignore it.
+    """
+    out: list = []
+    for sec in sections:
+        if isinstance(sec, dict):
+            row = dict(sec)
+            if not row.get("content") and content_for is not None:
+                row["content"] = content_for(sec) or ""
+        else:
+            row = sec.to_dict()
+            row["content"] = getattr(sec, "content", "") or ""
+            emb = getattr(sec, "embedding", None)
+            if emb:
+                row["embedding"] = emb
+        out.append(row)
+    return out
+
+
+def _write_sidecars(storage_path, owner: str, name: str, sections: list) -> dict:
+    """Rebuild the four derived sidecars. Returns a per-sidecar skip report.
+
+    jdoc#117: these used to live inline on the full-index path only, three of
+    them behind a bare ``except Exception: pass``. Two consequences, both
+    invisible: an incremental refresh never rebuilt them at all (so
+    ``get_related_sections`` answered from whenever the last FULL index ran),
+    and a genuine failure on the full path was indistinguishable from a clean
+    result. #103 already made that argument for the near-duplicate sidecar; it
+    applies to all four. Failures are reported, never raised -- a sidecar is
+    enrichment and must not fail an otherwise-good index.
+    """
+    skipped: dict = {}
+
+    # v1.19.0: glossary.
+    try:
+        write_terms(storage_path, owner, name, extract_glossary(sections))
+    except Exception as e:
+        skipped["glossary"] = {"reason": "error", "detail": str(e)[:200]}
+
+    # v1.24.0: related-graph adjacency list.
+    try:
+        from ..retrieval.related_persist import write as _write_related
+        _write_related(storage_path, owner, name, sections)
+    except Exception as e:
+        skipped["related"] = {"reason": "error", "detail": str(e)[:200]}
+
+    # v1.24.0: boilerplate detector.
+    try:
+        from ..retrieval.boilerplate import write as _write_boilerplate
+        _write_boilerplate(storage_path, owner, name, sections)
+    except Exception as e:
+        skipped["boilerplate"] = {"reason": "error", "detail": str(e)[:200]}
+
+    # v1.34.0: section near-duplicate detector. jdoc#103: ceiling-guarded, and
+    # a skip is REPORTED rather than looking like "no duplicates found".
+    try:
+        from ..retrieval.dedup import write as _write_dedup, last_skip_reason
+        _write_dedup(storage_path, owner, name, sections)
+        reason = last_skip_reason()
+        if reason:
+            skipped["dedup"] = reason
+    except Exception as e:
+        skipped["dedup"] = {"reason": "error", "detail": str(e)[:200]}
+
+    return skipped
+
+
 _DISCOVERY_HARD_CEILING_MULT = 20  # safety: stop counting at max_files * this
 
 
@@ -2361,6 +2440,44 @@ def index_local(
                 **selection_kwargs,
             )
 
+            # jdoc#117: rebuild the derived sidecars here too. They used to run
+            # on the full-index path ONLY, so on any incrementally-refreshed
+            # index get_related_sections answered from whenever the last FULL
+            # index ran -- unbounded staleness, and silent because this path
+            # never attempted the write.
+            #
+            # The persisted section dicts carry no body text (Section.to_dict
+            # drops it), so hydrate through the store's byte-range loader before
+            # building; the in-memory raw text for files touched THIS run is not
+            # on disk under the old byte offsets yet, so it shadows the loader.
+            sidecar_skips: dict = {}
+            if updated is not None:
+                try:
+                    reloaded = store.load_index(owner, repo_name)
+                    _loader = getattr(reloaded, "_content_loader", None) if reloaded else None
+
+                    def _content_for(sec: dict) -> str:
+                        buf = raw_subset.get(sec.get("doc_path", ""))
+                        start = int(sec.get("byte_start", 0))
+                        end = int(sec.get("byte_end", 0))
+                        if buf is not None and end > start:
+                            return buf[start:end]
+                        if _loader is None:
+                            return ""
+                        try:
+                            return _loader(sec.get("doc_path", ""), start, end) or ""
+                        except Exception:
+                            return ""
+
+                    sidecar_skips = _write_sidecars(
+                        storage_path, owner, repo_name,
+                        _sidecar_view(updated.sections, content_for=_content_for),
+                    )
+                except Exception as _e:
+                    sidecar_skips = {
+                        "all": {"reason": "error", "detail": str(_e)[:200]}
+                    }
+
             latency_ms = int((time.perf_counter() - t0) * 1000)
             result = {
                 "success": True,
@@ -2383,6 +2500,11 @@ def index_local(
             # jdoc#109: a gated paid rotation with changed files lands here.
             result.update(embedding_rotation_fields)
             result.update(selection_changed_fields)
+            # jdoc#117: same disclosure as the full path.
+            if sidecar_skips:
+                result["sidecars_skipped"] = sidecar_skips
+                if sidecar_skips.get("dedup"):
+                    result["dedup_skipped"] = sidecar_skips["dedup"]
             _attach_reconciliation_outcome(
                 result, graduating, reconciliation_disclosure
             )
@@ -2489,40 +2611,12 @@ def index_local(
             **lineage_kwargs,
         )
 
-        # v1.19.0: glossary sidecar built from final section content.
-        try:
-            entries = extract_glossary(all_sections)
-            write_terms(storage_path, owner, repo_name, entries)
-        except Exception:
-            pass  # glossary is best-effort; never fail indexing
-
-        # v1.24.0: related-graph adjacency list sidecar.
-        try:
-            from ..retrieval.related_persist import write as _write_related
-            _write_related(storage_path, owner, repo_name, all_sections)
-        except Exception:
-            pass
-
-        # v1.24.0: boilerplate detector sidecar.
-        try:
-            from ..retrieval.boilerplate import write as _write_boilerplate
-            _write_boilerplate(storage_path, owner, repo_name, all_sections)
-        except Exception:
-            pass
-
-        # v1.34.0: section near-duplicate detector sidecar.
-        # jdoc#103: all-pairs Jaccard, ~O(n^2.3). It is guarded by a section
-        # ceiling now, and a skip is REPORTED -- the bare `except: pass` below
-        # means a silent skip is indistinguishable from "no duplicates found",
-        # which is what made the cost invisible on large corpora.
-        dedup_skipped = None
-        try:
-            from ..retrieval.dedup import write as _write_dedup, last_skip_reason
-            _write_dedup(storage_path, owner, repo_name,
-                         [s.to_dict() | {"content": getattr(s, "content", "") or ""} for s in all_sections])
-            dedup_skipped = last_skip_reason()
-        except Exception as _e:
-            dedup_skipped = {"reason": "error", "detail": str(_e)[:200]}
+        # jdoc#117: all four derived sidecars, in one place, each reporting its
+        # own skip. See _write_sidecars for why the bare passes are gone.
+        sidecar_skips = _write_sidecars(
+            storage_path, owner, repo_name, _sidecar_view(all_sections)
+        )
+        dedup_skipped = sidecar_skips.get("dedup")
 
         # v1.29.0: opt-in autotune. Runs the v1.23 weight tuner on this
         # repo's accumulated ranking events; no-op when telemetry isn't
@@ -2578,6 +2672,11 @@ def index_local(
         # omitted when the sidecar ran, per the omit-when-empty convention.
         if dedup_skipped:
             result["dedup_skipped"] = dedup_skipped
+        # jdoc#117: the other three sidecars disclose failure the same way.
+        # `dedup_skipped` is RETAINED above rather than folded into this block:
+        # 1.x forbids removing a response key that already ships.
+        if sidecar_skips:
+            result["sidecars_skipped"] = sidecar_skips
 
         # jdoc#80 Part B (B1): disclose reconciliation quarantine. A provisional
         # index was created because Git lineage could not be verified; it is
