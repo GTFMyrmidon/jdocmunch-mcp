@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.131.1] - 2026-08-11 - A lexical corpus stops paying for numpy
+
+Follow-up to 1.131.0, found by running it.
+
+`_semantic_edges_matrix` imported numpy as its **first statement**, then returned
+`{}` a few lines later whenever no section carried an embedding. For a corpus
+indexed with `use_embeddings=False` that import is pure cost inside a function
+guaranteed to produce an empty map.
+
+⚠ **1.131.0 turned it into a PER-REFRESH cost.** Putting the sidecar rebuild on
+the incremental path (#117) was right, but it also put this import on the path a
+watch/refresh loop takes every single time. Previously only a full re-index paid
+it. Fixing #117 without this is trading unbounded sidecar staleness for a
+recurring import.
+
+The early-out now runs first; numpy is imported only when there is a matrix to
+build. Output is unchanged, and the reorder's safety is asserted rather than
+argued: with no vectors the function returns `{}`, and `build` maps an absent id
+to `[]` — exactly what the numpy-missing `None` fallback produces for the same
+corpus. Both paths are pinned in the new tests.
+
+⚠ **This is a real cost fix, but on the machine where it was found it is a
+WORKAROUND for something else.** There, `import numpy` inside the running server
+does not merely run slowly — it wedges: the same C-extension frame
+(`numpy/core/overrides.py:8`) across dumps 30 and 50 minutes apart, while the
+identical import takes 0.10 s standalone, 0.10 s on a worker thread, and 0.10 s
+with the #110 fd swap replayed. That is
+[#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118), it is not
+explained, and this release does not fix it — it only stops the lexical path
+from reaching the import.
+
+Tests `tests/test_jdoc_119_no_numpy_when_lexical.py` (6; **4 fail pre-fix**, 2
+controls pass both sides). Suite **2439 passed / 6 skipped**; CI-equivalent
+**2436 / 9**; `ruff check src/` clean.
+
 ## [1.131.0] - 2026-08-11 - The derived sidecars refresh on every path, and say when they don't
 
 Found in-house on a 253-file corpus whose `.related.json`, `.terms.json`,
