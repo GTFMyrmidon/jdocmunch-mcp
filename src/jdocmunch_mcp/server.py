@@ -2704,6 +2704,7 @@ async def run_server():
 
     from jdocmunch_mcp import __version__
     from jdocmunch_mcp.embeddings.provider import warmup as _embedding_warmup
+    from jdocmunch_mcp.preload import preload_native_deps
     from jdocmunch_mcp.stdio_guard import claim_stdout
     from mcp.server.stdio import stdio_server
 
@@ -2723,6 +2724,14 @@ async def run_server():
             "library output on stdout may corrupt framing",
             file=sys.stderr,
         )
+
+    # jdoc#118: load numpy HERE, while this thread is still the only one. Its
+    # OpenBLAS DllMain deadlocks against any concurrent loader activity, and the
+    # warmup thread started three lines down is exactly that. See preload.py --
+    # the ordering relative to the Thread(...).start() below IS the fix.
+    for _mod, _outcome in preload_native_deps().items():
+        if not _outcome.startswith("absent"):
+            print(f"jdocmunch-mcp: preloaded {_mod} ({_outcome})", file=sys.stderr)
 
     # Warm off the critical path. Startup no longer waits on a model load, and
     # any chatter it produces lands on stderr by construction. `warmup` itself

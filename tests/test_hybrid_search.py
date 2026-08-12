@@ -151,6 +151,12 @@ def test_warmup_invokes_embed_query_for_sentence_transformers(monkeypatch):
 
     monkeypatch.setattr(emb_provider, "get_provider_name", lambda: "sentence-transformers")
     monkeypatch.setattr(emb_provider, "embed_query", fake_embed_query)
+    # jdoc#118: the import probe is a SECOND gate of the same shape as
+    # `_st_model_is_cached` above -- unstubbed it shells out to the real
+    # sentence-transformers, so this test asserted a property of the
+    # developer's site-packages rather than of warmup(). It went red on a
+    # transformers/sentence-transformers pairing that raises ImportError.
+    monkeypatch.setattr(emb_provider, "_sentence_transformers_imports_cleanly", lambda: True)
     # jdoc#110: warmup now declines an UNCACHED model, so this has to state
     # that the model is present. Without it the test passed only on machines
     # that happened to have the real model downloaded -- it went red on every
@@ -174,6 +180,12 @@ def test_warmup_swallows_embed_query_failure(monkeypatch):
 
     monkeypatch.setattr(emb_provider, "get_provider_name", lambda: "sentence-transformers")
     monkeypatch.setattr(emb_provider, "embed_query", boom)
+    # jdoc#118: the import probe is a SECOND gate of the same shape as
+    # `_st_model_is_cached` above -- unstubbed it shells out to the real
+    # sentence-transformers, so this test asserted a property of the
+    # developer's site-packages rather than of warmup(). It went red on a
+    # transformers/sentence-transformers pairing that raises ImportError.
+    monkeypatch.setattr(emb_provider, "_sentence_transformers_imports_cleanly", lambda: True)
     # ⚠ Without this the gate returns "" for an uncached model and the test
     # passes WITHOUT ever reaching `boom` — green for the wrong reason.
     monkeypatch.setattr(emb_provider, "_st_model_is_cached", lambda m: True)

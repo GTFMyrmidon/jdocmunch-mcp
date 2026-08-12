@@ -45,6 +45,26 @@ def _hub(tmp_path, *repo_ids):
 
 # --- the cache probe -------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _assume_the_provider_imports(monkeypatch):
+    """jdoc#118: stub the import probe for every test in this file.
+
+    The probe is a SECOND gate in front of warmup(), of the same shape as
+    `_st_model_is_cached`. Unstubbed it shells out to the real
+    sentence-transformers, so these tests would assert a property of the
+    developer's site-packages rather than of warmup() -- two went red on a
+    transformers/sentence-transformers pairing that raises ImportError.
+
+    ⚠ The vacuity is the worse half, and it is why this is autouse rather than
+    three targeted stubs. With the probe answering False, warmup() returns ""
+    before reaching the cache gate at all, so a test like
+    `test_a_users_own_progress_setting_is_not_overwritten` still PASSES -- for
+    the wrong reason, having exercised nothing. The probe's own behaviour is
+    covered in test_jdoc_118_import_probe.py; here it must be out of the way.
+    """
+    monkeypatch.setattr(prov, "_sentence_transformers_imports_cleanly", lambda: True)
+
+
 def test_a_cached_model_is_detected(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", str(_hub(tmp_path, "BAAI/bge-base-en-v1.5")))
     assert prov._st_model_is_cached("BAAI/bge-base-en-v1.5") is True
