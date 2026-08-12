@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.131.0 |
+**Version:** 1.131.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,33 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.131.1 — #119: a lexical corpus stops paying for numpy
+
+⚠⚠ **Found by RUNNING 1.131.0, not by reviewing it.** `_semantic_edges_matrix`
+imported numpy as its FIRST statement, then returned `{}` a few lines later
+whenever no section carried an embedding. Pure cost inside a function guaranteed
+to produce an empty map — and **1.131.0 made it a PER-REFRESH cost**, because
+putting the sidecar rebuild on the incremental path (#117) also put this import
+on the path a watch/refresh loop takes every time. Previously only a full
+re-index paid it. **Fixing #117 without this trades unbounded staleness for a
+recurring import.**
+
+Early-out now runs first. ⚠ The reorder swaps which sentinel a numpy-less
+lexical corpus gets (`None` → `{}`) and that is asserted, not argued: `build`
+maps an absent id to `[]` for BOTH, so output is identical. Both paths pinned.
+
+⚠⚠ **On the machine where it was found this is a WORKAROUND, not the fix.**
+There `import numpy` inside the running server does not run slowly, it **WEDGES**
+— same C-extension frame (`numpy/core/overrides.py:8`) across dumps 30 and 50
+min apart, while the identical import is **0.10 s** standalone, 0.10 s on a
+worker thread, and 0.10 s with the #110 fd swap replayed. That is
+[#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118), UNEXPLAINED. This
+release only stops the lexical path from REACHING the import.
+
+Tests `tests/test_jdoc_119_no_numpy_when_lexical.py` (6; **4 fail pre-fix**, 2
+controls both sides). Suite **2439 / 6**; CI-equiv **2436 / 9**; 11/11 CI green
+at `0aaec69`. PyPI + tag + release + registry (1.131.1, `isLatest: true`).
 
 ## v1.131.0 — #117: the sidecars refresh on every path, and say when they don't
 
