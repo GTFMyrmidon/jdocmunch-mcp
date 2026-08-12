@@ -2704,7 +2704,7 @@ async def run_server():
 
     from jdocmunch_mcp import __version__
     from jdocmunch_mcp.embeddings.provider import warmup as _embedding_warmup
-    from jdocmunch_mcp.preload import preload_native_deps
+    from jdocmunch_mcp.preload import preload_embedding_stack, preload_native_deps
     from jdocmunch_mcp.stdio_guard import claim_stdout
     from mcp.server.stdio import stdio_server
 
@@ -2725,11 +2725,13 @@ async def run_server():
             file=sys.stderr,
         )
 
-    # jdoc#118: load numpy HERE, while this thread is still the only one. Its
-    # OpenBLAS DllMain deadlocks against any concurrent loader activity, and the
-    # warmup thread started three lines down is exactly that. See preload.py --
-    # the ordering relative to the Thread(...).start() below IS the fix.
-    for _mod, _outcome in preload_native_deps().items():
+    # jdoc#118: do the native imports HERE, while this thread is still the only
+    # one in the process. Their DllMains deadlock against concurrent loader
+    # activity, and the warmup thread started below is exactly that. See
+    # preload.py — the ordering relative to Thread(...).start() IS the fix, and
+    # the embedding stack costs nothing extra because warmup imports it anyway.
+    _preloaded = {**preload_native_deps(), **preload_embedding_stack()}
+    for _mod, _outcome in _preloaded.items():
         if not _outcome.startswith("absent"):
             print(f"jdocmunch-mcp: preloaded {_mod} ({_outcome})", file=sys.stderr)
 

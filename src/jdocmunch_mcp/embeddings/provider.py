@@ -21,6 +21,7 @@ Set JDOCMUNCH_EMBEDDING_PROVIDER=none to disable all embedding.
 import logging
 import math
 import os
+import subprocess
 import threading
 from typing import TYPE_CHECKING, Optional
 
@@ -703,6 +704,26 @@ _import_probe_detail = ""
 _import_probe_lock = threading.Lock()
 
 
+def record_import_probe(ok: bool, detail: str = "") -> None:
+    """Record a directly-observed import outcome as the probe's answer.
+
+    jdoc#118: called by :mod:`jdocmunch_mcp.preload` after it imports
+    sentence-transformers **on the main thread, while the process is still
+    single-threaded**. That is strictly better evidence than the subprocess
+    probe -- it tested THIS interpreter, with this `sys.path`, rather than a
+    child that merely resembles it -- so it supersedes rather than supplements.
+
+    ⚠ It also stops the probe shelling out a second time. Without this, a
+    broken install pays the failing import twice: once on the main thread and
+    once in the probe, doubling the startup cost of the very case we most want
+    to be cheap.
+    """
+    global _import_probe_result, _import_probe_detail
+    with _import_probe_lock:
+        _import_probe_result = ok
+        _import_probe_detail = detail
+
+
 def _sentence_transformers_imports_cleanly() -> bool:
     """Can `import sentence_transformers` succeed, without risking THIS process?
 
@@ -743,7 +764,6 @@ def _sentence_transformers_imports_cleanly() -> bool:
     with _import_probe_lock:
         if _import_probe_result is not None:
             return _import_probe_result
-        import subprocess
         import sys
 
         # ⚠ The question is "is importing here SAFE", not "will it succeed".
