@@ -160,11 +160,11 @@ def test_unicode_survives_the_private_stream():
 # End to end: the handshake
 # ---------------------------------------------------------------------------
 
-def _handshake(provider: str) -> tuple[float, dict, str]:
+def _handshake(provider: str, **env_extra) -> tuple[float, dict, str]:
     import time
     src = str((__import__("pathlib").Path(__file__).resolve().parents[1] / "src"))
     env = dict(os.environ, PYTHONPATH=src, JDOCMUNCH_EMBEDDING_PROVIDER=provider,
-               PYTHONIOENCODING="utf-8")
+               PYTHONIOENCODING="utf-8", **env_extra)
     req = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -202,47 +202,48 @@ def test_the_handshake_answers_with_clean_json():
     reason="sentence-transformers not installed",
 )
 def test_the_embedding_provider_no_longer_delays_the_handshake():
-    """jdoc#110's measurement, as a test — now split by platform.
+    """jdoc#110's measurement, as a test.
 
     ⚠ Asserts the DELTA between providers in this same tree, not an absolute
     time — an absolute bound would be a runner-speed assertion, which is the
-    mistake jdoc#114 was about. Before jdoc#110 the provider added ~7.0 s here
-    (measured 6062 ms -> 13109 ms on v1.128.0); the reporter measured ~7.6 s on
-    his own machine.
+    mistake jdoc#114 was about. Before this change the provider added ~7.0 s
+    here (measured 6062 ms -> 13109 ms on v1.128.0); the reporter measured
+    ~7.6 s on his own machine.
 
-    ⚠⚠ **jdoc#118 reverses this on Windows, deliberately, and that is a
-    decision and not a regression.** #110 moved the provider import to a
-    background thread so the handshake stayed fast. On Windows that import
-    deadlocks in the native loader when it races the running server — captured
-    twice in `RtlEnterCriticalSection` under `LdrLoadDll`. The two contracts
-    cannot both hold in one process: the import is either on the main thread
-    (slow handshake) or on a background thread (possible indefinite hang).
-    Windows takes the bounded, one-off cost; every other platform keeps #110
-    intact, because the wedge has never been observed there.
-
-    ⚠ The Windows half asserts on the stderr BANNER, not on a clock. A ceiling
-    in seconds would be exactly the runner-speed assertion #114 warned about,
-    and the property that matters is not "how long" but "the import happened
-    BEFORE the handshake answered". Either the stack was preloaded and says so,
-    or the preload declined (no provider / no cached model) and then #110's
-    original bound must still hold.
+    ⚠⚠ jdoc#118 can move that import back onto the main thread, which would
+    break this. It is OPT-IN precisely so this contract survives by default:
+    a cold `import sentence_transformers` was measured at 73.77 s here against
+    5.5 s warm, and the slow end lands on the first server start after a boot —
+    reintroducing the outage #110 was filed for. See the opt-in test below.
     """
     baseline, _, _ = _handshake("none")
     with_provider, payload, _ = _handshake("sentence-transformers")
     assert payload["id"] == 1
-    banner = getattr(_handshake, "stderr", "")
-
-    if sys.platform == "win32":
-        preloaded = "preloaded sentence_transformers" in banner
-        assert preloaded or with_provider < baseline + 4.0, (
-            "on Windows the provider import must happen before the handshake "
-            "answers (jdoc#118), or not happen at all. Saw neither: no preload "
-            f"banner on stderr and the handshake still grew by "
-            f"{with_provider - baseline:.1f}s.\nstderr was:\n{banner[-800:]}"
-        )
-        return
-
     assert with_provider < baseline + 4.0, (
         f"provider init added {with_provider - baseline:.1f}s to the handshake; "
         "it should now be warming in the background"
+    )
+
+
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("sentence_transformers"),
+    reason="sentence-transformers not installed",
+)
+def test_the_opt_in_preload_moves_the_import_ahead_of_the_handshake():
+    """jdoc#118: JDOCMUNCH_PRELOAD_EMBEDDINGS=1 buys a slow handshake on purpose.
+
+    ⚠ Asserts the stderr BANNER, not a clock. A ceiling in seconds is the
+    runner-speed assertion jdoc#114 warned about, and the property that matters
+    is not "how long" but "the import happened BEFORE the handshake answered" —
+    which is the entire reason the flag exists. The delay itself is the cost
+    being accepted, not the thing under test.
+    """
+    _, payload, _ = _handshake(
+        "sentence-transformers", JDOCMUNCH_PRELOAD_EMBEDDINGS="1"
+    )
+    banner = getattr(_handshake, "stderr", "")
+    assert payload["id"] == 1
+    assert "preloaded sentence_transformers" in banner, (
+        "the opt-in preload did not run before the handshake answered.\n"
+        f"stderr was:\n{banner[-800:]}"
     )

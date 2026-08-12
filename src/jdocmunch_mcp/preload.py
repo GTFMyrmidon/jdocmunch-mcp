@@ -91,18 +91,28 @@ were going to pay it anyway, and it is ~0.11 s once per server start, not per
 call. ``JDOCMUNCH_PRELOAD=0`` opts out of BOTH preloads for anyone who would
 rather keep the milliseconds and take the race.
 
-⚠⚠ **The embedding preload REVERSES jdoc#110 on Windows, and that was a
-decision.** #110 moved the provider import to a background thread so the
-handshake stayed fast, and it has a named test asserting that. The two cannot
-both hold in one process: the import is either on the main thread (slow
-handshake) or on a background thread (possible indefinite hang). Windows takes
-the bounded cost. Measured here against a ~1.0 s baseline, `initialize` grew to
-**6.5 s and 11.4 s in two runs** for a Windows install with the provider
-selected and its model cached; nobody else is affected, and that population is
-exactly the one already at risk of the wedge. ⚠ Both numbers come from a
-machine where the import RAISES partway through -- a healthy install also loads
-torch, so treat them as a floor, not a ceiling, and do not quote either as
-*the* cost.
+⚠⚠ **The embedding preload contradicts jdoc#110, so it is OPT-IN and the
+default keeps #110 intact.** #110 moved the provider import to a background
+thread to keep the handshake fast, and has a named test asserting it. Both
+contracts cannot hold in one process: the import is either on the main thread
+(slow handshake) or on a background thread (possible indefinite hang).
+
+⚠ **The measurement that settled it.** Handshake against a ~1.0 s baseline grew
+to 6.5 s and 11.4 s in two runs -- and then a cold run of the same import took
+**73.77 s**, against 5.71 / 5.51 / 5.53 s warm. torch is gigabytes of DLLs and
+the first import after a boot pays for all of them. The slow end of a 13x
+spread lands on the FIRST server start after a reboot, i.e. past a 30 s client
+connect timeout, i.e. jdoc#110's original outage: the server never registers.
+
+Defaulting this on would swap a probabilistic hang for a fairly reliable
+cold-start failure. Neither is acceptable to impose, so the switch belongs to
+the person who knows which one they are suffering:
+``JDOCMUNCH_PRELOAD_EMBEDDINGS=1``.
+
+⚠ torch/scipy/sklearn are NOT new cost -- they are declared dependencies of
+sentence-transformers and warmup has always loaded them (verified: all five of
+numpy/scipy/sklearn/transformers/torch land in ``sys.modules`` even on the
+failing import). Nothing here adds work; it only moves WHERE the work happens.
 
 ⚠ **One-off, per process, not per request.** It runs once in ``run_server``
 before the transport starts. Everything after the handshake is unaffected, and
@@ -159,6 +169,32 @@ def preload_enabled() -> bool:
     if setting in _FORCED:
         return True
     return sys.platform == "win32"
+
+
+def embedding_preload_enabled() -> bool:
+    """Whether to import the sentence-transformers chain on the main thread.
+
+    ⚠⚠ **OPT-IN on every platform, including Windows, and the asymmetry with
+    :func:`preload_enabled` is the whole point.** numpy costs ~0.11 s, so
+    defaulting it on where the bug lives is free. This chain costs SECONDS, and
+    measured cold on Windows it cost **73.77 s** -- torch alone is gigabytes of
+    DLLs, and the first import after a boot pays for all of them. Three warm
+    runs on the same box took 5.5 s. A 13x spread whose slow end lands on the
+    first server start after a reboot is exactly jdoc#110's outage: past a
+    client's 30 s connect timeout, the server never registers at all.
+
+    So defaulting this on would swap a PROBABILISTIC hang for a fairly RELIABLE
+    cold-start failure, which is not a trade worth making on the user's behalf.
+    Anyone actually wedged sets ``JDOCMUNCH_PRELOAD_EMBEDDINGS=1`` and pays a
+    slow handshake instead of an unbounded one.
+
+    ⚠ ``JDOCMUNCH_PRELOAD=0`` is the master off-switch and wins over this.
+    """
+    if os.environ.get("JDOCMUNCH_PRELOAD", "").strip().lower() in _DISABLED:
+        return False
+    return (
+        os.environ.get("JDOCMUNCH_PRELOAD_EMBEDDINGS", "").strip().lower() in _FORCED
+    )
 
 
 def preload_native_deps() -> dict:
@@ -219,7 +255,7 @@ def preload_embedding_stack() -> dict:
     for Windows sentence-transformers users, against a hang with no timeout
     that takes every later tool call with it.
     """
-    if not preload_enabled():
+    if not embedding_preload_enabled():
         return {}
 
     # Imported here, not at module scope: preload runs before anything else and

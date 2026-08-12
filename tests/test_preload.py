@@ -183,6 +183,7 @@ def fake_prov(monkeypatch):
     monkeypatch.setattr(real, "_st_model_is_cached", fake._st_model_is_cached)
     monkeypatch.setattr(real, "record_import_probe", fake.record_import_probe)
     monkeypatch.setenv("JDOCMUNCH_PRELOAD", "1")
+    monkeypatch.setenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", "1")
     return fake
 
 
@@ -238,10 +239,40 @@ def test_a_non_exception_failure_is_still_survived(monkeypatch, fake_prov):
     assert fake_prov.recorded == [(False, "KeyboardInterrupt: simulated native abort")]
 
 
-def test_embedding_stack_respects_the_off_switch(monkeypatch, fake_prov):
+def test_embedding_stack_respects_the_master_off_switch(monkeypatch, fake_prov):
+    """JDOCMUNCH_PRELOAD=0 turns off BOTH preloads, not just numpy."""
     monkeypatch.setenv("JDOCMUNCH_PRELOAD", "0")
     assert preload.preload_embedding_stack() == {}
     assert fake_prov.recorded == []
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+def test_the_embedding_stack_is_opt_in_on_every_platform(monkeypatch, platform):
+    """⚠⚠ The asymmetry with the numpy preload is the decision, not an oversight.
+
+    numpy costs ~0.11s, so defaulting it on where the bug lives is free. This
+    chain was measured at 73.77s COLD against 5.5s warm, and the slow end lands
+    on the first server start after a boot -- past a 30s client connect
+    timeout, which is jdoc#110's outage. Defaulting it on would swap a
+    probabilistic hang for a fairly reliable cold-start failure.
+    """
+    monkeypatch.delenv("JDOCMUNCH_PRELOAD", raising=False)
+    monkeypatch.delenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", raising=False)
+    monkeypatch.setattr(preload.sys, "platform", platform)
+    assert preload.embedding_preload_enabled() is False
+    assert preload.preload_embedding_stack() == {}
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_the_embedding_opt_in_works_without_touching_the_numpy_switch(
+    monkeypatch, value
+):
+    monkeypatch.delenv("JDOCMUNCH_PRELOAD", raising=False)
+    monkeypatch.setenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", value)
+    monkeypatch.setattr(preload.sys, "platform", "linux")
+    assert preload.embedding_preload_enabled() is True
+    # ...and the cheap numpy preload stays at its own platform default
+    assert preload.preload_enabled() is False
 
 
 def test_recorded_probe_result_short_circuits_the_subprocess(monkeypatch):
