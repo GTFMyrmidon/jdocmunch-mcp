@@ -208,11 +208,27 @@ def _st_model_is_cached(model: str) -> bool:
 
 
 def _sentence_transformers_available() -> bool:
-    """Return True if sentence-transformers is importable."""
+    """Return True if sentence-transformers is importable.
+
+    jdoc#118: this is the FIRST place the process would import it, reached from
+    ``get_provider_name()`` on the auto-detect path — long before warmup or any
+    embedding call. It used to answer the question by trying the import here,
+    which is exactly what must not happen: on Windows that import can deadlock
+    in the native loader and take the whole process with it (see
+    :func:`_sentence_transformers_imports_cleanly`). ``except ImportError`` never
+    had a chance — a loader deadlock raises nothing.
+
+    The answer now comes from package METADATA, which needs no import at all,
+    and the bounded subprocess probe runs later — immediately before the one
+    place that actually imports (:func:`warmup`) and before the provider is
+    constructed. Detection stays cheap; the expensive check is paid only when
+    an expensive import is about to happen anyway.
+    """
     try:
-        import sentence_transformers  # noqa: F401
+        import importlib.metadata as _md
+        _md.version("sentence-transformers")
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -498,6 +514,20 @@ def _get_provider():
     factory = _PROVIDER_FACTORIES.get(name)
     if not factory:
         return None
+    # jdoc#118: the sentence-transformers factory imports the package. Prove it
+    # can import in a subprocess we can abandon before importing it HERE, where
+    # a native loader deadlock would be unkillable and would block every later
+    # library load in this process. Cached, so this costs one subprocess at most
+    # once per process — and only on the path that was about to pay for the
+    # import anyway.
+    if name == "sentence-transformers" and not _sentence_transformers_imports_cleanly():
+        logger.warning(
+            "sentence-transformers is installed but could not be imported in a "
+            "probe subprocess (%s); embeddings are unavailable. Lexical search "
+            "is unaffected.",
+            _import_probe_detail or "unknown",
+        )
+        return None
     key = _provider_signature(name)
     cached = _PROVIDER_CACHE.get(key)
     if cached is not None:
@@ -667,6 +697,95 @@ def embed_sections(
     return sections
 
 
+_IMPORT_PROBE_TIMEOUT = 30.0
+_import_probe_result: Optional[bool] = None
+_import_probe_detail = ""
+_import_probe_lock = threading.Lock()
+
+
+def _sentence_transformers_imports_cleanly() -> bool:
+    """Can `import sentence_transformers` succeed, without risking THIS process?
+
+    jdoc#118: the answer cannot be obtained by trying it here. On Windows the
+    import loads numpy's bundled OpenBLAS, and its ``DllMain`` -- running while
+    the process-wide **loader lock** is held -- has been observed parked in
+    `RtlEnterCriticalSection` under `LdrLoadDll`, indefinitely, by a native
+    stack taken twice 25 s apart. The Python-visible half is a second thread
+    stuck in `threading.Thread.start()`: a new thread needs that same loader
+    lock to run its `DLL_THREAD_ATTACH` callbacks, so it never reaches
+    `_bootstrap_inner` and `_started` is never set.
+
+    ⚠ **What it is NOT: OpenBLAS's own thread pool.** That was the first
+    explanation here, and `OPENBLAS_NUM_THREADS=1` was then measured against a
+    reproduction that wedged 7 runs in 8 -- it **still wedged**. At one thread
+    `blas_thread_init` spawns none, so whatever that `DllMain` waits on, it is
+    not threads it created. The remedy is unaffected either way; the sentence
+    was not, and a wrong mechanism in a docstring is what the next person
+    reasons from.
+
+    ⚠⚠ A failed in-process attempt is not recoverable and is not local. Once a
+    thread wedges inside `LdrLoadDll` the loader lock is never released, so
+    EVERY later `LoadLibrary` in the process blocks too — a later, unrelated
+    caller inherits the hang. There is nothing to interrupt: it is a kernel-mode
+    wait, so a timeout, a thread kill, and a try/except are all equally useless.
+    The only bounded probe is one that runs somewhere we can abandon.
+
+    ⚠ The check earns its cost independently of the deadlock: a provider whose
+    import raises (observed in the wild as
+    ``ImportError: cannot import name 'HybridCache' from 'transformers'``, a
+    sentence-transformers/transformers version pairing the user did not choose)
+    is unusable, and finding that out at the END of a heavyweight import chain
+    is strictly worse than finding it out up front.
+
+    Cached: the probe runs at most once per process.
+    """
+    global _import_probe_result, _import_probe_detail
+    with _import_probe_lock:
+        if _import_probe_result is not None:
+            return _import_probe_result
+        import subprocess
+        import sys
+
+        # ⚠ The question is "is importing here SAFE", not "will it succeed".
+        # An absent package raises ImportError immediately — fast, catchable,
+        # and handled by every caller already. Only a native loader deadlock is
+        # unrecoverable, and an absent package cannot produce one. Answering
+        # False here would also be a behaviour change well beyond this fix: it
+        # would make warmup decline before the uncached-model branch that
+        # silences download progress bars, and that silencing is what keeps
+        # chatter out of the JSON-RPC framing (jdoc#110).
+        if not _sentence_transformers_available():
+            _import_probe_result = True
+            return True
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", "import sentence_transformers"],
+                capture_output=True, timeout=_IMPORT_PROBE_TIMEOUT,
+                # Never inherit this process's stdin/stdout: jdoc#110 gave
+                # JSON-RPC a private stdout and a child must not reach it.
+                stdin=subprocess.DEVNULL,
+                encoding="utf-8", errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            _import_probe_result = False
+            _import_probe_detail = (
+                f"the import did not finish within {_IMPORT_PROBE_TIMEOUT:.0f}s "
+                "(a native loader deadlock looks exactly like this; see jdoc#118)"
+            )
+            return False
+        except Exception as exc:  # probe itself failed — do not punish the provider
+            logger.debug("import probe could not run (%s); assuming importable", exc)
+            _import_probe_result = True
+            return True
+        if proc.returncode == 0:
+            _import_probe_result = True
+            return True
+        tail = (proc.stderr or "").strip().splitlines()
+        _import_probe_result = False
+        _import_probe_detail = tail[-1][:300] if tail else f"exit {proc.returncode}"
+        return False
+
+
 def warmup() -> str:
     """Force-load the active embedding provider so its first call is hot.
 
@@ -708,6 +827,18 @@ def warmup() -> str:
         return ""
     name = get_provider_name()
     if name != "sentence-transformers":
+        return ""
+    # jdoc#118: prove the provider can import BEFORE importing it here. An
+    # in-process attempt that deadlocks in the native loader is unkillable and
+    # poisons every subsequent library load in this process, so a failure here
+    # is not confined to embeddings — it takes the whole server with it.
+    if not _sentence_transformers_imports_cleanly():
+        logger.warning(
+            "skipping embedding warmup: sentence-transformers could not be "
+            "imported in a probe subprocess (%s). Lexical search is "
+            "unaffected; semantic search will not work until this is fixed.",
+            _import_probe_detail or "unknown",
+        )
         return ""
     if not _st_model_is_cached(_st_model_name()):
         # ⚠⚠ Deferring the load hands the chatter problem to the first tool
