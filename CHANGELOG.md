@@ -1,5 +1,615 @@
 # Changelog
 
+## [1.132.0] - 2026-08-12 - The loader deadlock has a stack, and the fix has a price tag
+
+[#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118) named at last, with
+a native stack instead of a hypothesis. `py-spy dump --native` on a wedged
+server, twice 25 s apart, identical:
+
+```
+ZwWaitForAlertByThreadId (ntdll)
+RtlSleepConditionVariableCS
+RtlEnterCriticalSection
+<libopenblas64_...>            <- DllMain
+LdrLoadDll / LoadLibraryExW (KERNELBASE)
+```
+
+The Windows **loader lock**, inside OpenBLAS's `DllMain`, reached through
+numpy's `_multiarray_umath`. Not the GIL, not CPython's import lock — both
+candidates in the report are ruled out, and "both threads idle" is explained: a
+thread parked in `ZwWaitForAlertByThreadId` samples as idle. The Python-visible
+half is a second thread stuck in `threading.Thread.start()` from
+`subprocess.communicate` in `local_git_head`, because a new thread needs that
+same loader lock to run its `DLL_THREAD_ATTACH` callbacks and so never sets
+`_started`. Reproduced 7 runs in 8; an idle server never wedges, because with
+nothing else running there is no second party to deadlock against.
+
+⚠ **NOT the OpenBLAS thread pool**, which was the first explanation offered.
+`OPENBLAS_NUM_THREADS=1` was measured against that reproduction and it **still
+wedged**; at one thread the pool is never spawned.
+
+**What ships, and what each piece actually covers:**
+
+| | covers | default |
+|---|---|---|
+| subprocess import probe | an import that RAISES | on |
+| `JDOCMUNCH_PRELOAD` (numpy) | paths reaching numpy without sentence-transformers | on, Windows |
+| `JDOCMUNCH_PRELOAD_EMBEDDINGS` | the wedge itself, whole chain | **off** |
+
+⚠⚠ **A subprocess probe cannot fix a deadlock, and shipping it as though it
+could was the mistake this release corrects.** It answers "would this import
+raise?" — a probe subprocess is single-threaded, so on a healthy install it
+returns True and `warmup` then runs `embed_query`, which imports
+sentence-transformers **on the warmup thread** beside the live server. That is
+the wedge condition exactly. It rescued the machine it was written on only
+because sentence-transformers genuinely raises there. Kept anyway: a provider
+whose import raises is unusable, and learning that up front beats learning it at
+the end of a heavyweight import chain.
+
+⚠ Preloading numpy alone is also insufficient — the chain loads scipy, sklearn
+and torch, and the issue's FIRST dump is wedged in
+`scipy/sparse/linalg/_svdp.py`, a different DLL from the numpy one in the
+second.
+
+⚠⚠ **Why the real remedy is OFF by default: it collides with
+[#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110) and the collision
+is structural.** The import is either on the main thread (slow handshake) or on
+a background thread (possible indefinite hang); there is no third option in one
+process. Windows nearly took the cost by default on the strength of two
+handshake readings, 6.5 s and 11.4 s against a ~1.0 s baseline — then a **cold**
+run of the same import took **73.77 s**, against 5.71 / 5.51 / 5.53 s warm.
+torch is gigabytes of DLLs and the first import after a boot pays for all of
+them, so the slow end of a 13x spread lands on the first server start after a
+reboot: past a 30 s connect timeout, i.e. #110's outage verbatim. That trades a
+probabilistic hang for a fairly reliable cold-start failure, so the switch goes
+to whoever knows which one they have. **Wedged users set
+`JDOCMUNCH_PRELOAD_EMBEDDINGS=1`.** Measured end to end: default handshake
+1.13 s, opt-in 6.91 s.
+
+⚠ torch/scipy/sklearn are **not** new cost — declared dependencies of
+sentence-transformers that `warmup` has always loaded (verified: all five of
+numpy/scipy/sklearn/transformers/torch reach `sys.modules` even on the failing
+import). Nothing here adds work; it only moves where the work happens.
+
+⚠⚠ **VERIFICATION STATUS, stated because this issue has already produced two
+retractions: the mechanism is measured, the remedy is not.** There is no A/B.
+The wedge stopped reproducing after ~30 server starts in **both** arms — the
+same cold/warm effect the 73.77 s reading later made concrete. A first attempt
+at an A/B was invalidated outright when a concurrent editing session changed
+`provider.py` mid-experiment, so every later trial in both arms was already
+running the other fix. Do not read a green run as proof.
+
+Also fixed: four warmup tests that shelled out to the real sentence-transformers
+and so asserted a property of the developer's site-packages. `#110`'s handshake
+guard is intact and unchanged by default, with a note on why #118 must not
+quietly relax it, plus a separate banner-asserting test for the opt-in path — a
+ceiling in seconds is the runner-speed assertion #114 warned about.
+
+Suite **2495 passed / 6 skipped**; `ruff check src/` clean.
+
+## [1.131.1] - 2026-08-11 - A lexical corpus stops paying for numpy
+
+Follow-up to 1.131.0, found by running it.
+
+`_semantic_edges_matrix` imported numpy as its **first statement**, then returned
+`{}` a few lines later whenever no section carried an embedding. For a corpus
+indexed with `use_embeddings=False` that import is pure cost inside a function
+guaranteed to produce an empty map.
+
+⚠ **1.131.0 turned it into a PER-REFRESH cost.** Putting the sidecar rebuild on
+the incremental path (#117) was right, but it also put this import on the path a
+watch/refresh loop takes every single time. Previously only a full re-index paid
+it. Fixing #117 without this is trading unbounded sidecar staleness for a
+recurring import.
+
+The early-out now runs first; numpy is imported only when there is a matrix to
+build. Output is unchanged, and the reorder's safety is asserted rather than
+argued: with no vectors the function returns `{}`, and `build` maps an absent id
+to `[]` — exactly what the numpy-missing `None` fallback produces for the same
+corpus. Both paths are pinned in the new tests.
+
+⚠ **This is a real cost fix, but on the machine where it was found it is a
+WORKAROUND for something else.** There, `import numpy` inside the running server
+does not merely run slowly — it wedges: the same C-extension frame
+(`numpy/core/overrides.py:8`) across dumps 30 and 50 minutes apart, while the
+identical import takes 0.10 s standalone, 0.10 s on a worker thread, and 0.10 s
+with the #110 fd swap replayed. That is
+[#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118), it is not
+explained, and this release does not fix it — it only stops the lexical path
+from reaching the import.
+
+Tests `tests/test_jdoc_119_no_numpy_when_lexical.py` (6; **4 fail pre-fix**, 2
+controls pass both sides). Suite **2439 passed / 6 skipped**; CI-equivalent
+**2436 / 9**; `ruff check src/` clean.
+
+## [1.131.0] - 2026-08-11 - The derived sidecars refresh on every path, and say when they don't
+
+Found in-house on a 253-file corpus whose `.related.json`, `.terms.json`,
+`.boilerplate.json` and `.duplicates.json` were three days older than the index
+beside them, despite many refreshes in between.
+
+### An incremental refresh never rebuilt them ([#117](https://github.com/jgravelle/jdocmunch-mcp/issues/117))
+
+All four sidecar writes lived after `save_index` on the **full-index** path. The
+incremental path returns before reaching them, so any index kept alive by
+incremental refreshes served sidecars from whenever the last *full* index ran.
+`get_related_sections` reads that file through `related_persist.lookup`, so its
+answers described an arbitrarily old corpus. Staleness was unbounded, and
+silent: the path never attempted the write, so there was no failure to see.
+
+⚠⚠ **The naive fix is a silent WIPE, and it is worse than the staleness.**
+Persisted section dicts carry no body text — `Section.to_dict` drops `content`
+to keep the monolith small, and search re-reads it by byte range at query time.
+Rebuilding the sidecars from those dicts would hand all four builders empty
+strings: the glossary empties, boilerplate finds nothing, dedup finds nothing,
+and every one of them reports success. Sections are therefore **hydrated**
+before the rebuild — through the store's byte-range loader for untouched
+documents, shadowed by this run's in-memory text for the files it just changed,
+whose new bytes are not yet on disk under the old offsets.
+
+⚠ The regression test for this is not the mtime check, which an empty rebuild
+would also pass. It asserts that a term belonging to an **untouched** document
+survives an incremental refresh, which is only possible if the body was re-read.
+
+### A failed sidecar looked exactly like a clean one
+
+Three of the four were wrapped in a bare `except Exception: pass`. #103 already
+made this argument for the near-duplicate sidecar — "a silent skip is
+indistinguishable from *no duplicates found*" — and it was never generalised.
+All four now report through a new `sidecars_skipped` block on both paths, naming
+the sidecar and the reason.
+
+⚠ `dedup_skipped` is **retained** alongside it rather than folded in: it already
+ships, and 1.x forbids removing a response key.
+
+Both sidecar writes now go through one `_write_sidecars` helper, so the two
+paths cannot drift apart again. Tests `tests/test_jdoc_117_sidecar_refresh.py`
+(10). ⚠ The file cannot import pre-fix, so non-vacuity was proven with a
+behaviour-only subset: **2 fail / 2 pass** across the fix. Suite **2433 passed /
+6 skipped**; CI-equivalent (`uv run --python 3.13`) **2430 / 9**.
+
+⚠ Fixtures are sized at 12 documents on purpose. Under ~5 the incremental path
+re-materializes everything and the defect hides — the jdoc#107 lesson.
+
+### Not fixed here, and not this repo's bug
+
+#117 was filed claiming `index_local` takes 40–70 minutes on that corpus. It
+does not: measured in-process it is **3 seconds**, on the same corpus, arguments
+and index. The stall is real but lives in the MCP transport path between client
+and server, not in this tool. Recorded on the issue rather than left implied.
+
+## [1.130.0] - 2026-08-10 - A corpus exclusion survives every re-entry point
+
+Two independently reported defects with one shape: a narrower corpus established
+at index time was silently widened by a later entry point that said nothing
+about corpus shape.
+
+### The CLI destroyed a stored exclusion it could not express ([#116](https://github.com/jgravelle/jdocmunch-mcp/issues/116))
+
+Reported by @pnm-jgb. The MCP `index_local` tool accepts `extra_ignore_patterns`;
+the `index-local` CLI did not. Passing no patterns computed a `full` corpus
+selection that **overwrote** the stored `full+shape:<hash>`, re-admitting every
+deliberately excluded file. Third and last member of the
+[#108](https://github.com/jgravelle/jdocmunch-mcp/issues/108) set, and worse than
+the two fixed there: the CLI did not merely fail to *express* the setting, it
+*destroyed* one already persisted.
+
+⚠⚠ **The reported remedy would have been worse on its own.** "Preserve the
+stored selection" was the right target, but only the **digest** was persisted,
+never the patterns: `corpus_selection` records *that* a corpus was shaped and
+never *how*. An inherited descriptor would therefore assert an exclusion the walk
+could not reapply, giving an index that claims `full+shape:...` while containing
+the excluded file. The pre-fix behaviour at least **disclosed** the widening.
+Persisting the patterns is what makes inheritance honest.
+
+Three parts:
+
+1. **`corpus_shape_patterns` is persisted** beside the descriptor, through all
+   five persistence paths. Written only when non-empty, so unshaped and legacy
+   indexes gain no key and legacy files stay byte-identical.
+2. **`None` and `[]` now mean different things.** `None` ("the caller said
+   nothing" — the CLI, a watch refresh, every silent re-entry point) inherits.
+   `[]` ("explicitly none") widens with the `corpus_selection_changed`
+   disclosure. Resolved *before* discovery, because inheritance has to change
+   which files the walk visits, not merely which descriptor is stored.
+3. **`--extra-ignore-pattern`** (repeatable) and **`--no-extra-ignore-patterns`**.
+   The clear flag maps to `[]` rather than `None`, because mapping it to `None`
+   would mean "inherit" and do the opposite of its name.
+
+⚠⚠ **This reverses a deliberate earlier decision.** jdoc#82's
+`test_changed_ignore_selection_reconciles_and_discloses` asserted that a silent
+refresh widens *and* discloses — the behaviour #116 reports as the bug. jdoc#82's
+stated rule is "stored coverage never shifts under an unchanged identity", and
+inheritance satisfies it more strongly: neither side moves, so there is nothing
+to disclose. The old test pinned one *instance* of the rule, not the rule. It has
+been rewritten to assert the invariant, with the disclosure path moved onto the
+explicit `[]` branch. **Disclosure is not a safeguard when the entry point cannot
+avoid triggering it.**
+
+⚠ Indexes created before this release carry `full+shape:<hash>` with no stored
+patterns, so there is nothing to reapply and they still widen on the next
+refresh — but they now **warn** that the shape is unrecoverable and name the
+remedy. Re-run once with the patterns to make them durable.
+
+⚠ `_index_to_dict` is an explicit **allow-list**, not `asdict()`. The new field
+round-tripped as empty through the dataclass, `save_index`, `update_index` and
+`load` until it was named there. Any future field-adder hits this.
+
+### The watcher re-admitted what discovery excluded ([#115](https://github.com/jgravelle/jdocmunch-mcp/issues/115))
+
+Reported by @MotoMato85 with a complete two-session reproduction and acceptance
+criteria adopted verbatim. After a full index excluded a file via the source
+root's `.gitignore`, editing that file made `watch` add it, and its sections
+became retrieval candidates.
+
+⚠⚠ **The fix is in `watch.py`, not in `index_local`'s `paths=` branch, and the
+reporter said so first.** A caller naming a file explicitly and bypassing
+`.gitignore` is intentional and documented (SPEC.md, the 1.61.0 changelog): a
+human asking for a specific generated file should get it. The watcher is not that
+caller — it manufactures its path list from filesystem events, so the bypass
+fires for files nobody asked for. jCodeMunch splits the same way for
+`CACHEDIR.TAG`: explicit paths opt past the rules, the watcher fast path applies
+them. A test guards that contract and passes on both sides of this change.
+
+⚠ **The two fixes interlock**, and neither issue could have seen it because
+neither fix existed yet. Once #116 made exclusion patterns durable, a watcher
+ignoring them would reinstate pattern-excluded files. The filter applies both the
+source root's `.gitignore` and the stored `corpus_shape_patterns`.
+
+Filtering happens before `index_local` is called, so a batch of only-ignored
+edits cannot log "re-indexed 1 file(s)" for work that did not happen.
+
+### Tests
+
+`tests/test_jdoc_116_corpus_shape_inheritance.py` (10; 7 fail pre-fix) and
+`tests/test_jdoc_115_watch_respects_gitignore.py` (6; 4 fail pre-fix). Suite
+2423 passed, 6 skipped, 0 failed.
+
+## [1.129.0] - 2026-08-09 - JSON-RPC owns a private stdout, so provider init leaves the startup path
+
+Closes [#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110), reported
+by [@pnm-jgb](https://github.com/pnm-jgb). 1.128.0 fixed only the outage half;
+this is the rest, and it removes the reason the limitation existed.
+
+### The real constraint
+
+Warmup was never an optimization. It existed so a model load finished *before*
+`stdio_server` owned stdout, because any other write to that stream breaks a
+framed response. That is what pinned provider init to the startup path and cost
+~7.6 s on every launch.
+
+⚠⚠ `contextlib.redirect_stdout` could not lift the constraint: it rebinds
+`sys.stdout` and nothing more. It cannot catch a C extension calling
+`write(1, ...)` (tqdm, tokenizers, torch), a subprocess that inherited fd 1, or
+another thread — and those are exactly the writers a model download produces.
+
+### The fix
+
+`stdio_guard.claim_stdout()` duplicates the real stdout, points file descriptor
+1 at stderr, and hands the duplicate to the transport, which already accepts an
+explicit `stdout`. Afterwards fd 1 **is** stderr for the whole process — Python,
+native code and child processes alike — and the JSON-RPC stream is reachable
+only through the handle the transport holds. The guarantee is structural rather
+than a rule somebody has to remember at each new call site.
+
+Warmup then moves to a background daemon thread. It still declines an uncached
+model: downloading hundreds of megabytes unasked at every start, for a feature
+the session may never use, is not something to do in the background either.
+
+**Measured, same tree, provider vs `none`:**
+
+| | `none` | `sentence-transformers` | provider cost |
+|---|---:|---:|---:|
+| v1.128.0 | 6062 ms | 13109 ms | **+7047 ms** |
+| v1.129.0 | 4339 ms | 4245 ms | **-94 ms** |
+
+The +7.0 s matches the reporter's independently measured ~7.6 s. (Baselines
+differ between trees from cold-cache variance; the comparison that counts is
+provider-vs-`none` within each tree.)
+
+⚠ `_get_provider` is now lock-guarded. Construction became reachable from two
+threads at once — the warmup and a tool call arriving before it finishes — and
+without the lock both would build a provider, meaning two simultaneous model
+loads with one silently discarded.
+
+⚠ The existing guards stay. The jdoc#19 warmup ordering and the jdoc#65 CLI
+`redirect_stdout` wrappers are now belt-and-braces; removing them in the same
+pass is how a safety improvement becomes an incident.
+
+⚠ Fails open. Under pythonw, or a harness that replaced `sys.stderr` with a
+non-file object, the swap is skipped, the server starts as before, and it says
+so on stderr. A server that starts with the old hazard beats one that will not
+start.
+
+### Verification
+
+`tests/test_stdio_guard.py`, 10 tests, deliberately driven through real
+subprocesses — an in-process test of a descriptor-level swap would be testing
+the mock. Coverage includes the native `os.write(1, ...)` case, an inherited
+child process, a background thread, unbuffered delivery, buffered-output
+ordering, UTF-8, and both fail-open paths. The handshake test asserts the
+*delta* between providers rather than an absolute time, since an absolute bound
+would be a runner-speed assertion — the mistake jdoc#114 was about.
+
+## [1.128.0] - 2026-08-09 - Every open issue closed: private corpora, startup cost, CLI opt-outs
+
+Closes [#108](https://github.com/jgravelle/jdocmunch-mcp/issues/108),
+[#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110),
+[#112](https://github.com/jgravelle/jdocmunch-mcp/issues/112) and
+[#114](https://github.com/jgravelle/jdocmunch-mcp/issues/114). #110 and #112
+were reported by [@pnm-jgb](https://github.com/pnm-jgb).
+
+### #112 — a local summarizer target
+
+Every valid `JDOCMUNCH_SUMMARIZER_PROVIDER` was remote cloud, so a private
+corpus could have AI summaries or privacy, never both. This is not cosmetic:
+the summary is embedded alongside the section, and the content itself is capped,
+so for a long-section corpus the summary is the only channel through which
+anything past that cap reaches the vector — retrieval quality was gated behind
+exporting the corpus to a third party.
+
+`openai-compatible` now joins the summarizer providers, configured with
+`JDOCMUNCH_SUMMARIZER_URL` + `_MODEL` (+ optional `_API_KEY`), mirroring the
+embedding side. The client machinery already existed — `_make_openai_compat`
+serves openai, minimax and glm — only a configurable endpoint was missing.
+
+It is deliberately **not** in `_PAID_CLOUD_PROVIDERS`, matching the embedding
+precedent: requiring an explicit URL *and* model is itself the opt-in, and it
+cannot be reached by a stray ambient key. A configured local target now
+**outranks every cloud key** in auto-detect — falling through to a billed remote
+provider while a local model sits configured would be the wrong default. An
+explicit `none`, or an explicitly named cloud provider, still wins.
+
+⚠ Naming the provider bypasses the configured-check, so a half-configured setup
+fails at construction with a message naming the missing variable, rather than
+later as an opaque connection error mid-index. Indexing continues with heuristic
+summaries.
+
+### #108 — the CLI can decline
+
+`index-local` gained `--no-ai-summaries` (same spelling as `watch`) and
+`--embeddings auto|on|off`, with `--no-embeddings` as an alias. The MCP tool
+could express both per call and the CLI could express neither, so the documented
+route sent section text to whatever summarizer the environment exposed with
+nothing in `--help` saying so. Purely additive; no default changed.
+
+### #110 — an uncached model no longer blocks the handshake
+
+`serve` initialized the sentence-transformers provider before answering
+`initialize`: ~7.6 s on every start with a cached model, and with an **uncached**
+one the download landed in the same window. A 440 MB model pushed past the
+client's 30 s connect timeout, so the server never registered and the error said
+only "connection timed out" — naming neither models nor downloads. Changing one
+env var became a one-cycle outage.
+
+Warmup is now skipped when the model is not already in the local HuggingFace
+cache, so the load moves to first use where it can report a real error.
+`JDOCMUNCH_EMBED_WARMUP=0` skips it entirely.
+
+⚠⚠ **Not** done as background warming, which is what the report asked for.
+Warmup exists so the model load completes *before* `stdio_server` owns stdout;
+`contextlib.redirect_stdout` is process-global, so a load running concurrently
+with JSON-RPC cannot be redirected and its progress chatter would corrupt
+framing for every request. Skipping is safe, backgrounding is not, and the
+failure mode of getting that wrong is worse than the bug. The cached ~7.6 s
+therefore remains by default — the outage is fixed, the fixed cost is opt-out.
+
+⚠ Two bugs in the cache probe, both caught before release: a bare model name is
+not the cache key (`all-MiniLM-L6-v2` lives under
+`models--sentence-transformers--all-MiniLM-L6-v2`, so checking the literal name
+reported the *default* model uncached on every machine that has it), and
+`os.altsep` is `/` on Windows, so every org-qualified hub id was being probed as
+a filesystem path — uncached on Windows and nowhere else. The probe fails open.
+
+### #114 — a test asserted against a budget it did not own
+
+`test_internal_record_lock_coordination_keeps_bounded_wait` asserted the whole
+`delete_index` round trip finished in under 1.0 s while the step it waits on is
+permitted exactly 1.0 s — unsatisfiable at the boundary, not merely tight. It
+went red at 1.588 s on a Windows runner during the 1.127.0 release. The budget is
+now the named `RECORD_LOCK_WAIT_SECONDS`, imported by the tests instead of
+restated, and the upper bound distinguishes bounded from unbounded while the
+behavioural asserts carry the rest.
+
+## [1.127.0] - 2026-08-09 - An embedding-model rotation no longer leaves the index unqueryable
+
+Closes [#109](https://github.com/jgravelle/jdocmunch-mcp/issues/109) and
+[#111](https://github.com/jgravelle/jdocmunch-mcp/issues/111), both reported by
+[@pnm-jgb](https://github.com/pnm-jgb) with root-cause analysis read off the
+source and, for #111, measurements over a real 1,992-section corpus.
+
+### The defect
+
+Change the embedding model, re-index a corpus whose files have not changed, and
+the run reported `success: true` while leaving the old vectors on disk. Every
+search afterwards failed:
+
+```
+matmul: Input operand 1 has a mismatch in its core dimension 0 (size 768 is different from 384)
+```
+
+The index was unqueryable, not merely stale, and the only documented recovery
+was `delete-index` plus a full rebuild.
+
+⚠ **The reported line was not the one that fired.** The report locates the bug
+at the incremental path's `embed_sections` call, where `entries` ends up empty
+and an `if entries:` guard skips the write. That mechanism is real, but with
+zero changed files `index_local` returns from the **"No changes detected"**
+branch further up and never calls `embed_sections` at all. Fixing only the
+guard would have left the reported repro broken. Detection now sits before the
+incremental branch, so both paths are covered.
+
+Two further failure sites turned up while confirming it, neither of them filed:
+
+- **A sidecar can hold two widths at once**, after a rotation that touched some
+  files. The old single-matrix build called `np.asarray` on ragged rows, which
+  raised before any query was scored.
+- ⚠⚠ **Without numpy there was no error at all.** `cosine_similarity` zips the
+  two vectors, so a 768-dim query against a 384-dim vector truncates to the
+  shorter and returns `0.707` — an ordinary-looking similarity. The numpy path
+  failed loudly; this one returned confident garbage and recorded nothing. That
+  is the worse of the two, and it was invisible.
+
+### The fix
+
+**Indexing escalates.** `cache.identity()` reports the sidecar's stored
+`{provider, model, dim}`, or `None` when there is no sidecar. `load()` returned
+`{}` for both cases, which is precisely why nothing could act on a rotation —
+no caller could tell a first index from a model change. When the stored
+identity does not match the active one, the run re-embeds the whole corpus
+rather than the changed subset.
+
+**The escalation is disclosed**, as `embedding_rotation: {from, to, action}`. A
+caller who asked for an incremental refresh and got a full corpus re-embed is
+owed the reason.
+
+⚠⚠ **A paid cloud provider is never auto-escalated.** `watch.py` calls
+`index_local` from a long-running daemon on every file-change batch and prints
+only `re-indexed N file(s)`, so an unattended service would re-send the entire
+corpus to a billed third party with the disclosure reaching nobody. Identity
+can also change with no user action at all — an `openai-compatible` endpoint
+restarted on a different model reprobes a new dimension — so "they changed the
+model, so they want this" does not hold. Same reasoning as jcodemunch's
+`refresh` forcing summaries off: a scheduled job must not bill unasked.
+
+On `openai` or `gemini` the run instead returns
+`action: "rebuild_required"` with the old vectors left intact, and search
+degrades and discloses rather than failing. `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS=1`
+— the consent signal that already existed for this exact hazard, rather than a
+second knob — restores automatic escalation; `--rebuild` is the explicit
+one-shot override. Local providers are never gated.
+
+⚠ **A provider outage during a rotation must not destroy the vector store.**
+Purging on an empty pass is right when the corpus produced no vectors and is
+data loss when `embed_texts` merely threw: the sidecar would be emptied and the
+*new* header written over it, so the next run saw a matching identity and never
+re-embedded — permanent and silent, jdoc#107's exact shape. Found while
+reviewing the paid-provider question; the purge is now conditional on the embed
+pass having actually succeeded.
+
+**Querying degrades instead of dying.** Embedding matrices are bucketed by
+vector width, and a query is scored only against the bucket it fits. A width
+mismatch now yields lexical results plus `_meta.embedding_stale`, naming both
+dimensions and the command that fixes it. ⚠ Degrading quietly would have traded
+a loud failure for a silent one, which is the same defect wearing a hat.
+
+**`semantic_search` is reported on the no-change payload too.** It was present
+on the full-rebuild path and absent on the incremental ones, so a caller could
+not distinguish "embeddings are healthy" from "embeddings were never looked
+at". Absence is not a status.
+
+**`index-local --rebuild`** forces a full pass from the CLI, which previously
+had no way to express it short of `delete-index`.
+
+### #111 — the embed char cap is configurable, and part of the identity
+
+`_section_embed_text` truncated section prose at a hardcoded 1000 characters.
+Measured over 1,992 sections, that withheld **41.2%** of available prose
+(778,236 → 457,284 tokens), and the median section already exceeded the cap.
+Because 1000 characters is roughly 250 tokens — just under all-MiniLM-L6-v2's
+256-token window — the cap, not the model, was the binding constraint: moving
+to a longer-context embedding model recovered almost nothing, because the text
+never reached its window.
+
+**`JDOCMUNCH_EMBED_CHARS`**, default `1000`. The default is unchanged
+deliberately: raising it would invalidate every existing index and shift recall
+for users who never asked.
+
+**The cap is part of the embedding identity**, not merely a cache-key salt. The
+report proposed salting the per-section key and noted that adding the cap to
+the header would be more robust — it is in fact the part that works. Salting
+alone leaves the header matching, so the old entries still load and merge with
+the new ones and the sidecar accumulates *both* derivations. And on an
+unchanged corpus, nothing reaches the embedder at all, which is #109 again one
+layer down. Both are in: the cap salts the key *and* sits in the header, so a
+cap change escalates and discloses exactly like a model rotation.
+
+⚠⚠ **The migration rule is the risky part, and it bites twice.** Sidecars
+written before this release have no `embed_chars` field and were all built at
+1000, so absence means 1000, not "unknown". Reading absence as a mismatch would
+have escalated *every existing index* to a full re-embed on its next run — a
+corpus-wide bill for users who changed nothing.
+
+The same trap sits in the key salt, and the report's patch sketch walks into
+it: salting unconditionally makes the new `h#pv1-1000` miss against the `h#pv1`
+already on disk, so every user on the default re-embeds their entire corpus on
+upgrade to arrive at byte-identical vectors. **The default cap adds no salt.**
+Four tests pin both halves in both directions, including an end-to-end upgrade
+from a sidecar written exactly as 1.126.1 wrote it, asserting zero re-embeds.
+
+### Verification
+
+`tests/test_embedding_rotation.py`, 52 tests. Run against the unmodified
+v1.126.1 tree in a throwaway worktree, 19 fail — including the reporter's exact
+error string and payload shape. The three end-to-end indexing tests fail there
+on behavior, not on a missing helper, which is the point of writing them that
+way.
+
+Still open from these two reports: nothing. #109's four suggestions and #111's
+proposal are all in.
+
+## [1.126.1] - 2026-08-09 - Dotted directories are skipped by rule, not by a list of twelve
+
+Closes [#113](https://github.com/jgravelle/jdocmunch-mcp/issues/113). Found
+in-house when an index of 243 notes reported 486 documents.
+
+### The defect
+
+`SKIP_PATTERNS` was a twelve-entry denylist, so the walk skipped exactly the
+dotted directories somebody had thought of in advance and descended into every
+other one. Any tool writing a dotfile cache into a corpus had that cache
+ingested as documentation.
+
+⚠ **This is not [#102](https://github.com/jgravelle/jdocmunch-mcp/issues/102).**
+That was `lstrip("./")` eating the leading dot of a *gitignored* path. Here
+nothing is gitignored and the fixtures are not git repos, so there was no
+pattern to miss: the directories were never pruning candidates.
+
+**What it cost.** A sibling tool wrote a projection into `.jmemorymunch/` inside
+an indexed corpus. Every note was then indexed twice, and the second copy was
+not a copy: a lossy condensation roughly a fifth the size, frozen at the moment
+the projection was built. A section search could answer from the condensation
+with nothing marking it as a summary or as stale. `.claude/` is the same hazard
+in a code repo, where agent instructions come back as project documentation.
+
+### The rule
+
+`is_skipped_dot_dir()` in `tools/_constants.py`, called by both walkers.
+Directories whose name begins with a dot are pruned, which inverts the failure
+mode: the next tool to write a dotfile cache into an indexed tree needs no
+change here.
+
+- **`.github` is allowlisted.** It is dotted and legitimately holds
+  `CONTRIBUTING.md`, issue templates and often a docs tree. Skipping it would
+  trade one silent omission for another.
+- **`include_dot_dirs` is the opt-back-in**, on `index_local` and on the MCP
+  tool schema, taking directory names rather than paths.
+- **Pruned directories are counted** as `dot_directory` in `skip_counts`. The
+  silence was the reportable half: a walk that quietly drops a subtree looks
+  exactly like a corpus that never had one.
+- ⚠ **Both walkers, one rule.** `index_local` and `index_repo` each carried
+  their own `_should_skip`; `index_repo` filters a flat GitHub tree with no
+  `os.walk` to prune, so it checks every leading component instead.
+
+⚠ **`SKIP_PATTERNS` keeps its dotted members deliberately.** Removing `.venv/`
+and `.git/` looks redundant once the rule exists and is a regression: the list
+is matched as a path substring by callers this change does not touch.
+
+### Three cases pinned by test, because reasoning gets them wrong
+
+- **A corpus whose root is itself dotted** is unaffected. Matching on the
+  absolute path, or on the root's own name, empties such a corpus and reports
+  success.
+- **A dotted directory named in `paths` is still indexed.** Naming it is a
+  request, not a stray cache; only dotted directories below it prune.
+- **`.gitignore` is kept.** A dotfile file is not a directory.
+
+New `tests/test_dot_directory_pruning.py` (30). The file cannot import against
+pre-fix HEAD, so non-vacuity was proven with a behaviour-only subset there:
+**6 fail, 2 pass**, and both passing cases are the controls. Suite
+**2295 passed / 6 skipped**, `ruff check src/` clean. No INDEX_VERSION or
+tool-count change; `include_dot_dirs` is an additive optional argument.
+
 ## [1.126.0] - 2026-08-08 - Retrieval confidence is scored on the right scale
 
 Follow-up to [#106](https://github.com/jgravelle/jdocmunch-mcp/issues/106). We

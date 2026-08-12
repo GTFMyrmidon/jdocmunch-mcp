@@ -42,13 +42,29 @@ def _cache_path(base_path: Optional[str], owner: str, name: str) -> Path:
     return root / safe_owner / _CACHE_FILE.format(name=safe_name)
 
 
-def _identity(provider: str, model: str, dim: Optional[int]) -> dict:
+# jdoc#111: sidecars written before the char cap joined the identity have no
+# `embed_chars` field. They were all built at 1000, so that is what a missing
+# field means. ⚠⚠ Reading absence as "mismatch" instead would escalate EVERY
+# existing index to a full re-embed on its next run — a corpus-wide bill for
+# users who changed nothing. Absence is the default, not unknown.
+_LEGACY_EMBED_CHARS = 1000
+
+
+def _identity(provider: str, model: str, dim: Optional[int],
+              embed_chars: Optional[int] = None) -> dict:
     return {
         "_header": True,
         "provider": provider,
         "model": model,
         "dim": int(dim) if dim is not None else None,
+        "embed_chars": int(embed_chars) if embed_chars is not None
+        else _LEGACY_EMBED_CHARS,
     }
+
+
+def _header_embed_chars(entry: dict) -> int:
+    raw = entry.get("embed_chars")
+    return int(raw) if isinstance(raw, int) and raw > 0 else _LEGACY_EMBED_CHARS
 
 
 def load(
@@ -59,12 +75,18 @@ def load(
     provider: str,
     model: str,
     dim: Optional[int],
+    embed_chars: Optional[int] = None,
 ) -> dict[str, list]:
     """Return ``{content_hash: vector}`` for the matching identity.
 
-    Identity mismatch (provider/model/dim) ⇒ empty dict (caller will
-    re-embed and rewrite the cache). Missing file ⇒ empty dict.
+    Identity mismatch (provider/model/dim/embed_chars) ⇒ empty dict (caller
+    will re-embed and rewrite the cache). Missing file ⇒ empty dict.
     Corrupt lines are silently skipped.
+
+    ⚠ ``embed_chars`` is checked here and not only at the key level (jdoc#111).
+    Salting the per-section key alone leaves the header untouched, so the old
+    entries load, merge with the new ones, and the sidecar accumulates BOTH
+    derivations instead of replacing one with the other.
     """
     path = _cache_path(base_path, owner, name)
     if not path.exists():
@@ -87,6 +109,8 @@ def load(
                         entry.get("provider") == provider
                         and entry.get("model") == model
                         and (dim is None or entry.get("dim") == dim)
+                        and (embed_chars is None
+                             or _header_embed_chars(entry) == embed_chars)
                     ):
                         header_ok = True
                         continue
@@ -105,6 +129,65 @@ def load(
     return out
 
 
+def identity(base_path: Optional[str], owner: str, name: str) -> Optional[dict]:
+    """Return the sidecar's stored ``{provider, model, dim}``, or None (jdoc#109).
+
+    ⚠⚠ ``load()`` collapses "no sidecar" and "sidecar under a DIFFERENT model"
+    into the same empty dict, so no caller could tell a first index from a
+    model rotation. That is why rotation went undetected: the incremental path
+    saw ``{}``, embedded the zero changed sections it had, and wrote nothing —
+    leaving 384-dim vectors on disk under a 768-dim query encoder.
+
+    Returning None for absent and a dict for present is the whole point;
+    do not "simplify" this back to a falsy-on-both signature.
+    """
+    path = _cache_path(base_path, owner, name)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    return None
+                if entry.get("_header") is True:
+                    return {
+                        "provider": entry.get("provider"),
+                        "model": entry.get("model"),
+                        "dim": entry.get("dim"),
+                        # Normalized, so a pre-jdoc#111 sidecar reports the
+                        # 1000 it was actually built at rather than None.
+                        "embed_chars": _header_embed_chars(entry),
+                    }
+                # A body line before any header: pre-header file, unknown identity.
+                return None
+    except OSError:
+        return None
+    return None
+
+
+def identity_matches(stored: Optional[dict], provider: str, model: str,
+                     dim: Optional[int], embed_chars: Optional[int] = None) -> bool:
+    """True when ``stored`` describes the active provider/model/dim/embed_chars.
+
+    Mirrors the header comparison inside ``load()`` exactly, including its
+    ``dim is None`` tolerance and the legacy ``embed_chars`` default, so the
+    two can never drift apart.
+    """
+    if not stored:
+        return False
+    return (
+        stored.get("provider") == provider
+        and stored.get("model") == model
+        and (dim is None or stored.get("dim") == dim)
+        and (embed_chars is None or _header_embed_chars(stored) == embed_chars)
+    )
+
+
 def write(
     base_path: Optional[str],
     owner: str,
@@ -114,6 +197,7 @@ def write(
     model: str,
     dim: Optional[int],
     entries: Iterable[tuple[str, list]],
+    embed_chars: Optional[int] = None,
 ) -> None:
     """Atomically rewrite the cache for this index.
 
@@ -126,7 +210,7 @@ def write(
     tmp = path.with_suffix(path.suffix + ".tmp")
     with _CACHE_LOCK:
         with tmp.open("w", encoding="utf-8") as fh:
-            fh.write(json.dumps(_identity(provider, model, dim)) + "\n")
+            fh.write(json.dumps(_identity(provider, model, dim, embed_chars)) + "\n")
             for h, vec in entries:
                 if not isinstance(h, str) or not isinstance(vec, list):
                     continue

@@ -28,6 +28,16 @@ except ImportError:  # pragma: no cover - non-Windows
 from ..embeddings import embed_query, cosine_similarity
 
 INDEX_VERSION = 3
+
+# How long `delete_index(lock_wait=True)` may wait for a contended retirement
+# record before declaring the lifecycle busy.
+#
+# ⚠ jdoc#114: named because a test duplicated this as a bare `1.0` literal and
+# asserted the TOTAL round trip finished in under it — i.e. the whole call had
+# to beat the budget of one step inside it, leaving zero headroom by
+# construction. It went red at 1.588 s on a loaded Windows runner. Anything
+# asserting against this budget must import it, not restate it.
+RECORD_LOCK_WAIT_SECONDS = 1.0
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _UNSET = object()
 
@@ -302,6 +312,15 @@ class DocIndex:
     # forms the corpus identity index_local uses to prevent duplicate indexes.
     # Empty for legacy/GitHub indexes — legacy is presumed full-corpus.
     corpus_selection: str = ""
+    # jdoc#116: the corpus-shaping patterns THEMSELVES, not just their digest.
+    # `corpus_selection` records THAT a corpus was shaped ("full+shape:<hash>")
+    # and never HOW, so before this field a re-entry point that inherited the
+    # descriptor would have asserted an exclusion it could not reapply: the
+    # index would claim `full+shape:...` while containing the excluded files.
+    # Empty list = no shaping (legacy indexes included; absence is not evidence
+    # of a shaped corpus, and a legacy `full+shape:` with no stored patterns is
+    # therefore treated as unknown-shape, never as unshaped).
+    corpus_shape_patterns: list = field(default_factory=list)
     # jdoc#83 (Item B): worktree-translated identity evidence. lineage key =
     # sha1[:16] of the normalized Git common directory (linked-worktree
     # family); relative root = corpus location relative to the worktree top
@@ -488,56 +507,128 @@ class DocIndex:
     def _strip(sec: dict) -> dict:
         return {k: v for k, v in sec.items() if k not in ("content", "embedding")}
 
-    def _ensure_semantic_matrix(self):
-        """Lazily build and cache this index's L2-normalized embedding matrix
-        (jdoc#63). Returns (np, matrix, rows) with rows the embedded sections in
-        matrix-row order, or None when numpy is unavailable or there are no
-        embeddings (caller then scores per-section in pure Python). Cached on the
-        instance; DocStore caches a DocIndex by index path + mtime, so a re-index
-        yields a fresh instance and the matrix rebuilds -- no manual invalidation.
-        The cache attr is set lazily (not a dataclass field), so it never
-        serializes.
+    def _semantic_matrices(self):
+        """L2-normalized embedding matrices, BUCKETED BY VECTOR LENGTH (jdoc#109).
+
+        Returns ``(np, {dim: (matrix, rows)})`` or None when numpy is
+        unavailable or nothing is embedded.
+
+        ⚠⚠ Bucketing is not tidiness. Stored vectors and the live query encoder
+        can disagree: rotate ``JDOCMUNCH_ST_MODEL`` and the sidecar keeps 384-dim
+        vectors while queries arrive at 768. The old single matrix then hit
+        ``mat @ q`` and raised a raw numpy error out of every search
+        ("size 768 is different from 384") — the index read as destroyed when
+        only its vectors were stale. A sidecar can even hold BOTH widths at
+        once, after a rotation that touched some files, and ``np.asarray`` on
+        ragged rows raises before any query is scored.
+
+        Keying by width means the caller asks for the bucket its query actually
+        fits and the rest are simply absent, which is a miss, not a crash.
         """
         # jdoc#75: vectors live in the embeddings sidecar; stream them onto the
         # section dicts before building the matrix (no-op once rehydrated).
         self._rehydrate_embeddings()
-        cached = getattr(self, "_sem_matrix_cache", "unset")
+        cached = getattr(self, "_sem_matrices_cache", "unset")
         if cached != "unset":
             return cached
         try:
             import numpy as np
         except Exception:
-            self._sem_matrix_cache = None
+            self._sem_matrices_cache = None
             return None
-        rows = [s for s in self.sections if s.get("embedding")]
+
+        by_dim: dict = {}
+        for sec in self.sections:
+            emb = sec.get("embedding")
+            if not emb:
+                continue
+            by_dim.setdefault(len(emb), []).append(sec)
+
         result = None
-        if rows:
-            mat = np.asarray([s["embedding"] for s in rows], dtype=np.float64)
-            norms = np.linalg.norm(mat, axis=1, keepdims=True)
-            norms[norms == 0.0] = 1.0   # zero vector stays zero -> cosine 0, never NaN
-            mat /= norms
+        if by_dim:
+            built = {}
+            for dim, rows in by_dim.items():
+                mat = np.asarray([s["embedding"] for s in rows], dtype=np.float64)
+                norms = np.linalg.norm(mat, axis=1, keepdims=True)
+                norms[norms == 0.0] = 1.0  # zero vector stays zero -> cosine 0, never NaN
+                mat /= norms
+                built[dim] = (mat, rows)
+            result = (np, built)
+        self._sem_matrices_cache = result
+        return result
+
+    def _ensure_semantic_matrix(self):
+        """Back-compat shim: ``(np, matrix, rows)`` for the WIDEST-COVERAGE dim.
+
+        Predates the per-dimension bucketing in ``_semantic_matrices``. Kept
+        because it is the documented jdoc#63 entry point; scoring goes through
+        the bucketed form so it can match the query's own width.
+        """
+        built = self._semantic_matrices()
+        cached = getattr(self, "_sem_matrix_cache", "unset")
+        if cached != "unset":
+            return cached
+        result = None
+        if built is not None:
+            np, by_dim = built
+            # Most-covered width, ties broken by the smaller dim for determinism.
+            dim = sorted(by_dim, key=lambda d: (-len(by_dim[d][1]), d))[0]
+            mat, rows = by_dim[dim]
             result = (np, mat, rows)
         self._sem_matrix_cache = result
         return result
 
+    def embedding_dims(self) -> dict:
+        """``{vector_length: section_count}`` over stored embeddings (jdoc#109).
+
+        The signal a caller needs to say "your index is embedded at 384 and
+        your model emits 768" instead of surfacing a matmul traceback.
+        """
+        self._rehydrate_embeddings()
+        out: dict = {}
+        for sec in self.sections:
+            emb = sec.get("embedding")
+            if emb:
+                out[len(emb)] = out.get(len(emb), 0) + 1
+        return out
+
     def _semantic_scored(self, query_vec, doc_path, path_glob):
         """Unsorted [(cosine, section), ...] for embedded, path-included sections
         (jdoc#63). One matrix-vector product when numpy is present, else the
-        original per-section pure-Python cosine. Equivalent to the loop it
-        replaces: same self / no-embedding / path filters, same cosine score.
+        original per-section pure-Python cosine.
+
+        jdoc#109: sections whose vector width differs from the query's are
+        skipped rather than scored. Both branches need that check and for
+        different reasons — numpy RAISES on the mismatched product, while
+        ``cosine_similarity``'s ``zip`` silently truncates to the shorter vector
+        and returns a plausible number, which is the worse of the two failures
+        because nothing anywhere reports it.
         """
-        built = self._ensure_semantic_matrix()
+        qdim = len(query_vec)
+        stored = self.embedding_dims()
+        # ⚠ Degrading to lexical WITHOUT saying so would swap a loud failure for
+        # a quiet one. The caller lifts this into `_meta.embedding_stale`.
+        if stored and qdim not in stored:
+            self._embedding_width_mismatch = {
+                "query_dim": qdim,
+                "stored_dims": dict(sorted(stored.items())),
+            }
+
+        built = self._semantic_matrices()
         if built is None:
             out = []
             for sec in self.sections:
                 if self._path_excluded(sec, doc_path, path_glob):
                     continue
                 emb = sec.get("embedding")
-                if not emb:
+                if not emb or len(emb) != qdim:
                     continue
                 out.append((cosine_similarity(query_vec, emb), sec))
             return out
-        np, mat, rows = built
+        np, by_dim = built
+        if qdim not in by_dim:
+            return []
+        mat, rows = by_dim[qdim]
         q = np.asarray(query_vec, dtype=np.float64)
         qn = float(np.linalg.norm(q))
         if qn == 0.0:
@@ -844,6 +935,9 @@ class DocStore:
                 "source_root": getattr(index, "source_root", "") or "",
                 "source_repo": getattr(index, "source_repo", "") or "",
                 "corpus_selection": getattr(index, "corpus_selection", "") or "",
+                "corpus_shape_patterns": list(
+                    getattr(index, "corpus_shape_patterns", None) or []
+                ),
                 "worktree_lineage_key": getattr(index, "worktree_lineage_key", "") or "",
                 "repo_relative_root": getattr(index, "repo_relative_root", "") or "",
                 "reconciliation_state": getattr(index, "reconciliation_state", "") or "",
@@ -1095,6 +1189,7 @@ class DocStore:
         source_root: str = "",
         source_repo: str = "",
         corpus_selection: str = "",
+        corpus_shape_patterns: Optional[list] = None,
         worktree_lineage_key: str = "",
         repo_relative_root: str = "",
         corpus_identity_version: int = 0,
@@ -1129,6 +1224,7 @@ class DocStore:
             source_root=source_root or "",
             source_repo=source_repo or "",
             corpus_selection=corpus_selection or "",
+            corpus_shape_patterns=list(corpus_shape_patterns or []),
             worktree_lineage_key=worktree_lineage_key or "",
             repo_relative_root=repo_relative_root or "",
             corpus_identity_version=int(corpus_identity_version or 0),
@@ -1214,6 +1310,7 @@ class DocStore:
             source_root=data.get("source_root", ""),
             source_repo=data.get("source_repo", ""),
             corpus_selection=data.get("corpus_selection", ""),
+            corpus_shape_patterns=list(data.get("corpus_shape_patterns") or []),
             worktree_lineage_key=data.get("worktree_lineage_key", ""),
             repo_relative_root=data.get("repo_relative_root", ""),
             corpus_identity_version=int(data.get("corpus_identity_version", 0) or 0),
@@ -1306,6 +1403,7 @@ class DocStore:
         source_root=_UNSET,
         source_repo=_UNSET,
         corpus_selection=_UNSET,
+        corpus_shape_patterns=_UNSET,
         worktree_lineage_key=_UNSET,
         repo_relative_root=_UNSET,
         corpus_identity_version=_UNSET,
@@ -1404,6 +1502,11 @@ class DocStore:
                 getattr(index, "corpus_selection", "")
                 if corpus_selection is _UNSET
                 else (corpus_selection or "")
+            ),
+            corpus_shape_patterns=(
+                list(getattr(index, "corpus_shape_patterns", None) or [])
+                if corpus_shape_patterns is _UNSET
+                else list(corpus_shape_patterns or [])
             ),
             worktree_lineage_key=(
                 getattr(index, "worktree_lineage_key", "")
@@ -1904,7 +2007,7 @@ class DocStore:
         if not try_void_retirements_referencing(
             self.base_path,
             f"{owner}/{name}",
-            timeout_seconds=1.0 if lock_wait else 0.0,
+            timeout_seconds=RECORD_LOCK_WAIT_SECONDS if lock_wait else 0.0,
         ):
             # A retirement owning this handle as its retained peer is inside
             # its destructive step right now. Retryable, and NOT missing.
@@ -2071,6 +2174,13 @@ class DocStore:
             d["source_repo"] = index.source_repo
         if getattr(index, "corpus_selection", ""):
             d["corpus_selection"] = index.corpus_selection
+        # jdoc#116. Written only when non-empty, like its neighbours, so an
+        # unshaped index gains no key and legacy files are byte-identical.
+        # ⚠ This serializer is an explicit ALLOW-LIST, not asdict(): a field
+        # added to the dataclass and to every save/load signature still round-
+        # trips as empty until it is named HERE. That cost a debugging cycle.
+        if getattr(index, "corpus_shape_patterns", None):
+            d["corpus_shape_patterns"] = list(index.corpus_shape_patterns)
         if getattr(index, "worktree_lineage_key", ""):
             d["worktree_lineage_key"] = index.worktree_lineage_key
         if getattr(index, "repo_relative_root", ""):

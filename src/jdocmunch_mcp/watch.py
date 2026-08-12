@@ -173,6 +173,59 @@ def _make_watch_filter(doc_exts: set[str], storage_path: str):
     return _filter
 
 
+def _corpus_filters(root: str, name: str, storage_path: str):
+    """Return (gitignore_spec, extra_spec) for a watched root, or (None, None).
+
+    jdoc#115: the watcher must not re-admit a file that full discovery excluded.
+    ⚠ This belongs HERE and deliberately NOT in `index_local`'s `paths=` branch.
+    A caller naming a file explicitly bypassing `.gitignore` is intentional and
+    documented (SPEC.md, the 1.61.0 changelog); a human asking for a specific
+    generated file should get it. The watcher is not that caller — it
+    manufactures the path list from filesystem events, so the bypass fires for
+    files nobody asked for. Same split jcodemunch uses for CACHEDIR.TAG:
+    explicit paths opt past the rules, the watcher fast path applies them.
+
+    jdoc#116's stored `corpus_shape_patterns` are applied for the same reason:
+    a watcher that reinstates a pattern-excluded file is that defect wearing a
+    different hat.
+    """
+    from .tools.index_local import _load_gitignore
+
+    gitignore_spec = None
+    extra_spec = None
+    try:
+        gitignore_spec = _load_gitignore(Path(root))
+    except Exception:
+        logger.debug("watch: .gitignore load failed for %s", root, exc_info=True)
+    try:
+        import pathspec
+        from .storage.doc_store import DocStore
+
+        idx = DocStore(base_path=storage_path).load_index("local", name)
+        patterns = list(getattr(idx, "corpus_shape_patterns", None) or []) if idx else []
+        if patterns:
+            extra_spec = pathspec.PathSpec.from_lines("gitignore", patterns)
+    except Exception:
+        logger.debug("watch: shape-pattern load failed for %s", name, exc_info=True)
+    return gitignore_spec, extra_spec
+
+
+def _excluded_from_corpus(abs_path: str, root: str, gitignore_spec, extra_spec) -> bool:
+    """True when this path is outside the indexed corpus by the root's rules."""
+    if gitignore_spec is None and extra_spec is None:
+        return False
+    try:
+        rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+    except ValueError:
+        return False  # different drive; containment already checked upstream
+    if rel.startswith(".."):
+        return False
+    for spec in (gitignore_spec, extra_spec):
+        if spec is not None and spec.match_file(rel):
+            return True
+    return False
+
+
 def _owning_root(path: str, roots_map: "dict[str, str]") -> Optional[str]:
     """Return the watched root that contains ``path`` (longest match wins)."""
     best: Optional[str] = None
@@ -208,6 +261,22 @@ async def _handle_changes(
 
     for root, paths in by_root.items():
         name = roots_map[root]
+        # jdoc#115: drop events for files the indexed corpus excludes, BEFORE
+        # they reach the paths= bypass. Filtering here rather than suppressing
+        # the call's effects afterwards also keeps the log honest: a batch of
+        # only-ignored edits must not report "re-indexed 1 file(s)".
+        gitignore_spec, extra_spec = _corpus_filters(root, name, storage_path)
+        kept = sorted(
+            p for p in paths
+            if not _excluded_from_corpus(p, root, gitignore_spec, extra_spec)
+        )
+        if not kept:
+            dropped = len(paths)
+            logger.debug(
+                "watch: %d change(s) in %s ignored by the corpus rules", dropped, name
+            )
+            continue
+        paths = kept
         try:
             # Subset refresh (jdoc#31): only the changed paths are re-indexed;
             # unlisted docs are never pruned, a listed-but-deleted file deletes.

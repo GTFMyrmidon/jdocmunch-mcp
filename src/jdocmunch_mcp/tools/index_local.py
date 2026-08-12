@@ -31,7 +31,7 @@ from ..summarizer import summarize_sections
 from ..embeddings import embed_sections, get_provider_name, should_embed
 from ._embedding_coverage import attach_embedding_coverage as _attach_embedding_coverage
 from ._git import local_git_head, local_git_paths_dirty, local_git_paths_tracked, stable_local_git_state
-from ._constants import SKIP_PATTERNS
+from ._constants import SKIP_PATTERNS, is_skipped_dot_dir
 
 
 def _default_local_name(folder_name: str, folder_path: Optional[str] = None) -> str:
@@ -1125,6 +1125,85 @@ def _should_skip(rel_path: str) -> bool:
     return False
 
 
+def _sidecar_view(sections: list, content_for=None) -> list:
+    """Normalize sections to dicts carrying body text, for the sidecar builders.
+
+    jdoc#117: all four sidecars are derived from section CONTENT, and the two
+    call paths hand it over differently. The full path holds in-memory
+    ``Section`` objects whose ``.content`` is populated; the incremental path
+    holds persisted dicts, and ``Section.to_dict`` deliberately drops content to
+    keep the monolith small. Passing those dicts straight through would build
+    every sidecar from empty strings -- a silent wipe, worse than the staleness
+    it is meant to fix -- so the incremental caller supplies ``content_for`` to
+    re-read the body by byte range.
+
+    ``embedding`` is carried through when present because the related-graph's
+    semantic half reads it; the other three ignore it.
+    """
+    out: list = []
+    for sec in sections:
+        if isinstance(sec, dict):
+            row = dict(sec)
+            if not row.get("content") and content_for is not None:
+                row["content"] = content_for(sec) or ""
+        else:
+            row = sec.to_dict()
+            row["content"] = getattr(sec, "content", "") or ""
+            emb = getattr(sec, "embedding", None)
+            if emb:
+                row["embedding"] = emb
+        out.append(row)
+    return out
+
+
+def _write_sidecars(storage_path, owner: str, name: str, sections: list) -> dict:
+    """Rebuild the four derived sidecars. Returns a per-sidecar skip report.
+
+    jdoc#117: these used to live inline on the full-index path only, three of
+    them behind a bare ``except Exception: pass``. Two consequences, both
+    invisible: an incremental refresh never rebuilt them at all (so
+    ``get_related_sections`` answered from whenever the last FULL index ran),
+    and a genuine failure on the full path was indistinguishable from a clean
+    result. #103 already made that argument for the near-duplicate sidecar; it
+    applies to all four. Failures are reported, never raised -- a sidecar is
+    enrichment and must not fail an otherwise-good index.
+    """
+    skipped: dict = {}
+
+    # v1.19.0: glossary.
+    try:
+        write_terms(storage_path, owner, name, extract_glossary(sections))
+    except Exception as e:
+        skipped["glossary"] = {"reason": "error", "detail": str(e)[:200]}
+
+    # v1.24.0: related-graph adjacency list.
+    try:
+        from ..retrieval.related_persist import write as _write_related
+        _write_related(storage_path, owner, name, sections)
+    except Exception as e:
+        skipped["related"] = {"reason": "error", "detail": str(e)[:200]}
+
+    # v1.24.0: boilerplate detector.
+    try:
+        from ..retrieval.boilerplate import write as _write_boilerplate
+        _write_boilerplate(storage_path, owner, name, sections)
+    except Exception as e:
+        skipped["boilerplate"] = {"reason": "error", "detail": str(e)[:200]}
+
+    # v1.34.0: section near-duplicate detector. jdoc#103: ceiling-guarded, and
+    # a skip is REPORTED rather than looking like "no duplicates found".
+    try:
+        from ..retrieval.dedup import write as _write_dedup, last_skip_reason
+        _write_dedup(storage_path, owner, name, sections)
+        reason = last_skip_reason()
+        if reason:
+            skipped["dedup"] = reason
+    except Exception as e:
+        skipped["dedup"] = {"reason": "error", "detail": str(e)[:200]}
+
+    return skipped
+
+
 _DISCOVERY_HARD_CEILING_MULT = 20  # safety: stop counting at max_files * this
 
 
@@ -1174,8 +1253,14 @@ def discover_doc_files(
     follow_symlinks: bool = False,
     sort_by: str = "newest",
     skip_counts: Optional[dict] = None,
+    include_dot_dirs: Optional[list] = None,
 ) -> tuple:
     """Discover doc files (.md, .txt, .rst) with security filtering.
+
+    ``include_dot_dirs`` (jdoc#113): directory NAMES to index despite starting
+    with a dot, unioned with ``DOT_DIR_ALLOWLIST`` (``.github``). Dotted
+    directories are otherwise pruned by rule, so a tool that writes a dotfile
+    cache into the corpus cannot have it ingested as documentation.
 
     ``skip_counts`` (v1.103.0): optional dict the walk tallies per-reason skip
     counts into (``unsupported_extension``, ``oversize``, ``gitignored``, ...)
@@ -1222,12 +1307,23 @@ def discover_doc_files(
         # ⚠ Build the relative path with _walk_rel, never `lstrip("./")` — see
         # its docstring (jdoc#102). Every ignore check below must see the SAME
         # string git would match, or an ignored directory is silently walked.
-        dirnames[:] = [
-            d for d in dirnames
-            if not _should_skip(_walk_rel(dir_rel, f"{d}/"))
-            and not (gitignore_spec and gitignore_spec.match_file(_walk_rel(dir_rel, f"{d}/")))
-            and not (extra_spec and extra_spec.match_file(_walk_rel(dir_rel, f"{d}/")))
-        ]
+        kept_dirs = []
+        for d in dirnames:
+            # jdoc#113: dotted directories are pruned by RULE. Counted so the
+            # exclusion is reportable — a walk that silently drops a subtree is
+            # indistinguishable from a corpus that never had one.
+            if is_skipped_dot_dir(d, include_dot_dirs):
+                _count_skip(skip_counts, "dot_directory")
+                continue
+            walk_rel = _walk_rel(dir_rel, f"{d}/")
+            if _should_skip(walk_rel):
+                continue
+            if gitignore_spec and gitignore_spec.match_file(walk_rel):
+                continue
+            if extra_spec and extra_spec.match_file(walk_rel):
+                continue
+            kept_dirs.append(d)
+        dirnames[:] = kept_dirs
 
         for filename in filenames:
             file_path = dir_path / filename
@@ -1308,6 +1404,7 @@ def _resolve_explicit_paths(
     paths: list,
     max_files: int,
     follow_symlinks: bool,
+    include_dot_dirs: Optional[list] = None,
 ) -> tuple:
     """Resolve a caller-supplied list of paths into the doc-file shape that the
     downstream pipeline expects. Each entry may be:
@@ -1355,10 +1452,14 @@ def _resolve_explicit_paths(
             continue
 
         if p.is_dir():
+            # ⚠ `p` is this sub-walk's ROOT, so naming a dotted directory in
+            # `paths` still indexes it (an explicit request is not a stray
+            # cache). Only dotted directories BELOW it are pruned.
             sub_files, sub_warnings, _sub_discovered = discover_doc_files(
                 p,
                 max_files=max_files - len(files),
                 follow_symlinks=follow_symlinks,
+                include_dot_dirs=include_dot_dirs,
             )
             warnings.extend(sub_warnings)
             for f in sub_files:
@@ -1409,6 +1510,7 @@ def index_local(
     use_embeddings="auto",
     storage_path: Optional[str] = None,
     extra_ignore_patterns: Optional[list] = None,
+    include_dot_dirs: Optional[list] = None,
     follow_symlinks: bool = False,
     incremental: bool = True,
     max_files: int = 10_000,
@@ -1523,6 +1625,28 @@ def index_local(
     claim_store = None
 
     try:
+        # jdoc#116: resolve the effective shaping patterns BEFORE discovery,
+        # because inheritance has to change which files the walk visits. A
+        # descriptor inherited without the patterns would assert an exclusion
+        # the walk did not apply, i.e. an index claiming `full+shape:<hash>`
+        # while containing the excluded file. That is worse than the widening
+        # it replaces, because today's widening is at least disclosed.
+        #
+        # None and [] are DIFFERENT and that distinction is the whole fix:
+        #   None -> caller said nothing  -> inherit whatever is stored
+        #   []   -> caller said "none"   -> widen, and disclose the change
+        # Every entry point that omits the argument (the CLI, a watch refresh)
+        # gets None, which is precisely the population this issue is about.
+        store = DocStore(base_path=storage_path)
+        _prior = store.load_index(owner, repo_name)
+        inherited_patterns: list = []
+        if extra_ignore_patterns is None and _prior is not None:
+            inherited_patterns = list(
+                getattr(_prior, "corpus_shape_patterns", None) or []
+            )
+            if inherited_patterns:
+                extra_ignore_patterns = inherited_patterns
+
         requested_rels: list = []
         # v1.103.0: per-reason skip tally from the full discovery walk — the
         # index-time half of the coverage contract. Only a full walk (no
@@ -1534,6 +1658,7 @@ def index_local(
                 list(paths),
                 max_files=max_files,
                 follow_symlinks=follow_symlinks,
+                include_dot_dirs=include_dot_dirs,
             )
             discovered_count = len(doc_files)
         else:
@@ -1541,6 +1666,7 @@ def index_local(
                 folder_path,
                 max_files=max_files,
                 extra_ignore_patterns=extra_ignore_patterns,
+                include_dot_dirs=include_dot_dirs,
                 follow_symlinks=follow_symlinks,
                 sort_by=sort_by,
                 skip_counts=walk_skip_counts,
@@ -1548,7 +1674,6 @@ def index_local(
         warnings.extend(discover_warnings)
 
         initial_git_state = (local_git_head(folder_path), False)
-        store = DocStore(base_path=storage_path)
         existing_index = store.load_index(owner, repo_name)
 
         # --- jdoc#81: corpus-identity resolution BEFORE any persistent write.
@@ -2054,6 +2179,90 @@ def index_local(
             source_dirty = True
         sha_certified = bool(head_sha and not source_dirty and paths_tracked)
 
+        # --- jdoc#109: embedding-model rotation forces a full re-embed ---
+        # ⚠⚠ This has to sit BEFORE the incremental branch, not inside it. The
+        # reported repro rotates the model and touches no file, so the branch
+        # below returns "No changes detected" without ever calling
+        # embed_sections — the stale 384-dim sidecar survives under a 768-dim
+        # encoder and every later search dies on the product. Escalating to the
+        # full path is what actually re-embeds, and it already passes
+        # prune=True, which is the only caller that purges the old identity.
+        embedding_rotation_fields: dict = {}
+        if use_embeddings and existing_index is not None:
+            from ..embeddings import cache as _emb_cache
+            from ..embeddings import provider as _emb_provider
+
+            # ⚠ Read the identity from the provider module, NOT the name bound
+            # into this module at import. `embed_sections` writes the sidecar
+            # header from the provider module's own view, so reading it from
+            # anywhere else lets the detector disagree with the writer and
+            # report a rotation that never happened.
+            _provider_identity = _emb_provider._provider_identity
+            _active_provider = _emb_provider.get_provider_name() or ""
+            if _active_provider:
+                _active_model, _active_dim = _provider_identity(_active_provider)
+                # jdoc#111: the embed char cap is part of the identity, so
+                # raising JDOCMUNCH_EMBED_CHARS escalates exactly like a model
+                # change. Without this, a cap change on an unchanged corpus
+                # would report success and keep the short-text vectors.
+                _active_chars = _emb_provider._embed_chars()
+                _stored = _emb_cache.identity(storage_path, owner, repo_name)
+                if _stored is not None and not _emb_cache.identity_matches(
+                    _stored, _active_provider, _active_model, _active_dim,
+                    _active_chars,
+                ):
+                    # ⚠⚠ A paid cloud provider is NOT auto-escalated. This path
+                    # is reachable from `watch.py`, a background daemon that
+                    # calls index_local on every file-change batch and prints
+                    # only "re-indexed N file(s)" — so an unattended service
+                    # would re-send the whole corpus to a billed third party
+                    # and the disclosure below would never reach a human.
+                    # Same reasoning as jcm's `refresh` forcing summaries off:
+                    # a scheduled job must not bill unasked. Identity can also
+                    # flip with no user action at all (an openai-compatible
+                    # endpoint restarted on another model reprobes a new dim),
+                    # so "they changed the model, they must want this" does not
+                    # hold. `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS` is the existing,
+                    # documented consent signal — reuse it rather than minting
+                    # a second one. `--rebuild` stays the explicit override.
+                    _is_paid = (
+                        _active_provider
+                        in _emb_provider._PAID_CLOUD_EMBEDDING_PROVIDERS
+                        and not _emb_provider._paid_embeddings_allowed()
+                    )
+                    embedding_rotation_fields = {
+                        "embedding_rotation": {
+                            "from": _stored,
+                            "to": {
+                                "provider": _active_provider,
+                                "model": _active_model,
+                                "dim": _active_dim,
+                                "embed_chars": _active_chars,
+                            },
+                            "action": "rebuild_required" if _is_paid
+                            else "full_re_embed",
+                        }
+                    }
+                    if _is_paid:
+                        # Left stale on purpose: the vectors are the wrong
+                        # width, which search degrades and discloses, and that
+                        # is recoverable. Silently spending is not.
+                        embedding_rotation_fields["embedding_rotation"]["reason"] = (
+                            f"{_active_provider} is a paid cloud provider; "
+                            "re-embedding the corpus was not performed "
+                            "automatically"
+                        )
+                        embedding_rotation_fields["embedding_rotation"]["fix"] = (
+                            "re-index with --rebuild (or incremental=false), or "
+                            "set JDOCMUNCH_ALLOW_PAID_EMBEDDINGS=1 to allow "
+                            "automatic re-embedding"
+                        )
+                        use_embeddings = False
+                    else:
+                        # A re-embed of the whole corpus is a real cost, so it
+                        # is disclosed above rather than done quietly.
+                        incremental = False
+
         # --- Incremental path ---
         if incremental and existing_index is not None:
             changed, new, deleted = store.detect_changes(owner, repo_name, current_files)
@@ -2079,6 +2288,16 @@ def index_local(
             # jdoc#81: a full-corpus refresh (re)asserts the durable selection;
             # a subset-scoped `paths` refresh never redefines it.
             selection_kwargs = {} if paths else {"corpus_selection": call_selection}
+            # jdoc#116: persist the patterns alongside the descriptor. Storing
+            # only the digest is what made this defect unfixable-in-place: the
+            # descriptor records THAT the corpus was shaped and never HOW, so
+            # nothing downstream could reapply the exclusion. Written on the
+            # same `not paths` branch as the descriptor, so the two can never
+            # disagree about whether this call redefined the selection.
+            if not paths:
+                selection_kwargs["corpus_shape_patterns"] = sorted(
+                    {p for p in (extra_ignore_patterns or []) if isinstance(p, str) and p}
+                )
             # jdoc#80 Part C: a graduating full refresh clears the provisional
             # flag (the incremental save otherwise carries it forward). The
             # `not paths` graduation gate means this only fires on a full
@@ -2104,6 +2323,25 @@ def index_local(
                             "to": call_selection,
                         }
                     }
+                    # jdoc#116: an index written before patterns were persisted
+                    # carries `full+shape:<hash>` with nothing to reapply. We
+                    # cannot inherit it, so this call widens the corpus exactly
+                    # as before — but silence here is what the issue is about.
+                    # Say that the shape is unrecoverable and name the remedy.
+                    if (
+                        extra_ignore_patterns is None
+                        and "+shape:" in stored_sel
+                        and not getattr(existing_index, "corpus_shape_patterns", None)
+                    ):
+                        warnings.append(
+                            f"This index was shaped ({stored_sel}) by an older "
+                            "version that recorded the descriptor but not the "
+                            "patterns, so the exclusion cannot be reapplied "
+                            "automatically and this refresh has WIDENED the "
+                            "corpus. Re-run once with the patterns to make them "
+                            "durable: index_local(extra_ignore_patterns=[...]) "
+                            "or --extra-ignore-pattern on the CLI."
+                        )
             if not changed and not new and not deleted:
                 updated = existing_index
                 if (
@@ -2136,11 +2374,21 @@ def index_local(
                     "repo": f"{owner}/{repo_name}",
                     "folder_path": str(folder_path),
                     "incremental": True,
+                    # jdoc#109: the full-rebuild payload has always reported
+                    # this and the incremental ones did not, so a caller could
+                    # not tell "embeddings are fine" from "embeddings were
+                    # never touched". Absence is not a status.
+                    "semantic_search": bool(use_embeddings) and get_provider_name() is not None,
                     "changed": 0, "new": 0, "deleted": 0,
                     "_meta": {"latency_ms": latency_ms},
                 }
                 nochange_result.update(derivation_fields)
                 nochange_result.update(reuse_fields)
+                # jdoc#109: a gated paid rotation returns HERE, not through the
+                # full path. Without this the one payload that most needs the
+                # disclosure — "nothing changed, and your vectors are stale" —
+                # would be the one that omits it.
+                nochange_result.update(embedding_rotation_fields)
                 _attach_reconciliation_outcome(
                     nochange_result, graduating, reconciliation_disclosure
                 )
@@ -2192,6 +2440,44 @@ def index_local(
                 **selection_kwargs,
             )
 
+            # jdoc#117: rebuild the derived sidecars here too. They used to run
+            # on the full-index path ONLY, so on any incrementally-refreshed
+            # index get_related_sections answered from whenever the last FULL
+            # index ran -- unbounded staleness, and silent because this path
+            # never attempted the write.
+            #
+            # The persisted section dicts carry no body text (Section.to_dict
+            # drops it), so hydrate through the store's byte-range loader before
+            # building; the in-memory raw text for files touched THIS run is not
+            # on disk under the old byte offsets yet, so it shadows the loader.
+            sidecar_skips: dict = {}
+            if updated is not None:
+                try:
+                    reloaded = store.load_index(owner, repo_name)
+                    _loader = getattr(reloaded, "_content_loader", None) if reloaded else None
+
+                    def _content_for(sec: dict) -> str:
+                        buf = raw_subset.get(sec.get("doc_path", ""))
+                        start = int(sec.get("byte_start", 0))
+                        end = int(sec.get("byte_end", 0))
+                        if buf is not None and end > start:
+                            return buf[start:end]
+                        if _loader is None:
+                            return ""
+                        try:
+                            return _loader(sec.get("doc_path", ""), start, end) or ""
+                        except Exception:
+                            return ""
+
+                    sidecar_skips = _write_sidecars(
+                        storage_path, owner, repo_name,
+                        _sidecar_view(updated.sections, content_for=_content_for),
+                    )
+                except Exception as _e:
+                    sidecar_skips = {
+                        "all": {"reason": "error", "detail": str(_e)[:200]}
+                    }
+
             latency_ms = int((time.perf_counter() - t0) * 1000)
             result = {
                 "success": True,
@@ -2211,7 +2497,14 @@ def index_local(
             )
             result.update(derivation_fields)
             result.update(reuse_fields)
+            # jdoc#109: a gated paid rotation with changed files lands here.
+            result.update(embedding_rotation_fields)
             result.update(selection_changed_fields)
+            # jdoc#117: same disclosure as the full path.
+            if sidecar_skips:
+                result["sidecars_skipped"] = sidecar_skips
+                if sidecar_skips.get("dedup"):
+                    result["dedup_skipped"] = sidecar_skips["dedup"]
             _attach_reconciliation_outcome(
                 result, graduating, reconciliation_disclosure
             )
@@ -2306,45 +2599,24 @@ def index_local(
             sha_certified=sha_certified,
             source_root=str(folder_path),
             corpus_selection=call_selection,
+            # jdoc#116: the CREATE path needs this as much as the refresh path.
+            # Persisting only on refresh would mean a corpus shaped at creation
+            # (the common case, and the reporter's) still had nothing to
+            # inherit, so the very first CLI re-index would widen it anyway.
+            corpus_shape_patterns=sorted(
+                {p for p in (extra_ignore_patterns or []) if isinstance(p, str) and p}
+            ),
             reconciliation_state=provisional_state,
             coverage=coverage_block or None,
             **lineage_kwargs,
         )
 
-        # v1.19.0: glossary sidecar built from final section content.
-        try:
-            entries = extract_glossary(all_sections)
-            write_terms(storage_path, owner, repo_name, entries)
-        except Exception:
-            pass  # glossary is best-effort; never fail indexing
-
-        # v1.24.0: related-graph adjacency list sidecar.
-        try:
-            from ..retrieval.related_persist import write as _write_related
-            _write_related(storage_path, owner, repo_name, all_sections)
-        except Exception:
-            pass
-
-        # v1.24.0: boilerplate detector sidecar.
-        try:
-            from ..retrieval.boilerplate import write as _write_boilerplate
-            _write_boilerplate(storage_path, owner, repo_name, all_sections)
-        except Exception:
-            pass
-
-        # v1.34.0: section near-duplicate detector sidecar.
-        # jdoc#103: all-pairs Jaccard, ~O(n^2.3). It is guarded by a section
-        # ceiling now, and a skip is REPORTED -- the bare `except: pass` below
-        # means a silent skip is indistinguishable from "no duplicates found",
-        # which is what made the cost invisible on large corpora.
-        dedup_skipped = None
-        try:
-            from ..retrieval.dedup import write as _write_dedup, last_skip_reason
-            _write_dedup(storage_path, owner, repo_name,
-                         [s.to_dict() | {"content": getattr(s, "content", "") or ""} for s in all_sections])
-            dedup_skipped = last_skip_reason()
-        except Exception as _e:
-            dedup_skipped = {"reason": "error", "detail": str(_e)[:200]}
+        # jdoc#117: all four derived sidecars, in one place, each reporting its
+        # own skip. See _write_sidecars for why the bare passes are gone.
+        sidecar_skips = _write_sidecars(
+            storage_path, owner, repo_name, _sidecar_view(all_sections)
+        )
+        dedup_skipped = sidecar_skips.get("dedup")
 
         # v1.29.0: opt-in autotune. Runs the v1.23 weight tuner on this
         # repo's accumulated ranking events; no-op when telemetry isn't
@@ -2381,6 +2653,10 @@ def index_local(
         )
         result.update(derivation_fields)
         result.update(reuse_fields)
+        # jdoc#109: say that the run escalated and why. A caller who asked for
+        # an incremental refresh and silently got a full corpus re-embed has
+        # been billed for something it did not request.
+        result.update(embedding_rotation_fields)
         # jdoc#82 invariant 4 disclosure on the full-replace path too.
         if existing_index is not None:
             _stored_sel = getattr(existing_index, "corpus_selection", "") or "full"
@@ -2396,6 +2672,11 @@ def index_local(
         # omitted when the sidecar ran, per the omit-when-empty convention.
         if dedup_skipped:
             result["dedup_skipped"] = dedup_skipped
+        # jdoc#117: the other three sidecars disclose failure the same way.
+        # `dedup_skipped` is RETAINED above rather than folded into this block:
+        # 1.x forbids removing a response key that already ships.
+        if sidecar_skips:
+            result["sidecars_skipped"] = sidecar_skips
 
         # jdoc#80 Part B (B1): disclose reconciliation quarantine. A provisional
         # index was created because Git lineage could not be verified; it is

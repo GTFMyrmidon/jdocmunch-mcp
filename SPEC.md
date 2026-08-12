@@ -33,6 +33,8 @@
 
 `incremental` (default `true`): only re-parse files whose content hash changed since the last index. Set to `false` to force a full re-index.
 
+The `index-local` CLI exposes `--path`, `--name`, `--paths-from`, `--rebuild` (equivalent to `incremental=false`), `--no-ai-summaries`, and `--embeddings auto|on|off` (`--no-embeddings` is an alias for `off`). The two opt-outs matter for a corpus you do not want leaving the machine: without them the documented CLI route auto-detected a summarizer and sent section text to it, with nothing in `--help` saying it would (jdoc#108).
+
 Walks the local directory with full security controls: path traversal prevention, symlink escape protection, secret detection, binary filtering, `.gitignore` respect, and directory pruning. Parses `.md`, `.mdx`, `.markdown`, `.txt`, and `.rst` files.
 
 #### `index_repo` — Index a GitHub repository's documentation
@@ -546,6 +548,14 @@ All errors return:
 | `JDOCMUNCH_OPENAI_COMPAT_API_KEY` | Dedicated optional API key for `openai-compatible` embeddings        | No       |
 | `JDOCMUNCH_OPENAI_COMPAT_BATCH_SIZE` | Batch size for `openai-compatible` embeddings (default: `32`)      | No       |
 | `JDOCMUNCH_ST_MODEL`              | sentence-transformers model name (default: `all-MiniLM-L6-v2`)      | No       |
+| `JDOCMUNCH_EMBED_CHARS`           | Max characters of section prose fed to the embedder (default: `1000`). Raising it re-embeds the corpus on the next index, since the cap is part of the embedding identity. | No |
+| `JDOCMUNCH_ALLOW_PAID_EMBEDDINGS` | Allow auto-detect to select a paid cloud embedding provider, and allow an embedding-identity change to re-embed the corpus automatically on such a provider (default: off) | No |
+| `JDOCMUNCH_EMBED_WARMUP`          | Set to `0` to skip the background embedding-provider warmup entirely and load the model lazily on first use (default: on; runs off the startup path and is skipped when the model is not in the local cache) | No |
+| `JDOCMUNCH_SUMMARIZER_PROVIDER`   | Force summarizer provider: `anthropic`, `gemini`, `openai`, `minimax`, `glm`, `openai-compatible`, or `none` | No |
+| `JDOCMUNCH_SUMMARIZER_URL`        | Base URL for the `openai-compatible` summarizer, e.g. `http://localhost:11434/v1` (Ollama, llama.cpp, vLLM, LM Studio) | No |
+| `JDOCMUNCH_SUMMARIZER_MODEL`      | Model name served at `JDOCMUNCH_SUMMARIZER_URL`. Both must be set for auto-detect to select it | No |
+| `JDOCMUNCH_SUMMARIZER_API_KEY`    | Optional key for the `openai-compatible` summarizer; local runtimes usually ignore it | No |
+| `JDOCMUNCH_ALLOW_PAID_SUMMARIES`  | Allow auto-detect to select a paid cloud summarizer from an ambient API key (default: off) | No |
 | `DOC_INDEX_PATH`                  | Custom storage path (default: `~/.doc-index/`)                       | No       |
 | `JDOCMUNCH_GIT_TIMEOUT`           | Per-call `git` subprocess ceiling in seconds for local repo@sha probing (default: `10`; `<= 0` disables) | No |
 | `JDOCMUNCH_SHARE_SAVINGS`         | Set to `0` to disable anonymous token savings reporting              | No       |

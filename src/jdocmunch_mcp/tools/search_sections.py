@@ -398,6 +398,18 @@ def search_sections(
         if _weight["clamped"]:
             meta["semantic_weight_clamped_to"] = list(SEMANTIC_WEIGHT_BOUNDS)
     meta["lexical_engine"] = lexical_engine
+    # jdoc#109: the stored vectors and the live encoder disagree on width, so
+    # the semantic lane contributed nothing. Say so, and name the fix — this
+    # used to surface as a raw numpy matmul error and read as a corrupt index.
+    _width = getattr(index, "_embedding_width_mismatch", None)
+    if _width:
+        meta["embedding_stale"] = {
+            **_width,
+            "semantic_disabled": True,
+            "reason": "stored embeddings were built by a different model",
+            "fix": "re-index with --rebuild (or index_local(incremental=False)) "
+                   "to re-embed the corpus under the active model",
+        }
     meta["freshness"] = freshness_summary
     if index.head_sha:
         meta["head_sha"] = index.head_sha

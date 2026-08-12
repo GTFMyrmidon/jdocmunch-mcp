@@ -95,11 +95,6 @@ def _semantic_edges_matrix(section_dicts, *, top_n, min_score):
         reference appends in order, then stable-sorts ``reverse=True``);
       * ``top_n`` cap; each edge ``{id, title, level, score}`` rounded to 4dp.
     """
-    try:
-        import numpy as np
-    except Exception:
-        return None
-
     # Embedded sections only, kept in original order (drives the tie-break).
     ids: list = []
     titles: list = []
@@ -114,7 +109,19 @@ def _semantic_edges_matrix(section_dicts, *, top_n, min_score):
             levels.append(sec.get("level", 0))
             vectors.append(emb)
     if not vectors:
+        # jdoc#119: return BEFORE importing numpy. A lexical-only corpus has no
+        # embeddings at all, so the import is pure cost for a function that is
+        # about to return an empty map either way. It became a per-refresh cost
+        # when jdoc#117 put the sidecar rebuild on the incremental path, and on
+        # a machine where imports are slow it is the whole latency of the call.
+        # Output is unchanged: `build` maps an absent id to [] exactly as it
+        # does for the numpy-missing fallback on a corpus with no vectors.
         return {}
+
+    try:
+        import numpy as np
+    except Exception:
+        return None
 
     # float64 so cosine values round to the same 4 decimals as the pure-Python
     # reference. Normalize once; cosine is then a plain dot product.

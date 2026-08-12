@@ -190,13 +190,36 @@ class TestNoSilentRetargeting:
         assert idx.corpus_selection.startswith("full+shape:")
         assert list(idx.doc_paths) == ["guide.md"]
 
+        # jdoc#116 CHANGED THE INSTANCE, NOT THE INVARIANT. Read this carefully
+        # before "restoring" the old assertion.
+        #
+        # The rule is: stored coverage never shifts under an unchanged identity.
+        # This test used to pin one INSTANCE of it — that a refresh saying
+        # NOTHING recomputes the selection as `full`, widens, and discloses. That
+        # instance was the defect in jdoc#116: the index-local CLI cannot express
+        # the patterns, so every documented CLI refresh silently destroyed the
+        # operator's exclusion. Disclosure does not help when the entry point has
+        # no way to avoid triggering it.
+        #
+        # Now: None means "said nothing" and INHERITS, so coverage and identity
+        # both hold still and there is nothing to disclose. `[]` means
+        # "explicitly none" and still widens WITH disclosure, asserted below.
+        # The invariant is satisfied in both cases; it is satisfied more
+        # strongly by inheritance, because neither side moves at all.
         refresh = _index(src, storage, name="published-docs")
         assert refresh["success"]
         after = store.load_index("local", "published-docs")
-        # Coverage changed AND identity changed with it — never silently.
+        assert list(after.doc_paths) == ["guide.md"], "silent refresh must not widen"
+        assert after.corpus_selection == idx.corpus_selection
+        assert refresh.get("corpus_selection_changed") is None
+
+        # The explicit clear is what now carries the disclosure.
+        cleared = _index(src, storage, name="published-docs", extra_ignore_patterns=[])
+        assert cleared["success"]
+        after = store.load_index("local", "published-docs")
         assert list(after.doc_paths) == ["drafts/future.md", "guide.md"]
         assert after.corpus_selection == "full"
-        assert refresh["corpus_selection_changed"] == {
+        assert cleared["corpus_selection_changed"] == {
             "from": idx.corpus_selection,
             "to": "full",
         }

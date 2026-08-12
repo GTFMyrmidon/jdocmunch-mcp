@@ -8,7 +8,7 @@ import threading
 import time
 
 from jdocmunch_mcp.storage import retirements
-from jdocmunch_mcp.storage.doc_store import DocStore
+from jdocmunch_mcp.storage.doc_store import RECORD_LOCK_WAIT_SECONDS, DocStore
 from jdocmunch_mcp.tools.delete_index import delete_index as public_delete
 from tests import test_v1_110_0 as legacy
 
@@ -77,7 +77,12 @@ def test_public_record_lock_contention_returns_typed_busy_promptly(
     finally:
         _release_holder(holder, release)
 
-    assert elapsed < 0.5
+    # jdoc#114: "promptly" means it did NOT spend the wait budget. Comparing
+    # against that budget says exactly that, and cannot drift from the code the
+    # way a bare literal did.
+    assert elapsed < RECORD_LOCK_WAIT_SECONDS, (
+        f"a non-waiting delete took {elapsed:.2f}s — it appears to have waited"
+    )
     assert result["success"] is False
     assert result["reason_code"] == "index_lifecycle_busy"
     assert result["retryable"] is True
@@ -107,8 +112,21 @@ def test_internal_record_lock_coordination_keeps_bounded_wait(
         timer.cancel()
         _release_holder(holder, release)
 
+    # jdoc#114: the lower bound proves it really waited on the contended lock.
     assert elapsed >= 0.1
-    assert elapsed < 1.0
+    # ⚠⚠ The upper bound must exceed the budget the call is ALLOWED to spend,
+    # not equal it. `try_void_retirements_referencing` may legitimately poll for
+    # the full RECORD_LOCK_WAIT_SECONDS before giving up, so asserting the whole
+    # round trip beats that same number is unsatisfiable at the boundary — the
+    # original `< 1.0` went red at 1.588s on a loaded Windows runner.
+    #
+    # This bound only distinguishes bounded from UNBOUNDED. That the wait was
+    # short enough to succeed is proven behaviourally by the two asserts below:
+    # had the poll exhausted its budget, the void would have returned False and
+    # the delete would have been refused as lifecycle_busy.
+    assert elapsed < RECORD_LOCK_WAIT_SECONDS + 2.0, (
+        f"delete_index waited {elapsed:.2f}s — that is not a bounded wait"
+    )
     assert deleted is True
     assert outcome["reason_code"] == "index_deleted"
 

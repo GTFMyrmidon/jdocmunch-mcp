@@ -15,7 +15,7 @@ from ..storage.doc_store import format_repo_at_sha, normalize_commit_sha
 from ..summarizer import summarize_sections
 from ..embeddings import embed_sections, get_provider_name, should_embed
 from ._embedding_coverage import attach_embedding_coverage as _attach_embedding_coverage
-from ._constants import SKIP_PATTERNS
+from ._constants import SKIP_PATTERNS, is_skipped_dot_dir
 
 
 def parse_github_url(url: str) -> tuple:
@@ -45,12 +45,18 @@ def _normalize_requested_ref(ref: Optional[str]) -> tuple[str, bool, Optional[st
     return ref, True, None
 
 
-def _should_skip(path: str) -> bool:
+def _should_skip(path: str, include_dot_dirs=None) -> bool:
     normalized = "/" + path.replace("\\", "/")
     for pat in SKIP_PATTERNS:
         if ("/" + pat) in normalized:
             return True
-    return False
+    # jdoc#113: same dot rule as the local walk. There is no os.walk to prune
+    # here (the GitHub tree arrives flat), so every leading component of the
+    # path is checked instead. ⚠ The final component is the FILENAME and is
+    # deliberately excluded: `.gitignore` or a dotfile doc is not a directory,
+    # and the extension filter already decides those.
+    components = [c for c in normalized.split("/")[:-1] if c]
+    return any(is_skipped_dot_dir(c, include_dot_dirs) for c in components)
 
 
 async def fetch_head_commit_sha(

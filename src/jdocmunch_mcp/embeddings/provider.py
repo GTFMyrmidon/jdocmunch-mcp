@@ -21,6 +21,8 @@ Set JDOCMUNCH_EMBEDDING_PROVIDER=none to disable all embedding.
 import logging
 import math
 import os
+import subprocess
+import threading
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # annotations below are strings; this makes them resolvable
@@ -37,6 +39,31 @@ logger = logging.getLogger(__name__)
 # embedding cache re-embeds instead of serving vectors built from the old text.
 _EMBED_TEXT_VERSION = "pv1"
 
+# jdoc#111: default kept at 1000 deliberately. Raising it would silently
+# invalidate every existing index and shift recall for every user who never
+# asked for it; opt-in via env leaves them untouched.
+_DEFAULT_EMBED_CHARS = 1000
+
+
+def _embed_chars() -> int:
+    """Max characters of prose fed to the embedder (``JDOCMUNCH_EMBED_CHARS``).
+
+    jdoc#111, reported by @pnm-jgb with measurements: on a 1,992-section corpus
+    the 1000-char cap withheld **41.2%** of available prose (778,236 → 457,284
+    tokens), and the median section already exceeded it. Because the cap sits
+    just under all-MiniLM-L6-v2's 256-token window, it also made longer-context
+    models nearly pointless — the text never reached their window, so the cap,
+    not the model, was the binding constraint.
+
+    ⚠ A bad value is ignored rather than raising: this runs inside the embed
+    loop, and failing a whole index over a typo'd env var is worse than
+    embedding at the documented default.
+    """
+    raw = os.environ.get("JDOCMUNCH_EMBED_CHARS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return _DEFAULT_EMBED_CHARS
+
 
 def _section_embed_text(section) -> str:
     """Build the text to embed for a section.
@@ -52,15 +79,36 @@ def _section_embed_text(section) -> str:
     if section.summary and section.summary != section.title:
         parts.append(section.summary)
     if section.content:
-        parts.append(prose_view(section.content).strip()[:1000])
+        parts.append(prose_view(section.content).strip()[:_embed_chars()])
     return "\n".join(parts)
 
 
 def _embed_cache_key(section) -> str:
     """Cache key for a section's embedding: content_hash salted with the embed
-    text-derivation version, so a derivation change (#58) invalidates cleanly."""
+    text-derivation version, so a derivation change (#58) invalidates cleanly.
+
+    jdoc#111: the char cap is part of the derivation, so it salts the key too.
+    Without it, raising ``JDOCMUNCH_EMBED_CHARS`` on an unchanged corpus would
+    serve vectors built from the shorter text while reporting success — the
+    same shape of failure as jdoc#109, one layer down.
+
+    ⚠⚠ The DEFAULT cap adds no salt, so the key stays byte-identical to every
+    key already on disk. Salting unconditionally — as the report's sketch does
+    — would make ``h#pv1`` miss against ``h#pv1-1000`` for every existing user
+    on the default, re-embedding every corpus in the world on upgrade to buy
+    nothing. The same reasoning as the header's legacy default: absence means
+    1000.
+
+    ⚠ The salt goes after the LAST ``#``: ``stored_hashes()`` recovers the bare
+    content hash with ``rsplit("#", 1)`` and must keep working.
+    """
     h = getattr(section, "content_hash", "") or ""
-    return f"{h}#{_EMBED_TEXT_VERSION}" if h else ""
+    if not h:
+        return ""
+    chars = _embed_chars()
+    if chars == _DEFAULT_EMBED_CHARS:
+        return f"{h}#{_EMBED_TEXT_VERSION}"
+    return f"{h}#{_EMBED_TEXT_VERSION}-{chars}"
 
 
 # ---------------------------------------------------------------------------
@@ -104,12 +152,84 @@ def _openai_compat_batch_size(default: int = 32) -> int:
     return batch_size if batch_size > 0 else default
 
 
-def _sentence_transformers_available() -> bool:
-    """Return True if sentence-transformers is importable."""
-    try:
-        import sentence_transformers  # noqa: F401
+def _st_model_name() -> str:
+    return os.environ.get(
+        "JDOCMUNCH_ST_MODEL", _SentenceTransformersProvider.DEFAULT_MODEL
+    )
+
+
+def _st_model_is_cached(model: str) -> bool:
+    """Whether ``model`` already sits in the local HuggingFace cache (jdoc#110).
+
+    ⚠ Deliberately a filesystem check and not a hub API call: this runs on the
+    startup path, so a network probe would reintroduce the very stall it exists
+    to avoid. A local path is treated as cached.
+
+    ⚠ Fails OPEN — an unreadable or unusual cache layout returns True, keeping
+    the previous always-warm behaviour. Guessing "not cached" would skip the
+    warmup for someone whose model is fine, moving a model load into a tool
+    call, which is the outcome with the worse failure mode.
+    """
+    if not model:
         return True
-    except ImportError:
+    from pathlib import Path
+    # ⚠⚠ Do NOT treat a forward slash as "this is a path". On Windows
+    # `os.altsep` is "/", so `sentence-transformers/all-MiniLM-L6-v2` — an
+    # ordinary hub id — would be probed as a filesystem path, never found, and
+    # every org-qualified model would report uncached on Windows only.
+    looks_local = (
+        os.path.isabs(model)
+        or model.startswith(("." + os.sep, ".." + os.sep, "~"))
+        or model.startswith(("./", "../"))
+        or (os.sep != "/" and os.sep in model)
+    )
+    if looks_local:
+        return Path(model).expanduser().exists()
+    root = os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or ""
+    try:
+        base = Path(root) / "hub" if (root and not os.environ.get("HF_HUB_CACHE")) \
+            else (Path(root) if root else Path.home() / ".cache" / "huggingface" / "hub")
+        if not base.exists():
+            return False
+        # ⚠ A bare name is NOT the cache key. sentence-transformers resolves
+        # `all-MiniLM-L6-v2` to `sentence-transformers/all-MiniLM-L6-v2` on the
+        # hub, so it lands in `models--sentence-transformers--all-MiniLM-L6-v2`.
+        # Checking only the literal name reports the DEFAULT model as uncached
+        # on every machine that has it, skipping every warmup.
+        candidates = [model]
+        if "/" not in model:
+            candidates.append(f"sentence-transformers/{model}")
+        for cand in candidates:
+            snapshots = base / ("models--" + cand.replace("/", "--")) / "snapshots"
+            if snapshots.is_dir() and any(snapshots.iterdir()):
+                return True
+        return False
+    except OSError:
+        return True
+
+
+def _sentence_transformers_available() -> bool:
+    """Return True if sentence-transformers is importable.
+
+    jdoc#118: this is the FIRST place the process would import it, reached from
+    ``get_provider_name()`` on the auto-detect path — long before warmup or any
+    embedding call. It used to answer the question by trying the import here,
+    which is exactly what must not happen: on Windows that import can deadlock
+    in the native loader and take the whole process with it (see
+    :func:`_sentence_transformers_imports_cleanly`). ``except ImportError`` never
+    had a chance — a loader deadlock raises nothing.
+
+    The answer now comes from package METADATA, which needs no import at all,
+    and the bounded subprocess probe runs later — immediately before the one
+    place that actually imports (:func:`warmup`) and before the provider is
+    constructed. Detection stays cheap; the expensive check is paid only when
+    an expensive import is about to happen anyway.
+    """
+    try:
+        import importlib.metadata as _md
+        _md.version("sentence-transformers")
+        return True
+    except Exception:
         return False
 
 
@@ -355,6 +475,14 @@ _PROVIDER_FACTORIES: dict = {
 # Cache: {(provider_name, model_signature): provider_instance}
 _PROVIDER_CACHE: dict = {}
 
+# ⚠⚠ jdoc#110: construction is now reachable from two threads at once — the
+# background warmup and a tool call that arrives before it finishes. Without
+# this lock both would build a provider, meaning two simultaneous model loads
+# (~7.6 s each, and for sentence-transformers two copies in memory) with one
+# silently discarded. Guarding the whole construct-and-store, not just the
+# store, is the point: the expensive part is the factory call.
+_PROVIDER_LOCK = threading.Lock()
+
 
 def _provider_signature(name: str) -> tuple:
     """Compute a cache key that invalidates when env-driven model choice changes."""
@@ -387,16 +515,35 @@ def _get_provider():
     factory = _PROVIDER_FACTORIES.get(name)
     if not factory:
         return None
+    # jdoc#118: the sentence-transformers factory imports the package. Prove it
+    # can import in a subprocess we can abandon before importing it HERE, where
+    # a native loader deadlock would be unkillable and would block every later
+    # library load in this process. Cached, so this costs one subprocess at most
+    # once per process — and only on the path that was about to pay for the
+    # import anyway.
+    if name == "sentence-transformers" and not _sentence_transformers_imports_cleanly():
+        logger.warning(
+            "sentence-transformers is installed but could not be imported in a "
+            "probe subprocess (%s); embeddings are unavailable. Lexical search "
+            "is unaffected.",
+            _import_probe_detail or "unknown",
+        )
+        return None
     key = _provider_signature(name)
     cached = _PROVIDER_CACHE.get(key)
     if cached is not None:
         return cached
-    try:
-        instance = factory()
-    except Exception:
-        return None
-    _PROVIDER_CACHE[key] = instance
-    return instance
+    with _PROVIDER_LOCK:
+        # Re-check inside the lock: the thread we waited on may have built it.
+        cached = _PROVIDER_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            instance = factory()
+        except Exception:
+            return None
+        _PROVIDER_CACHE[key] = instance
+        return instance
 
 
 def _provider_identity(name: str) -> tuple[str, Optional[int]]:
@@ -463,13 +610,15 @@ def embed_sections(
 
     provider_name = get_provider_name() or ""
     model, dim = _provider_identity(provider_name)
+    # jdoc#111: the char cap is part of the identity, not just the key salt.
+    chars = _embed_chars()
 
     cache_enabled = bool(owner and name)
     if cache_enabled:
         from . import cache as _cache  # local import to avoid circulars
         cached = _cache.load(
             storage_path, owner, name,
-            provider=provider_name, model=model, dim=dim,
+            provider=provider_name, model=model, dim=dim, embed_chars=chars,
         )
     else:
         cached = {}
@@ -487,6 +636,7 @@ def embed_sections(
             miss_indices.append(i)
 
     # Second pass: embed misses in one provider batch.
+    embed_failed = False
     if misses:
         texts = [_section_embed_text(s) for s in misses]
         try:
@@ -495,12 +645,24 @@ def embed_sections(
                 if emb:
                     sec.embedding = emb
         except Exception:
-            pass  # lexical search still works
+            # Lexical search still works. ⚠⚠ But this pass is now KNOWN to have
+            # produced nothing, which the purge below must not read as "the
+            # corpus legitimately has no vectors" (jdoc#109).
+            embed_failed = True
 
     # Persist. jdoc#107: start from what is already on disk unless this pass
-    # is authoritative for the whole corpus. `cached` is the identity-matched
-    # load from the top — on a provider/model rotation it is {} and this
-    # collapses back to a clean rewrite, so rotation still purges.
+    # is authoritative for the whole corpus.
+    #
+    # ⚠⚠ jdoc#109 corrects the claim that used to sit here — that `cached` is
+    # {} on rotation and so "this collapses back to a clean rewrite, so
+    # rotation still purges." It only purges when at least one section reaches
+    # this function. Hand it zero sections during a rotation and `entries` is
+    # empty, the guard below skips the write, and the stale sidecar survives
+    # under its OLD header with vectors of the wrong width.
+    #
+    # An empty write is therefore meaningful when the on-disk identity does not
+    # match: it is how the old vectors get purged. Only skip the write when
+    # there is nothing to say AND nothing stale to retract.
     if cache_enabled:
         from . import cache as _cache
         entries: dict = {} if prune else dict(cached)
@@ -509,17 +671,139 @@ def embed_sections(
             vec = getattr(sec, "embedding", None)
             if k and vec:
                 entries[k] = list(vec)
-        if entries:
+        stale_identity = False
+        if not entries and not embed_failed:
+            # ⚠⚠ `not embed_failed` is load-bearing. Purging on an empty pass is
+            # correct when the corpus genuinely produced no vectors, and is DATA
+            # LOSS when the provider merely threw: a transient outage during a
+            # rotation would delete the whole vector store, write the NEW header
+            # over it, and thereby convince the next run that nothing is stale.
+            # The loss would be permanent and silent — jdoc#107's exact shape.
+            # Leaving the old sidecar in place is recoverable: the vectors are
+            # the wrong width, which the query side now degrades and discloses.
+            stored = _cache.identity(storage_path, owner, name)
+            stale_identity = stored is not None and not _cache.identity_matches(
+                stored, provider_name, model, dim, chars
+            )
+        if entries or stale_identity:
             try:
                 _cache.write(
                     storage_path, owner, name,
                     provider=provider_name, model=model, dim=dim,
-                    entries=list(entries.items()),
+                    entries=list(entries.items()), embed_chars=chars,
                 )
             except Exception:
                 pass
 
     return sections
+
+
+_IMPORT_PROBE_TIMEOUT = 30.0
+_import_probe_result: Optional[bool] = None
+_import_probe_detail = ""
+_import_probe_lock = threading.Lock()
+
+
+def record_import_probe(ok: bool, detail: str = "") -> None:
+    """Record a directly-observed import outcome as the probe's answer.
+
+    jdoc#118: called by :mod:`jdocmunch_mcp.preload` after it imports
+    sentence-transformers **on the main thread, while the process is still
+    single-threaded**. That is strictly better evidence than the subprocess
+    probe -- it tested THIS interpreter, with this `sys.path`, rather than a
+    child that merely resembles it -- so it supersedes rather than supplements.
+
+    ⚠ It also stops the probe shelling out a second time. Without this, a
+    broken install pays the failing import twice: once on the main thread and
+    once in the probe, doubling the startup cost of the very case we most want
+    to be cheap.
+    """
+    global _import_probe_result, _import_probe_detail
+    with _import_probe_lock:
+        _import_probe_result = ok
+        _import_probe_detail = detail
+
+
+def _sentence_transformers_imports_cleanly() -> bool:
+    """Can `import sentence_transformers` succeed, without risking THIS process?
+
+    jdoc#118: the answer cannot be obtained by trying it here. On Windows the
+    import loads numpy's bundled OpenBLAS, and its ``DllMain`` -- running while
+    the process-wide **loader lock** is held -- has been observed parked in
+    `RtlEnterCriticalSection` under `LdrLoadDll`, indefinitely, by a native
+    stack taken twice 25 s apart. The Python-visible half is a second thread
+    stuck in `threading.Thread.start()`: a new thread needs that same loader
+    lock to run its `DLL_THREAD_ATTACH` callbacks, so it never reaches
+    `_bootstrap_inner` and `_started` is never set.
+
+    ⚠ **What it is NOT: OpenBLAS's own thread pool.** That was the first
+    explanation here, and `OPENBLAS_NUM_THREADS=1` was then measured against a
+    reproduction that wedged 7 runs in 8 -- it **still wedged**. At one thread
+    `blas_thread_init` spawns none, so whatever that `DllMain` waits on, it is
+    not threads it created. The remedy is unaffected either way; the sentence
+    was not, and a wrong mechanism in a docstring is what the next person
+    reasons from.
+
+    ⚠⚠ A failed in-process attempt is not recoverable and is not local. Once a
+    thread wedges inside `LdrLoadDll` the loader lock is never released, so
+    EVERY later `LoadLibrary` in the process blocks too — a later, unrelated
+    caller inherits the hang. There is nothing to interrupt: it is a kernel-mode
+    wait, so a timeout, a thread kill, and a try/except are all equally useless.
+    The only bounded probe is one that runs somewhere we can abandon.
+
+    ⚠ The check earns its cost independently of the deadlock: a provider whose
+    import raises (observed in the wild as
+    ``ImportError: cannot import name 'HybridCache' from 'transformers'``, a
+    sentence-transformers/transformers version pairing the user did not choose)
+    is unusable, and finding that out at the END of a heavyweight import chain
+    is strictly worse than finding it out up front.
+
+    Cached: the probe runs at most once per process.
+    """
+    global _import_probe_result, _import_probe_detail
+    with _import_probe_lock:
+        if _import_probe_result is not None:
+            return _import_probe_result
+        import sys
+
+        # ⚠ The question is "is importing here SAFE", not "will it succeed".
+        # An absent package raises ImportError immediately — fast, catchable,
+        # and handled by every caller already. Only a native loader deadlock is
+        # unrecoverable, and an absent package cannot produce one. Answering
+        # False here would also be a behaviour change well beyond this fix: it
+        # would make warmup decline before the uncached-model branch that
+        # silences download progress bars, and that silencing is what keeps
+        # chatter out of the JSON-RPC framing (jdoc#110).
+        if not _sentence_transformers_available():
+            _import_probe_result = True
+            return True
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", "import sentence_transformers"],
+                capture_output=True, timeout=_IMPORT_PROBE_TIMEOUT,
+                # Never inherit this process's stdin/stdout: jdoc#110 gave
+                # JSON-RPC a private stdout and a child must not reach it.
+                stdin=subprocess.DEVNULL,
+                encoding="utf-8", errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            _import_probe_result = False
+            _import_probe_detail = (
+                f"the import did not finish within {_IMPORT_PROBE_TIMEOUT:.0f}s "
+                "(a native loader deadlock looks exactly like this; see jdoc#118)"
+            )
+            return False
+        except Exception as exc:  # probe itself failed — do not punish the provider
+            logger.debug("import probe could not run (%s); assuming importable", exc)
+            _import_probe_result = True
+            return True
+        if proc.returncode == 0:
+            _import_probe_result = True
+            return True
+        tail = (proc.stderr or "").strip().splitlines()
+        _import_probe_result = False
+        _import_probe_detail = tail[-1][:300] if tail else f"exit {proc.returncode}"
+        return False
 
 
 def warmup() -> str:
@@ -538,9 +822,58 @@ def warmup() -> str:
     Network providers (gemini, openai, openai-compatible) are first-call-fast
     enough that warmup is unnecessary; warming them would add an avoidable
     network round-trip to startup.
+
+    jdoc#110: warmup is SKIPPED when the model is not already in the local
+    HuggingFace cache. A cached load costs ~7.6 s; an uncached one downloads
+    inside the same window, and a 440 MB model pushed a reporter past the MCP
+    client's 30 s connect timeout — the server never registered at all, and the
+    error said only "connection timed out", naming neither models nor
+    downloads. Deferring an uncached model turns a one-cycle outage into a slow
+    first tool call that can report a real error.
+
+    ⚠⚠ Warmup is not merely an optimization and must not be made unconditional
+    background work: it exists so the model load happens BEFORE `stdio_server`
+    owns stdout. `contextlib.redirect_stdout` is process-global, so a load
+    running concurrently with JSON-RPC cannot be redirected safely — chatter
+    would corrupt framing for every request. Skipping is safe; backgrounding
+    is not.
+
+    Set ``JDOCMUNCH_EMBED_WARMUP=0`` to skip entirely and accept a lazy first
+    load.
     """
+    if os.environ.get("JDOCMUNCH_EMBED_WARMUP", "").strip().lower() in (
+        "0", "false", "no", "off", "n", "f",
+    ):
+        return ""
     name = get_provider_name()
     if name != "sentence-transformers":
+        return ""
+    # jdoc#118: prove the provider can import BEFORE importing it here. An
+    # in-process attempt that deadlocks in the native loader is unkillable and
+    # poisons every subsequent library load in this process, so a failure here
+    # is not confined to embeddings — it takes the whole server with it.
+    if not _sentence_transformers_imports_cleanly():
+        logger.warning(
+            "skipping embedding warmup: sentence-transformers could not be "
+            "imported in a probe subprocess (%s). Lexical search is "
+            "unaffected; semantic search will not work until this is fixed.",
+            _import_probe_detail or "unknown",
+        )
+        return ""
+    if not _st_model_is_cached(_st_model_name()):
+        # ⚠⚠ Deferring the load hands the chatter problem to the first tool
+        # call, which is precisely the framing hazard warmup was built to
+        # avoid — and by then stdout belongs to JSON-RPC and cannot be
+        # redirected. Silence the progress bars at the source instead. Only
+        # set what is unset: a user who configured these owns them.
+        for var in ("HF_HUB_DISABLE_PROGRESS_BARS", "TQDM_DISABLE"):
+            os.environ.setdefault(var, "1")
+        logger.info(
+            "embedding model %s is not in the local cache; skipping startup "
+            "warmup so the MCP handshake is not blocked by a download "
+            "(jdoc#110). It will load on first use.",
+            _st_model_name(),
+        )
         return ""
     try:
         embed_query("jdocmunch warmup")
