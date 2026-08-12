@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.131.1 |
+**Version:** 1.132.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,62 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.132.0 — #118: the loader deadlock has a stack, and the fix has a price tag
+
+**A subprocess probe cannot fix a deadlock.** `py-spy dump --native` on a wedged
+server, twice 25 s apart, identical: `ZwWaitForAlertByThreadId` /
+`RtlEnterCriticalSection` / `<libopenblas64_ DllMain>` / `LdrLoadDll` /
+`LoadLibraryExW`. The Windows **loader lock**, not the GIL and not CPython's
+import lock — both candidates in the report are ruled out, and "both threads
+idle" is explained (a thread parked in `ZwWaitForAlertByThreadId` samples idle).
+Second blocked thread, Python-visible: `threading.Thread.start()` from
+`subprocess.communicate` in `local_git_head`, because a new thread needs the
+same lock for `DLL_THREAD_ATTACH`. Reproduced **7 runs in 8**; an **idle server
+never wedges** — no second party, no deadlock.
+
+⚠ **NOT the OpenBLAS thread pool**, the first explanation offered.
+`OPENBLAS_NUM_THREADS=1` measured against that reproduction and it **still
+wedged**; at one thread the pool is never spawned. ⚠⚠ **The probe answers
+"would this import RAISE?", and the deadlock is not a raise** — a probe
+subprocess is single-threaded, so on a healthy install it returns True and
+`warmup` then imports sentence-transformers **on the warmup thread** beside the
+live server, which IS the wedge condition. It rescued this machine only because
+sentence-transformers genuinely raises here (`HybridCache`, transformers 5.12 /
+ST 5.5.1). Kept on its own merits. ⚠ **Preloading numpy alone is also
+insufficient** — the chain loads scipy/sklearn/torch and the issue's FIRST dump
+is wedged in `scipy/sparse/linalg/_svdp.py`, a different DLL.
+
+⚠⚠ **The real remedy is OFF by default because it collides with #110 and the
+collision is STRUCTURAL**: the import is either on the main thread (slow
+handshake) or on a background thread (possible indefinite hang). Windows nearly
+took the cost by default on two readings, 6.5 s and 11.4 s vs a ~1.0 s baseline
+— then a **cold** run of the same import took **73.77 s** vs 5.71/5.51/5.53 s
+warm. torch is GBs of DLLs; the slow end of a 13x spread lands on the first
+start after a boot, past a 30 s connect timeout, i.e. **#110's outage verbatim**.
+That swaps a probabilistic hang for a fairly reliable cold-start failure, so the
+switch goes to whoever knows which they have. Wedged users set
+`JDOCMUNCH_PRELOAD_EMBEDDINGS=1`. Default handshake **1.13 s**, opt-in **6.91 s**.
+⚠ torch/scipy/sklearn are **not new cost** — declared ST deps `warmup` always
+loaded (all five reach `sys.modules` even on the failing import); the work only
+MOVED.
+
+⚠⚠ **VERIFICATION: mechanism measured, remedy NOT demonstrated. There is no
+A/B.** The wedge stopped reproducing after ~30 server starts in **both** arms —
+the same cold/warm effect the 73.77 s reading later made concrete. An earlier
+attempt was invalidated outright when a **concurrent editing session** changed
+`provider.py` mid-experiment, so every later trial in both arms already carried
+the other fix ([[ab-test-invalidated-by-concurrent-session]]). **Do not read a
+green run as proof.** ⚠ Four warmup tests fixed: they shelled out to the real
+sentence-transformers and so asserted a property of the developer's
+site-packages. `test_startup_warmup_gate.py` got an **autouse** stub, not three
+targeted ones — with the probe answering False, `warmup()` returns before the
+cache gate, so neighbours still PASSED having exercised nothing, and the vacuity
+was the worse half. #110's guard is unchanged by default, with a note on why
+#118 must not quietly relax it, plus a banner-asserting opt-in test (a ceiling
+in seconds is the runner-speed assertion #114 warned about).
+`tests/test_preload.py` (32) + `tests/test_jdoc_118_import_probe.py`. Suite
+**2495 passed / 6 skipped**; `ruff check src/` clean.
 
 ## v1.131.1 — #119: a lexical corpus stops paying for numpy
 

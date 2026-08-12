@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.132.0] - 2026-08-12 - The loader deadlock has a stack, and the fix has a price tag
+
+[#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118) named at last, with
+a native stack instead of a hypothesis. `py-spy dump --native` on a wedged
+server, twice 25 s apart, identical:
+
+```
+ZwWaitForAlertByThreadId (ntdll)
+RtlSleepConditionVariableCS
+RtlEnterCriticalSection
+<libopenblas64_...>            <- DllMain
+LdrLoadDll / LoadLibraryExW (KERNELBASE)
+```
+
+The Windows **loader lock**, inside OpenBLAS's `DllMain`, reached through
+numpy's `_multiarray_umath`. Not the GIL, not CPython's import lock — both
+candidates in the report are ruled out, and "both threads idle" is explained: a
+thread parked in `ZwWaitForAlertByThreadId` samples as idle. The Python-visible
+half is a second thread stuck in `threading.Thread.start()` from
+`subprocess.communicate` in `local_git_head`, because a new thread needs that
+same loader lock to run its `DLL_THREAD_ATTACH` callbacks and so never sets
+`_started`. Reproduced 7 runs in 8; an idle server never wedges, because with
+nothing else running there is no second party to deadlock against.
+
+⚠ **NOT the OpenBLAS thread pool**, which was the first explanation offered.
+`OPENBLAS_NUM_THREADS=1` was measured against that reproduction and it **still
+wedged**; at one thread the pool is never spawned.
+
+**What ships, and what each piece actually covers:**
+
+| | covers | default |
+|---|---|---|
+| subprocess import probe | an import that RAISES | on |
+| `JDOCMUNCH_PRELOAD` (numpy) | paths reaching numpy without sentence-transformers | on, Windows |
+| `JDOCMUNCH_PRELOAD_EMBEDDINGS` | the wedge itself, whole chain | **off** |
+
+⚠⚠ **A subprocess probe cannot fix a deadlock, and shipping it as though it
+could was the mistake this release corrects.** It answers "would this import
+raise?" — a probe subprocess is single-threaded, so on a healthy install it
+returns True and `warmup` then runs `embed_query`, which imports
+sentence-transformers **on the warmup thread** beside the live server. That is
+the wedge condition exactly. It rescued the machine it was written on only
+because sentence-transformers genuinely raises there. Kept anyway: a provider
+whose import raises is unusable, and learning that up front beats learning it at
+the end of a heavyweight import chain.
+
+⚠ Preloading numpy alone is also insufficient — the chain loads scipy, sklearn
+and torch, and the issue's FIRST dump is wedged in
+`scipy/sparse/linalg/_svdp.py`, a different DLL from the numpy one in the
+second.
+
+⚠⚠ **Why the real remedy is OFF by default: it collides with
+[#110](https://github.com/jgravelle/jdocmunch-mcp/issues/110) and the collision
+is structural.** The import is either on the main thread (slow handshake) or on
+a background thread (possible indefinite hang); there is no third option in one
+process. Windows nearly took the cost by default on the strength of two
+handshake readings, 6.5 s and 11.4 s against a ~1.0 s baseline — then a **cold**
+run of the same import took **73.77 s**, against 5.71 / 5.51 / 5.53 s warm.
+torch is gigabytes of DLLs and the first import after a boot pays for all of
+them, so the slow end of a 13x spread lands on the first server start after a
+reboot: past a 30 s connect timeout, i.e. #110's outage verbatim. That trades a
+probabilistic hang for a fairly reliable cold-start failure, so the switch goes
+to whoever knows which one they have. **Wedged users set
+`JDOCMUNCH_PRELOAD_EMBEDDINGS=1`.** Measured end to end: default handshake
+1.13 s, opt-in 6.91 s.
+
+⚠ torch/scipy/sklearn are **not** new cost — declared dependencies of
+sentence-transformers that `warmup` has always loaded (verified: all five of
+numpy/scipy/sklearn/transformers/torch reach `sys.modules` even on the failing
+import). Nothing here adds work; it only moves where the work happens.
+
+⚠⚠ **VERIFICATION STATUS, stated because this issue has already produced two
+retractions: the mechanism is measured, the remedy is not.** There is no A/B.
+The wedge stopped reproducing after ~30 server starts in **both** arms — the
+same cold/warm effect the 73.77 s reading later made concrete. A first attempt
+at an A/B was invalidated outright when a concurrent editing session changed
+`provider.py` mid-experiment, so every later trial in both arms was already
+running the other fix. Do not read a green run as proof.
+
+Also fixed: four warmup tests that shelled out to the real sentence-transformers
+and so asserted a property of the developer's site-packages. `#110`'s handshake
+guard is intact and unchanged by default, with a note on why #118 must not
+quietly relax it, plus a separate banner-asserting test for the opt-in path — a
+ceiling in seconds is the runner-speed assertion #114 warned about.
+
+Suite **2495 passed / 6 skipped**; `ruff check src/` clean.
+
 ## [1.131.1] - 2026-08-11 - A lexical corpus stops paying for numpy
 
 Follow-up to 1.131.0, found by running it.
