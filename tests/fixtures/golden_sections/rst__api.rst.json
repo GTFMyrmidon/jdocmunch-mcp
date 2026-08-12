@@ -1,0 +1,47 @@
+[
+  {
+    "id": "golden/test::rst/api.rst::api#0",
+    "title": "api",
+    "level": 0,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::rst/api.rst::api-reference#1",
+    "title": "API Reference",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 80,
+    "content_hash": "fcfc4b0196540cfe2e2ee0633245ed84b69b06cf9a45e3ab3b82dfbaa6389274",
+    "parent_id": "golden/test::rst/api.rst::api#0"
+  },
+  {
+    "id": "golden/test::rst/api.rst::api-reference/parse-function#2",
+    "title": "parse function",
+    "level": 2,
+    "byte_start": 80,
+    "byte_end": 391,
+    "content_hash": "a6200eb1262e476fa3c0761be042b8a1f65f167b008f16b02a18763918c7d299",
+    "parent_id": "golden/test::rst/api.rst::api-reference#1"
+  },
+  {
+    "id": "golden/test::rst/api.rst::api-reference/stream-parse-generator#2",
+    "title": "stream_parse generator",
+    "level": 2,
+    "byte_start": 391,
+    "byte_end": 580,
+    "content_hash": "665cc22e3811496631bdec189526e91282c91f9b4c0c18c6a0ae2bf943650945",
+    "parent_id": "golden/test::rst/api.rst::api-reference#1"
+  },
+  {
+    "id": "golden/test::rst/api.rst::api-reference/parserconfig-dataclass#2",
+    "title": "ParserConfig dataclass",
+    "level": 2,
+    "byte_start": 580,
+    "byte_end": 911,
+    "content_hash": "2431c34471b331d1f27e7ec048b8fdc2cd6fe73ba4a443cf9b6239f67a4db685",
+    "parent_id": "golden/test::rst/api.rst::api-reference#1"
+  }
+]

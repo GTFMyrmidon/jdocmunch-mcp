@@ -1,0 +1,119 @@
+[
+  {
+    "id": "golden/test::openapi/petstore.yaml::petstore#1",
+    "title": "Petstore",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "2998c269d5e55da02286f2f562f378a5bfca89ed4bdaf36e4f91ccacf474d827",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations#2",
+    "title": "Operations",
+    "level": 2,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "74de07c4e919534b1b460e3465bb216ce0cc2bd458e42abaf0f22448da08d063",
+    "parent_id": "golden/test::openapi/petstore.yaml::petstore#1"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/pets#2",
+    "title": "pets",
+    "level": 2,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "3be1d422a46085e17f4a19d3ed707c866927a6d354a562c45a78f1f03d7c4118",
+    "parent_id": "golden/test::openapi/petstore.yaml::petstore#1"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/pets/op-listpets#3",
+    "title": "GET /pets",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "22548e7c865dea91c898a1e27ba245b45ac58846820910b54da3e5e42b8e9ef2",
+    "parent_id": "golden/test::openapi/petstore.yaml::operations/pets#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/pets/op-createpet#3",
+    "title": "POST /pets",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "8bf403536382d7040101f0e28228037c41c78f1d1f3b2b80808689daa5e67521",
+    "parent_id": "golden/test::openapi/petstore.yaml::operations/pets#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/pets/op-getpet#3",
+    "title": "GET /pets/{id}",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "133e057e5693e7527fa4b012f897427b6980890bfb98b144f68fefce10643dc3",
+    "parent_id": "golden/test::openapi/petstore.yaml::operations/pets#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/pets/op-deletepet#3",
+    "title": "DELETE /pets/{id}",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e400611331d7393c63ad569373827ebf78b3bf8dbc198d27727dfd413e7e6b63",
+    "parent_id": "golden/test::openapi/petstore.yaml::operations/pets#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/owners#2",
+    "title": "owners",
+    "level": 2,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "6f0e3a8c0eb46e8834b43b03374ece43a030621d92a7437beb48f871e90f8d90",
+    "parent_id": "golden/test::openapi/petstore.yaml::petstore#1"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::operations/owners/op-listowners#3",
+    "title": "GET /owners",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "f093cac44f3fa1fe0d5e5388f3806d2fc93beb726c21a5ce459c21a607427513",
+    "parent_id": "golden/test::openapi/petstore.yaml::operations/owners#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::schemas#2",
+    "title": "Schemas",
+    "level": 2,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "fd70ea1de98fdcb2297b4acb430bea8b510db6e8d90f629aaf1c1bbb45709c0e",
+    "parent_id": "golden/test::openapi/petstore.yaml::petstore#1"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::schemas/schema-pet#3",
+    "title": "Pet",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "2b928dec89ae3ffe964762ddd32e212d31eb6a00eedd42b45f80ded193b4df5c",
+    "parent_id": "golden/test::openapi/petstore.yaml::schemas#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::schemas/schema-tag#3",
+    "title": "Tag",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "9642600ddb367d12581419c15c09539fe04d1bb301afdb0ad7e9e71046ca3437",
+    "parent_id": "golden/test::openapi/petstore.yaml::schemas#2"
+  },
+  {
+    "id": "golden/test::openapi/petstore.yaml::schemas/schema-owner#3",
+    "title": "Owner",
+    "level": 3,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "ace3084bed9efe2b1fe81a05bf550bae96f8d436eb1ae8043ea8f8d298c4df0b",
+    "parent_id": "golden/test::openapi/petstore.yaml::schemas#2"
+  }
+]

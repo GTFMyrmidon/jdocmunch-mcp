@@ -1,0 +1,173 @@
+{
+  "fixture": "self_v1_11_0",
+  "version": "1.42.0",
+  "captured_at": "2026-04-26T23:09:08Z",
+  "n_queries": 10,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "search sections",
+      "predicted": [
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/search-tools/search-sections-weighted-section-search#4",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/search-tools#3",
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/search-algorithm#2",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/retrieval-tools/get-sections-batch-retrieve-multiple-sections#4",
+        "local/jdocmunch-mcp::USER_GUIDE.md::user-guide/workflows/narrow-search-to-a-specific-document#3"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/search-tools/search-sections-weighted-section-search#4"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "section retrieval",
+      "predicted": [
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/what-makes-it-different/section-first-retrieval#3",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/retrieval-tools#3",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_SciPy.md::jdocmunch-mcp-scipy-documentation-benchmark/precision-retrieval-tests#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Kubernetes.md::jdocmunch-mcp-kubernetes-documentation-benchmark/precision-retrieval-summary#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_LangChain_MDX.md::jdocmunch-mcp-benchmark-langchain-documentation/5-precision-retrieval-token-savings#2"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/what-makes-it-different/section-first-retrieval#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "byte offset",
+      "predicted": [
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/what-makes-it-different/byte-precise-extraction#3",
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/how-it-works#2",
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/parser-design/markdown-parser#3",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/retrieval-tools/get-section-retrieve-full-content-of-one-section#4",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_SciPy.md::jdocmunch-mcp-scipy-documentation-benchmark/precision-retrieval-tests#2"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/what-makes-it-different/byte-precise-extraction#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "wiki stats",
+      "predicted": [
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark#1",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/ab-token-comparison-github-wiki-retrieval#3",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/results-full-wiki-baseline-realistic#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-benchmark-wiki#0",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/reproducibility#2"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark#1"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "markdown parser",
+      "predicted": [
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/parser-design/markdown-parser#3",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_LangChain_MDX.md::jdocmunch-mcp-benchmark-langchain-documentation/2-implementation-what-changed/parsermarkdown-parserpy-mdx-pre-processor#3",
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/parser-design#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_LangChain_MDX.md::jdocmunch-mcp-benchmark-langchain-documentation/2-implementation-what-changed/parser-init-py-extension-registration#3",
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/parser-design/mdx-preprocessor#3"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/parser-design/markdown-parser#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "hybrid search",
+      "predicted": [
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/190-2026-04-19/new-hybrid-bm25-semantic-search#3",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/search-tools/search-sections-weighted-section-search#4",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/mcp-tools-11/search-tools#3",
+        "local/jdocmunch-mcp::ARCHITECTURE.md::architecture/search-algorithm#2",
+        "local/jdocmunch-mcp::USER_GUIDE.md::user-guide/workflows/narrow-search-to-a-specific-document#3"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/190-2026-04-19/new-hybrid-bm25-semantic-search#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "broken links",
+      "predicted": [
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/150-2026-04-01/new-tools#3",
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/tool-surface#2",
+        "local/jdocmunch-mcp::CLAUDE.md::jdocmunch-mcp/key-modules#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_LangChain_MDX.md::jdocmunch-mcp-benchmark-langchain-documentation/1-index-statistics#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_SciPy.md::jdocmunch-mcp-scipy-documentation-benchmark/notable-discoveries#2"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/150-2026-04-01/new-tools#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "embedding provider",
+      "predicted": [
+        "local/jdocmunch-mcp::CLAUDE.md::jdocmunch-mcp/architecture#2",
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/140-2026-03-13/documentation#3",
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/environment-variables#2",
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/environment-variables#2",
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/190-2026-04-19/new-use-embeddingsauto-default#3"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::CLAUDE.md::jdocmunch-mcp/architecture#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "stale pages",
+      "predicted": [
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/index-snapshot#2",
+        "local/jdocmunch-mcp::CLAUDE.md::jdocmunch-mcp/key-modules#2",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/ab-token-comparison-github-wiki-retrieval#3",
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp/claude-desktop-claude-code/claude-code-hooks-recommended#3",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/methodology#2"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_Wiki.md::jdocmunch-mcp-wiki-benchmark/index-snapshot#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "doc store",
+      "predicted": [
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/data-models/docindex#3",
+        "local/jdocmunch-mcp::CHANGELOG.md::changelog/014-2026-03-07#2",
+        "local/jdocmunch-mcp::README.md::jdocmunch-mcp#1",
+        "local/jdocmunch-mcp::benchmarks/jDocMunch_Benchmark_SciPy.md::jdocmunch-mcp-scipy-documentation-benchmark/token-efficiency-analysis/jdocmunch-approach#3",
+        "local/jdocmunch-mcp::CONTRIBUTING.md::contributing-to-jdocmunch-mcp#1"
+      ],
+      "expected": [
+        "local/jdocmunch-mcp::SPEC.md::technical-specification/data-models/docindex#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

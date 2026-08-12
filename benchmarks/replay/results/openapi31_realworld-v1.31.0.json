@@ -1,0 +1,68 @@
+{
+  "fixture": "openapi31_realworld",
+  "version": "1.31.0",
+  "captured_at": "2026-04-26T20:22:59Z",
+  "n_queries": 4,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "list events webhook",
+      "predicted": [
+        "local/oa31_realworld::webhooks.yaml::operations/events/op-listevents#3",
+        "local/oa31_realworld::webhooks.yaml::operations/events#2",
+        "local/oa31_realworld::webhooks.yaml::webhookexample#1",
+        "local/oa31_realworld::webhooks.yaml::operations/subscriptions/op-createsubscription#3",
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3"
+      ],
+      "expected": [
+        "local/oa31_realworld::webhooks.yaml::operations/events/op-listevents#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "create subscription",
+      "predicted": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3",
+        "local/oa31_realworld::webhooks.yaml::operations/subscriptions/op-createsubscription#3"
+      ],
+      "expected": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "subscription schema callback url",
+      "predicted": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3",
+        "local/oa31_realworld::webhooks.yaml::operations/subscriptions/op-createsubscription#3",
+        "local/oa31_realworld::webhooks.yaml::webhookexample#1"
+      ],
+      "expected": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "event kind enum",
+      "predicted": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-event#3"
+      ],
+      "expected": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-event#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

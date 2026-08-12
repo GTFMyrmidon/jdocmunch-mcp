@@ -1,0 +1,56 @@
+[
+  {
+    "id": "golden/test::markdown/authentication.md::authentication#0",
+    "title": "authentication",
+    "level": 0,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::markdown/authentication.md::authentication#1",
+    "title": "Authentication",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 107,
+    "content_hash": "60eaf0e95e1bc91e0184ef7b2392a3e1a372146f0e5eadecc32ec6c996242f30",
+    "parent_id": "golden/test::markdown/authentication.md::authentication#0"
+  },
+  {
+    "id": "golden/test::markdown/authentication.md::authentication/obtaining-a-token#2",
+    "title": "Obtaining a token",
+    "level": 2,
+    "byte_start": 107,
+    "byte_end": 377,
+    "content_hash": "47e505c8b4b02d4e771c2d2e7d13329f8a3809205ee512d1a02fd095ee721efc",
+    "parent_id": "golden/test::markdown/authentication.md::authentication#1"
+  },
+  {
+    "id": "golden/test::markdown/authentication.md::authentication/refreshing-tokens#2",
+    "title": "Refreshing tokens",
+    "level": 2,
+    "byte_start": 377,
+    "byte_end": 520,
+    "content_hash": "304e96474201a9ce70404375f284837c03353ab3c9bfb04227bc8e43b398e033",
+    "parent_id": "golden/test::markdown/authentication.md::authentication#1"
+  },
+  {
+    "id": "golden/test::markdown/authentication.md::authentication/token-rotation#2",
+    "title": "Token rotation",
+    "level": 2,
+    "byte_start": 520,
+    "byte_end": 699,
+    "content_hash": "4bb980797e9fa1252b1c7486b8596e3cccacec5dd6f8f6750589728ae069fad7",
+    "parent_id": "golden/test::markdown/authentication.md::authentication#1"
+  },
+  {
+    "id": "golden/test::markdown/authentication.md::authentication/common-errors#2",
+    "title": "Common errors",
+    "level": 2,
+    "byte_start": 699,
+    "byte_end": 949,
+    "content_hash": "73265009ad91be7fb1ebe915692e05bfc116d6cf7da1663919593ac5c6010292",
+    "parent_id": "golden/test::markdown/authentication.md::authentication#1"
+  }
+]

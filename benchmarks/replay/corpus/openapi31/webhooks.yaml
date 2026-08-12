@@ -1,0 +1,83 @@
+openapi: 3.1.0
+info:
+  title: WebhookExample
+  version: "1.0.0"
+  description: OpenAPI 3.1 spec exercising webhooks + nullable types + JSON Schema $ref.
+paths:
+  /events:
+    get:
+      operationId: listEvents
+      summary: List subscribed events
+      tags: [events]
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Event"
+  /subscriptions:
+    post:
+      operationId: createSubscription
+      summary: Create a webhook subscription
+      tags: [subscriptions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Subscription"
+      responses:
+        "201":
+          description: created
+        "400":
+          description: validation error
+webhooks:
+  newEvent:
+    post:
+      requestBody:
+        description: Event payload pushed by the publisher.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Event"
+      responses:
+        "200":
+          description: acknowledged
+components:
+  schemas:
+    Event:
+      type: object
+      required: [id, kind]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [created, updated, deleted]
+        payload:
+          type: [object, "null"]
+        emitted_at:
+          type: string
+          format: date-time
+    Subscription:
+      type: object
+      required: [callback_url, events]
+      properties:
+        callback_url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: [string, "null"]

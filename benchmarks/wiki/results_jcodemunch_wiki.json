@@ -1,0 +1,106 @@
+{
+  "wiki_path": "C:\\MCPs\\jcodemunch-wiki-bench",
+  "file_count": 8,
+  "section_count": 68,
+  "total_bytes": 29280,
+  "total_tokens": 7449,
+  "files": [
+    {
+      "name": "Cross-Repository-Dependency-Tracking.md",
+      "bytes": 6618,
+      "tokens": 1700
+    },
+    {
+      "name": "Expanded-Context-Providers.md",
+      "bytes": 5146,
+      "tokens": 1404
+    },
+    {
+      "name": "Get-Context-Bundle.md",
+      "bytes": 3564,
+      "tokens": 914
+    },
+    {
+      "name": "Home.md",
+      "bytes": 36,
+      "tokens": 11
+    },
+    {
+      "name": "Incremental-Blob-SHA-Indexing.md",
+      "bytes": 3387,
+      "tokens": 812
+    },
+    {
+      "name": "jCodeMunch\u2010MCP---jDocMunch\u2010MCP-versus-THE-WORLD!.md",
+      "bytes": 2887,
+      "tokens": 687
+    },
+    {
+      "name": "Search-Debug-Mode.md",
+      "bytes": 3660,
+      "tokens": 899
+    },
+    {
+      "name": "Tokenizer-True-Benchmark-Harness.md",
+      "bytes": 3982,
+      "tokens": 1022
+    }
+  ],
+  "queries": [
+    {
+      "query": "cross repository dependency tracking",
+      "baseline_tokens": 7449,
+      "file_baseline_tokens": 1700,
+      "target_file": "Cross-Repository-Dependency-Tracking.md",
+      "section_title": "For engineers",
+      "section_bytes": 1572,
+      "section_tokens": 409,
+      "search_meta_tokens": 190,
+      "jdocmunch_tokens": 599
+    },
+    {
+      "query": "benchmark token reduction measurement",
+      "baseline_tokens": 7449,
+      "file_baseline_tokens": 1022,
+      "target_file": "Tokenizer-True-Benchmark-Harness.md",
+      "section_title": "What comes back",
+      "section_bytes": 377,
+      "section_tokens": 124,
+      "search_meta_tokens": 190,
+      "jdocmunch_tokens": 314
+    },
+    {
+      "query": "search scoring ranking debug",
+      "baseline_tokens": 7449,
+      "file_baseline_tokens": 899,
+      "target_file": "Search-Debug-Mode.md",
+      "section_title": "Connection to the jMRI Spec",
+      "section_bytes": 673,
+      "section_tokens": 154,
+      "search_meta_tokens": 190,
+      "jdocmunch_tokens": 344
+    },
+    {
+      "query": "incremental indexing blob SHA performance",
+      "baseline_tokens": 7449,
+      "file_baseline_tokens": 812,
+      "target_file": "Incremental-Blob-SHA-Indexing.md",
+      "section_title": "What comes back",
+      "section_bytes": 418,
+      "section_tokens": 123,
+      "search_meta_tokens": 190,
+      "jdocmunch_tokens": 313
+    },
+    {
+      "query": "context bundle symbol imports",
+      "baseline_tokens": 7449,
+      "file_baseline_tokens": 914,
+      "target_file": "Get-Context-Bundle.md",
+      "section_title": "What",
+      "section_bytes": 570,
+      "section_tokens": 114,
+      "search_meta_tokens": 190,
+      "jdocmunch_tokens": 304
+    }
+  ]
+}

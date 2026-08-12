@@ -1,0 +1,67 @@
+{
+  "fixture": "rst_realworld",
+  "version": "1.31.0",
+  "captured_at": "2026-04-26T20:22:58Z",
+  "n_queries": 4,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "streaming large files memory",
+      "predicted": [
+        "local/rst_realworld::index.rst::welcome-to-examplelib/streaming-mode#2",
+        "local/rst_realworld::api.rst::api-reference/stream-parse-generator#2"
+      ],
+      "expected": [
+        "local/rst_realworld::index.rst::welcome-to-examplelib/streaming-mode#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "stream_parse incremental",
+      "predicted": [
+        "local/rst_realworld::api.rst::api-reference/stream-parse-generator#2",
+        "local/rst_realworld::api.rst::api-reference/parse-function#2",
+        "local/rst_realworld::index.rst::welcome-to-examplelib/streaming-mode#2",
+        "local/rst_realworld::index.rst::welcome-to-examplelib/parser-configuration#2",
+        "local/rst_realworld::index.rst::welcome-to-examplelib/error-handling#2"
+      ],
+      "expected": [
+        "local/rst_realworld::api.rst::api-reference/stream-parse-generator#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "ParserConfig dataclass parameters",
+      "predicted": [
+        "local/rst_realworld::api.rst::api-reference/parserconfig-dataclass#2"
+      ],
+      "expected": [
+        "local/rst_realworld::api.rst::api-reference/parserconfig-dataclass#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "exception types library raises",
+      "predicted": [
+        "local/rst_realworld::index.rst::welcome-to-examplelib/error-handling#2",
+        "local/rst_realworld::index.rst::welcome-to-examplelib#1"
+      ],
+      "expected": [
+        "local/rst_realworld::index.rst::welcome-to-examplelib/error-handling#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

@@ -158,6 +158,34 @@ search_sections: {
 }
 ```
 
+### Search Without the Follow-up Read (v1.121+)
+
+`compact` strips the per-row fields an agent can't act on (`content_hash`,
+`parent_id`, byte offsets, empty collections, a `summary` identical to the
+`title`). `snippet_bytes` inlines the head of each section body, so a confident
+top hit needs no `get_section` call. Together they cut a 10-result response by
+roughly 78% on our own docs.
+
+```
+search_sections: {
+  "repo": "owner/repo",
+  "query": "authentication",
+  "compact": true,
+  "snippet_bytes": 200
+}
+```
+
+For total control, `fields` is an explicit whitelist and wins over `compact`
+(`id` is always returned):
+
+```
+search_sections: {
+  "repo": "owner/repo",
+  "query": "authentication",
+  "fields": ["title", "doc_path", "_score"]
+}
+```
+
 ### Read a Section with Full Hierarchy Context
 
 ```
@@ -214,17 +242,42 @@ index_repo: { "url": "owner/repo", "incremental": false }
 
 | Tool                    | Purpose                                          | Key Parameters                                                   |
 | ----------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
-| `index_local`           | Index local documentation folder                 | `path`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental` |
+| `index_local`           | Index local documentation folder. An already-indexed source reuses its established handle; an explicit conflicting `name` returns a conflict instead of creating a duplicate index; several equivalent legacy indexes return bounded ambiguity. A proven-fresh equivalent corpus in a linked Git worktree is reused rather than duplicated (`worktree_mode="branch_local"` opts out) | `path`, `name`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks`, `incremental`, `paths`, `worktree_mode`, `legacy_reconcile` |
 | `index_repo`            | Index GitHub repository docs                     | `url`, `use_ai_summaries`, `incremental`                         |
 | `list_repos`            | List all indexed documentation sets              | —                                                                |
+| `doc_resolve_repo`      | Resolve a path to its doc-index handle (O(1)-sized). In a linked Git worktree of an indexed corpus, the not-found response additively lists the established handle in `canonical_candidates` + `worktree_resolution` (read-only) | `path`                                                        |
 | `get_toc`               | Flat section list in document order              | `repo`                                                           |
 | `get_toc_tree`          | Nested section tree per document                 | `repo`                                                           |
 | `get_document_outline`  | Section hierarchy for one document               | `repo`, `doc_path`                                               |
-| `search_sections`       | Weighted search across sections                  | `repo`, `query`, `doc_path`, `max_results`                       |
+| `search_sections`       | Weighted search across sections                  | `repo`, `query`, `doc_path`, `max_results`, `compact`, `fields`, `snippet_bytes` |
 | `get_section`           | Full content of one section                      | `repo`, `section_id`, `verify`                                   |
 | `get_sections`          | Batch content retrieval                          | `repo`, `section_ids`, `verify`                                  |
 | `get_section_context`   | Section + ancestor headings + child summaries    | `repo`, `section_id`, `max_tokens`, `include_children`           |
 | `delete_index`          | Delete index and cache                           | `repo`                                                           |
+
+---
+
+## Legacy Index Reconciliation (`legacy_reconcile`)
+
+Indexes created before v1.102.0 predate corpus identity and can coexist with a
+modern index of the same source. `index_local` accepts an opt-in
+`legacy_reconcile` parameter to resolve one explicitly:
+
+- `legacy_reconcile="report"` — prove (or fail to prove) the explicitly named
+  legacy handle is an exact duplicate of a single modern peer: same verified
+  corpus identity, same clean certified commit, and full path-and-hash
+  coverage. Report performs no writes on any outcome — it proves from stored
+  snapshots plus live Git evidence, so it requires a clean checkout at the
+  certified commit. Reports `legacy_reconcile_ready` when the proof passes.
+- `legacy_reconcile="apply"` — repeat the proof immediately before retirement,
+  then retire the selected legacy handle and return the modern peer's handle.
+
+Both modes require an explicit `name=` selecting the legacy handle (the
+selected handle is the only possible loser — it is never derived or guessed), a
+full refresh (no `paths` subset), and confirmed Git lineage. Any precondition
+failure returns the top-level error `legacy_reconcile_not_applicable` with
+nothing written. Every outcome's `legacy_reconciliation.reason_code` is listed
+in SPEC.md's vocabulary table.
 
 ---
 
@@ -258,7 +311,7 @@ get_toc:     { "repo": "docs" }
 
 ## Community Savings Meter
 
-jDocMunch contributes an anonymous token savings delta to a live global counter at [j.gravelle.us](https://j.gravelle.us) with each tool call. Only two values are ever sent: the tokens saved (a number) and a random anonymous install ID. No content, paths, repo names, or anything identifying is transmitted. Network failures are silent and never affect tool performance.
+jDocMunch contributes an anonymous token savings delta to a live global counter with each tool call, POSTed to `https://j.gravelle.us/APIs/savings/post.php` and displayed at [jcodemunch.com](https://jcodemunch.com). Only two values are ever sent: the tokens saved (a number) and a random anonymous install ID. No content, paths, repo names, or anything identifying is transmitted. Network failures are silent and never affect tool performance.
 
 The anonymous install ID is generated once and stored locally in `~/.doc-index/_savings.json`.
 
@@ -277,6 +330,18 @@ To disable, set `JDOCMUNCH_SHARE_SAVINGS=0` in your MCP server env:
   }
 }
 ```
+
+---
+
+## Runtime Identity Resource
+
+The server publishes one MCP **resource** (not a tool): `munch://runtime/identity`, a read-only `munch.runtime.identity/v1` JSON document identifying this exact server process. Multi-agent harnesses use it to tell command-line-identical servers apart, detect restarts, and refuse cleanup when identity doesn't match.
+
+Fields: `schema`, `product`, `version`, `transport`, `pid`, `process_start {value, source}`, `instance_id` (uuid4 minted once per process lifetime — a restart always changes it, even if the PID is reused), and optional `launch_id`.
+
+`process_start.source` is `"os"` when the timestamp comes from the operating system (Windows `GetProcessTimes`, Linux `/proc` starttime); where that's unobtainable it falls back to the server's own first-read clock and says so with `"self_recorded"` — the value is never fabricated as OS evidence.
+
+Set `JDOCMUNCH_LAUNCH_ID` (or the suite-generic `MUNCH_LAUNCH_ID`) in the server's environment to have an opaque launch token echoed back as `launch_id`; unset means the field is omitted. The resource is computed on demand, reads nothing from disk, and writes nothing. Command lines, env, cwd, hostnames, and corpus paths are deliberately excluded. The same contract ships in jcodemunch-mcp and jdatamunch-mcp.
 
 ---
 

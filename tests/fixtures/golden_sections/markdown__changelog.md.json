@@ -1,0 +1,56 @@
+[
+  {
+    "id": "golden/test::markdown/changelog.md::changelog#0",
+    "title": "changelog",
+    "level": 0,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::markdown/changelog.md::changelog#1",
+    "title": "Changelog",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 13,
+    "content_hash": "2d68c5b88ac4872c603d66e65137074cfbf18827dfe756250942f8a213694071",
+    "parent_id": "golden/test::markdown/changelog.md::changelog#0"
+  },
+  {
+    "id": "golden/test::markdown/changelog.md::changelog/140#2",
+    "title": "1.4.0",
+    "level": 2,
+    "byte_start": 13,
+    "byte_end": 109,
+    "content_hash": "c4fdeb34526deb2cbca7bf6f3e502c48c985be9395a4cfad6b6a3cb41e290e0e",
+    "parent_id": "golden/test::markdown/changelog.md::changelog#1"
+  },
+  {
+    "id": "golden/test::markdown/changelog.md::changelog/130#2",
+    "title": "1.3.0",
+    "level": 2,
+    "byte_start": 109,
+    "byte_end": 224,
+    "content_hash": "4d858aa2e8815d071630697590d3f5c2008906db2617ca33d581d4f7c634b854",
+    "parent_id": "golden/test::markdown/changelog.md::changelog#1"
+  },
+  {
+    "id": "golden/test::markdown/changelog.md::changelog/120#2",
+    "title": "1.2.0",
+    "level": 2,
+    "byte_start": 224,
+    "byte_end": 343,
+    "content_hash": "70819f509447a1e7dd6ac8e5149a16be342facf501f0733d2f2497c3aec9b295",
+    "parent_id": "golden/test::markdown/changelog.md::changelog#1"
+  },
+  {
+    "id": "golden/test::markdown/changelog.md::changelog/110#2",
+    "title": "1.1.0",
+    "level": 2,
+    "byte_start": 343,
+    "byte_end": 379,
+    "content_hash": "0f3b3023f6128c3a9f8be3e3e55d192618d1d4ee11ce714add9645ab81e490a1",
+    "parent_id": "golden/test::markdown/changelog.md::changelog#1"
+  }
+]

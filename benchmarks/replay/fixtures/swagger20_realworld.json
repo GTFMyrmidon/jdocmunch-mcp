@@ -1,0 +1,36 @@
+{
+  "name": "swagger20_realworld",
+  "description": "Swagger 2.0 (legacy) spec exercising definitions + tags + parameters. Locked at v1.29.0; future releases must hit >= 0.98 nDCG/MRR/Recall.",
+  "repo_path": "benchmarks/replay/corpus/swagger20",
+  "repo_id": "sw20_realworld",
+  "queries": [
+    {
+      "query": "list books pagination",
+      "expected_top_k": [
+        "local/sw20_realworld::library.yaml::operations/books/op-listbooks#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "create book request body",
+      "expected_top_k": [
+        "local/sw20_realworld::library.yaml::schemas/schema-book#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "fetch book by id",
+      "expected_top_k": [
+        "local/sw20_realworld::library.yaml::operations/books/op-getbook#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "list authors",
+      "expected_top_k": [
+        "local/sw20_realworld::library.yaml::operations/authors/op-listauthors#3"
+      ],
+      "k": 5
+    }
+  ]
+}

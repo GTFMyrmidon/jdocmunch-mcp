@@ -39,7 +39,7 @@ jdocmunch-mcp/
 │   │
 │   ├── embeddings/
 │   │   ├── __init__.py
-│   │   └── provider.py              # Gemini / OpenAI / sentence-transformers embedding providers
+│   │   └── provider.py              # Gemini / OpenAI / openai-compatible / sentence-transformers embedding providers
 │   │
 │   ├── summarizer/
 │   │   ├── __init__.py

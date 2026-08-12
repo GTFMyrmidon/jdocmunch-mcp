@@ -1,0 +1,93 @@
+swagger: "2.0"
+info:
+  title: LibraryAPI
+  version: "1.0.0"
+  description: Swagger 2.0 spec exercising definitions + parameters + tags.
+host: api.example.com
+basePath: /v1
+schemes: [https]
+consumes: [application/json]
+produces: [application/json]
+paths:
+  /books:
+    get:
+      operationId: listBooks
+      summary: List all books
+      tags: [books]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          type: integer
+      responses:
+        "200":
+          description: ok
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Book"
+    post:
+      operationId: createBook
+      summary: Add a new book
+      tags: [books]
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/Book"
+      responses:
+        "201":
+          description: created
+  /books/{id}:
+    get:
+      operationId: getBook
+      summary: Fetch book by id
+      tags: [books]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: integer
+      responses:
+        "200":
+          description: ok
+          schema:
+            $ref: "#/definitions/Book"
+        "404":
+          description: not found
+  /authors:
+    get:
+      operationId: listAuthors
+      summary: List authors
+      tags: [authors]
+      responses:
+        "200":
+          description: ok
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Author"
+definitions:
+  Book:
+    type: object
+    required: [id, title]
+    properties:
+      id:
+        type: integer
+      title:
+        type: string
+      author:
+        $ref: "#/definitions/Author"
+      isbn:
+        type: string
+  Author:
+    type: object
+    required: [id, name]
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+      bio:
+        type: string

@@ -5,20 +5,40 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Manual trigger. Both events above are gated to master, so a feature branch
+  # cannot fire CI on its own, and a draft PR's synchronize event has not been
+  # firing either. Without this there is no way to produce a green pinned SHA on
+  # a review branch, which is exactly what an external reviewer needs to verify
+  # against. Dispatch with:
+  #   gh workflow run test.yml --ref <branch>
+  workflow_dispatch:
 
 jobs:
   test:
     strategy:
+      # jdoc#95 QA-24: without this, the first failing job cancels every other
+      # one. A single ubuntu-3.10 failure cancelled all four Windows jobs, so
+      # the frozen SHA carried no Windows result at all and the checks panel
+      # showed eight failures where there was one. An external reviewer cannot
+      # verify a per-platform claim against a cancellation, and this arc has
+      # already mistaken a Windows pass for proof of a POSIX contract once.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          # Full history so scripts/generate_changelog.py can walk every
+          # `release:` commit during test_v1_35_0::test_runs_against_real_repo.
+          # Default depth 1 hid this test whenever HEAD wasn't itself a
+          # `release:` commit.
+          fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v6
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -27,7 +47,29 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests
-        run: uv run pytest tests/ -v --tb=short --cov=src --cov-report=term-missing
+        run: uv run pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --junitxml=junit.xml
+
+      # jdoc#100: the receipt is emitted BY the run, so the SHA in it is the SHA
+      # the numbers came from. Summaries are generated from these rather than
+      # transcribed by hand, which is how this arc has already shipped a wrong
+      # number. `if: always()` because a failing run's counts are the ones most
+      # worth having.
+      - name: Emit evidence receipt
+        if: always()
+        env:
+          # GITHUB_SHA is the synthetic MERGE commit on a pull_request event, not
+          # the branch head. The head sha is only reachable through the event
+          # payload, so pass it explicitly or the receipt cannot name a commit
+          # that exists in the branch history.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: uv run python scripts/evidence_receipt.py emit --report junit.xml --out receipts
+      - name: Upload evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.os }}-${{ matrix.python-version }}
+          path: receipts/*.json
+          if-no-files-found: warn
 
       - name: Verify sdist contains no sensitive paths
         if: runner.os == 'Linux'
@@ -35,10 +77,73 @@ jobs:
           uv build --sdist
           SDIST=$(ls dist/*.tar.gz | head -1)
           echo "Checking $SDIST for sensitive paths..."
-          FOUND=$(tar -tzf "$SDIST" | grep -E '(\.claude|\.env|\.pypirc|\.aws|\.ssh|id_rsa|id_ed25519|\.pem|\.key|credentials)' || true)
+          FOUND=$(tar -tzf "$SDIST" | grep -E '(/\.claude/|/\.env(\.|$)|/\.pypirc|/\.aws/|/\.ssh/|/id_rsa|/id_ed25519|\.pem$|\.key$|/credentials\.(json|yaml|yml|conf|cfg|ini|env)$|/aws_?credentials$|/google[-_]credentials)' || true)
           if [ -n "$FOUND" ]; then
             echo "ERROR: Sensitive paths found in sdist:"
             echo "$FOUND"
             exit 1
           fi
           echo "OK: No sensitive paths found in sdist."
+
+  # jdoc#99: every test above runs against an editable source tree, so a
+  # packaging fault cannot fail them. A module missing from the wheel, a stale
+  # file, or a broken entry point all pass and reach PyPI. This installs the
+  # built artifact into a clean environment and exercises the public surface
+  # through it. The script refuses to run if it imports from a source tree, so
+  # it cannot pass by accidentally testing src/ again.
+  package-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Build wheel
+        run: uv build --wheel
+      - name: Install the wheel into a clean environment and smoke it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/smoke"
+          if [ -f "$RUNNER_TEMP/smoke/bin/python" ]; then
+            PY="$RUNNER_TEMP/smoke/bin/python"
+          else
+            PY="$RUNNER_TEMP/smoke/Scripts/python.exe"
+          fi
+          "$PY" -m pip install --quiet --upgrade pip
+          "$PY" -m pip install --quiet dist/*.whl
+          cp scripts/smoke_installed.py "$RUNNER_TEMP/smoke_installed.py"
+          # Run from a directory with no src/ reachable. That is the whole point.
+          cd "$RUNNER_TEMP"
+          "$PY" smoke_installed.py
+
+  lint:
+    # Platform-independent, so run once rather than across the test matrix.
+    #
+    # Added 2026-08-07. This repo had no lint gate, and adding one immediately
+    # surfaced a latent NameError (ruff F821) that had shipped in a release.
+    #
+    # NOTE: `uv sync` WITHOUT `--locked`, matching the test job above -- uv.lock
+    # is gitignored in this repo, so `--locked` (which jcodemunch-mcp uses, and
+    # tracks its lock) would fail here. Copy the intent, not the step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Ruff lint (src/)
+        # Rule selection + grandfathered ignores live in [tool.ruff.lint] in
+        # pyproject.toml. Keep the gate green: fix the finding, or justify a new
+        # ignore in the same change.
+        run: uv run ruff check src/

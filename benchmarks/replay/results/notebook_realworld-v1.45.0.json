@@ -1,0 +1,50 @@
+{
+  "fixture": "notebook_realworld",
+  "version": "1.45.0",
+  "captured_at": "2026-04-27T00:02:22Z",
+  "n_queries": 3,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "filtering events level ERROR",
+      "predicted": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/filtering-events#2"
+      ],
+      "expected": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/filtering-events#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "stream_parse incremental memory",
+      "predicted": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/streaming-mode#2",
+        "local/nb_realworld::quickstart.ipynb::quickstart#1"
+      ],
+      "expected": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/streaming-mode#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "setup pip install",
+      "predicted": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/setup#2"
+      ],
+      "expected": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/setup#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

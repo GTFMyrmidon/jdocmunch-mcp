@@ -1,0 +1,103 @@
+{
+  "fixture": "openapi_realworld",
+  "version": "1.43.0",
+  "captured_at": "2026-04-26T23:18:04Z",
+  "n_queries": 6,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "list all pets",
+      "predicted": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-listpets#3",
+        "local/oa_realworld::petstore.yaml::operations/pets#2",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-createpet#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-deletepet#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-getpet#3"
+      ],
+      "expected": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-listpets#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "delete pet deprecated",
+      "predicted": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-deletepet#3",
+        "local/oa_realworld::petstore.yaml::schemas/schema-pet#3",
+        "local/oa_realworld::petstore.yaml::operations/owners/op-listowners#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-createpet#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-getpet#3"
+      ],
+      "expected": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-deletepet#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "create new pet",
+      "predicted": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-createpet#3",
+        "local/oa_realworld::petstore.yaml::schemas/schema-pet#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-deletepet#3",
+        "local/oa_realworld::petstore.yaml::operations/owners/op-listowners#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-getpet#3"
+      ],
+      "expected": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-createpet#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "owner email field",
+      "predicted": [
+        "local/oa_realworld::petstore.yaml::schemas/schema-owner#3",
+        "local/oa_realworld::petstore.yaml::schemas/schema-pet#3"
+      ],
+      "expected": [
+        "local/oa_realworld::petstore.yaml::schemas/schema-owner#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "tag schema",
+      "predicted": [
+        "local/oa_realworld::petstore.yaml::schemas/schema-tag#3",
+        "local/oa_realworld::petstore.yaml::schemas/schema-pet#3"
+      ],
+      "expected": [
+        "local/oa_realworld::petstore.yaml::schemas/schema-tag#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "list pet owners",
+      "predicted": [
+        "local/oa_realworld::petstore.yaml::operations/owners/op-listowners#3",
+        "local/oa_realworld::petstore.yaml::operations/owners#2",
+        "local/oa_realworld::petstore.yaml::schemas/schema-pet#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-listpets#3",
+        "local/oa_realworld::petstore.yaml::operations/pets/op-deletepet#3"
+      ],
+      "expected": [
+        "local/oa_realworld::petstore.yaml::operations/owners/op-listowners#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

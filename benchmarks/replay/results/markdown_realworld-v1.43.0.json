@@ -1,0 +1,96 @@
+{
+  "fixture": "markdown_realworld",
+  "version": "1.43.0",
+  "captured_at": "2026-04-26T23:18:03Z",
+  "n_queries": 6,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "installation prerequisites",
+      "predicted": [
+        "local/md_realworld::install.md::installation/prerequisites#2",
+        "local/md_realworld::install.md::installation#1"
+      ],
+      "expected": [
+        "local/md_realworld::install.md::installation/prerequisites#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "bearer token refresh",
+      "predicted": [
+        "local/md_realworld::authentication.md::authentication/token-rotation#2",
+        "local/md_realworld::authentication.md::authentication/obtaining-a-token#2",
+        "local/md_realworld::changelog.md::changelog/130#2",
+        "local/md_realworld::authentication.md::authentication/common-errors#2",
+        "local/md_realworld::authentication.md::authentication#1"
+      ],
+      "expected": [
+        "local/md_realworld::authentication.md::authentication/token-rotation#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "config file location",
+      "predicted": [
+        "local/md_realworld::configuration.md::configuration/file-location#2",
+        "local/md_realworld::configuration.md::configuration#1",
+        "local/md_realworld::configuration.md::configuration/environment-overrides#2",
+        "local/md_realworld::configuration.md::configuration/required-fields#2"
+      ],
+      "expected": [
+        "local/md_realworld::configuration.md::configuration/file-location#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "openapi 3.1 support",
+      "predicted": [
+        "local/md_realworld::changelog.md::changelog/130#2"
+      ],
+      "expected": [
+        "local/md_realworld::changelog.md::changelog/130#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "rate limit 429",
+      "predicted": [
+        "local/md_realworld::authentication.md::authentication/common-errors#2"
+      ],
+      "expected": [
+        "local/md_realworld::authentication.md::authentication/common-errors#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "retry count flag",
+      "predicted": [
+        "local/md_realworld::changelog.md::changelog/140#2",
+        "local/md_realworld::configuration.md::configuration/optional-fields#2",
+        "local/md_realworld::changelog.md::changelog/120#2",
+        "local/md_realworld::authentication.md::authentication/common-errors#2"
+      ],
+      "expected": [
+        "local/md_realworld::changelog.md::changelog/140#2"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

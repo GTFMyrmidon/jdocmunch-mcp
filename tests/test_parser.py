@@ -122,6 +122,30 @@ class TestMarkdownParser:
         titles = [s.title for s in sections]
         assert "Setext heading style" in titles or any("setext" in t.lower() for t in titles)
 
+    def test_yaml_frontmatter_is_not_setext_heading(self):
+        content = (
+            "---\n"
+            "name: example\n"
+            "description: This metadata line is followed by the closing delimiter.\n"
+            "---\n"
+            "\n"
+            "# Title\n"
+            "\n"
+            "Body.\n"
+        )
+        sections = parse_markdown(content, "doc.md", "repo")
+        titles = [s.title for s in sections]
+
+        assert "Title" in titles
+        assert not any(title.startswith("description:") for title in titles)
+
+    def test_leading_horizontal_rule_without_closing_frontmatter_still_parses(self):
+        content = "---\n\n# Title\n\nBody.\n"
+        sections = parse_markdown(content, "doc.md", "repo")
+        titles = [s.title for s in sections]
+
+        assert "Title" in titles
+
     def test_slug_collision_in_doc(self):
         content = "## Install\n\nFirst.\n\n## Install\n\nSecond.\n"
         sections = parse_markdown(content, "doc.md", "repo")

@@ -1,0 +1,50 @@
+{
+  "name": "markdown_realworld",
+  "description": "Hand-crafted markdown corpus exercising install / auth / config / changelog patterns. Locked at v1.21.0; future releases must hit >= 0.98 nDCG/MRR/Recall.",
+  "repo_path": "benchmarks/replay/corpus/markdown",
+  "repo_id": "md_realworld",
+  "queries": [
+    {
+      "query": "installation prerequisites",
+      "expected_top_k": [
+        "local/md_realworld::install.md::installation/prerequisites#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "bearer token refresh",
+      "expected_top_k": [
+        "local/md_realworld::authentication.md::authentication/token-rotation#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "config file location",
+      "expected_top_k": [
+        "local/md_realworld::configuration.md::configuration/file-location#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "openapi 3.1 support",
+      "expected_top_k": [
+        "local/md_realworld::changelog.md::changelog/130#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "rate limit 429",
+      "expected_top_k": [
+        "local/md_realworld::authentication.md::authentication/common-errors#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "retry count flag",
+      "expected_top_k": [
+        "local/md_realworld::changelog.md::changelog/140#2"
+      ],
+      "k": 5
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+openapi: 3.0.0
+info:
+  title: Petstore
+  version: "1.0.0"
+  description: Tiny pet-management API used as an OpenAPI test fixture.
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets
+      tags: [pets]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Pet" }
+    post:
+      operationId: createPet
+      summary: Add a new pet
+      tags: [pets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Pet" }
+      responses:
+        "201": { description: created }
+  /pets/{id}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet by id
+      tags: [pets]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pet" }
+    delete:
+      operationId: deletePet
+      summary: Delete a pet
+      tags: [pets]
+      deprecated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "204": { description: no content }
+  /owners:
+    get:
+      operationId: listOwners
+      summary: List pet owners
+      tags: [owners]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Owner" }
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        tag: { $ref: "#/components/schemas/Tag" }
+        owner: { $ref: "#/components/schemas/Owner" }
+    Tag:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+    Owner:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }

@@ -156,6 +156,7 @@ class TestGetProviderName:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+        monkeypatch.setenv("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "1")  # paid auto-detect is opt-in (v1.96.0)
         assert get_provider_name() == "anthropic"
 
     def test_auto_detect_gemini_fallback(self, monkeypatch):
@@ -165,6 +166,7 @@ class TestGetProviderName:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+        monkeypatch.setenv("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "1")  # paid auto-detect is opt-in (v1.96.0)
         assert get_provider_name() == "gemini"
 
     def test_auto_detect_minimax(self, monkeypatch):
@@ -174,6 +176,7 @@ class TestGetProviderName:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+        monkeypatch.setenv("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "1")  # paid auto-detect is opt-in (v1.96.0)
         assert get_provider_name() == "minimax"
 
     def test_auto_detect_glm(self, monkeypatch):
@@ -183,6 +186,7 @@ class TestGetProviderName:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+        monkeypatch.setenv("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "1")  # paid auto-detect is opt-in (v1.96.0)
         assert get_provider_name() == "glm"
 
     def test_no_keys_returns_none(self, monkeypatch):
@@ -200,6 +204,25 @@ class TestGetProviderName:
     def test_unknown_explicit_falls_through_to_auto(self, monkeypatch):
         monkeypatch.setenv("JDOCMUNCH_SUMMARIZER_PROVIDER", "unknown-provider")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "1")  # paid auto-detect is opt-in (v1.96.0)
+        assert get_provider_name() == "anthropic"
+
+    def test_bare_paid_key_suppressed_without_opt_in(self, monkeypatch):
+        """v1.96.0: a bare cloud key must NOT auto-enable a paid provider."""
+        for key in ["JDOCMUNCH_SUMMARIZER_PROVIDER", "GOOGLE_API_KEY",
+                    "OPENAI_API_KEY", "MINIMAX_API_KEY", "ZHIPUAI_API_KEY",
+                    "JDOCMUNCH_ALLOW_PAID_SUMMARIES"]:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-would-bill")
+        assert get_provider_name() is None
+
+    def test_bare_paid_key_honored_with_env_opt_in(self, monkeypatch):
+        """v1.96.0: opt-in restores legacy auto-select."""
+        for key in ["JDOCMUNCH_SUMMARIZER_PROVIDER", "GOOGLE_API_KEY",
+                    "OPENAI_API_KEY", "MINIMAX_API_KEY", "ZHIPUAI_API_KEY"]:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("JDOCMUNCH_ALLOW_PAID_SUMMARIES", "1")
         assert get_provider_name() == "anthropic"
 
 

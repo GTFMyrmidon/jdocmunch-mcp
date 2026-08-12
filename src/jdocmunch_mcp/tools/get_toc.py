@@ -4,14 +4,25 @@ import time
 from typing import Optional
 
 from ..storage import DocStore
-from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided, get_total_saved
+from ..storage.token_tracker import estimate_savings, record_savings, cost_avoided
 
 
-def get_toc(repo: str, storage_path: Optional[str] = None) -> dict:
+def get_toc(
+    repo: str,
+    path_glob: Optional[str] = None,
+    storage_path: Optional[str] = None,
+) -> dict:
     """Return a flat table of contents for all sections in a repo.
 
     Sections are sorted by (doc_path, byte_start). Content is excluded.
+
+    Args:
+        repo: Repository identifier.
+        path_glob: v1.36+ — when set, restrict to sections whose doc_path
+            matches the fnmatch glob (e.g. ``"api/**/*.md"``,
+            ``"reference/*"``). Default None means no filter.
     """
+    import fnmatch
     t0 = time.perf_counter()
     store = DocStore(base_path=storage_path)
     owner, name = store._resolve_repo(repo)
@@ -24,6 +35,8 @@ def get_toc(repo: str, storage_path: Optional[str] = None) -> dict:
         index.sections,
         key=lambda s: (s.get("doc_path", ""), s.get("byte_start", 0))
     )
+    if path_glob:
+        sections = [s for s in sections if fnmatch.fnmatch(s.get("doc_path", ""), path_glob)]
 
     toc = []
     for sec in sections:
@@ -47,14 +60,17 @@ def get_toc(repo: str, storage_path: Optional[str] = None) -> dict:
     ca = cost_avoided(tokens_saved, total)
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
+    meta = {
+        "latency_ms": latency_ms,
+        "sections_returned": len(toc),
+        "tokens_saved": tokens_saved,
+        **ca,
+    }
+    if path_glob:
+        meta["path_glob"] = path_glob
     return {
         "repo": f"{owner}/{name}",
         "sections": toc,
         "section_count": len(toc),
-        "_meta": {
-            "latency_ms": latency_ms,
-            "sections_returned": len(toc),
-            "tokens_saved": tokens_saved,
-            **ca,
-        },
+        "_meta": meta,
     }

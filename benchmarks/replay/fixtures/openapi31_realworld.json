@@ -1,0 +1,36 @@
+{
+  "name": "openapi31_realworld",
+  "description": "OpenAPI 3.1 spec exercising webhooks + nullable types + JSON Schema $ref. Locked at v1.29.0; future releases must hit >= 0.98 nDCG/MRR/Recall.",
+  "repo_path": "benchmarks/replay/corpus/openapi31",
+  "repo_id": "oa31_realworld",
+  "queries": [
+    {
+      "query": "list events webhook",
+      "expected_top_k": [
+        "local/oa31_realworld::webhooks.yaml::operations/events/op-listevents#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "create subscription",
+      "expected_top_k": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "subscription schema callback url",
+      "expected_top_k": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-subscription#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "event kind enum",
+      "expected_top_k": [
+        "local/oa31_realworld::webhooks.yaml::schemas/schema-event#3"
+      ],
+      "k": 5
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+[
+  {
+    "id": "golden/test::rst/index.rst::index#0",
+    "title": "index",
+    "level": 0,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::rst/index.rst::welcome-to-examplelib#1",
+    "title": "Welcome to ExampleLib",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 105,
+    "content_hash": "644291b24694886997e3c46b000dc46a59d561ef71aae4d62deb659e2ebd97cf",
+    "parent_id": "golden/test::rst/index.rst::index#0"
+  },
+  {
+    "id": "golden/test::rst/index.rst::welcome-to-examplelib/quickstart#2",
+    "title": "Quickstart",
+    "level": 2,
+    "byte_start": 105,
+    "byte_end": 388,
+    "content_hash": "0cf9df529c10d5027260969dd00b9d2e2c6810cad0319a770d91dbd9ad749c6e",
+    "parent_id": "golden/test::rst/index.rst::welcome-to-examplelib#1"
+  },
+  {
+    "id": "golden/test::rst/index.rst::welcome-to-examplelib/parser-configuration#2",
+    "title": "Parser configuration",
+    "level": 2,
+    "byte_start": 388,
+    "byte_end": 735,
+    "content_hash": "d01c2ce41f7c09350e8a3b3aeba911ad4b30dafd9c843385b4a3b0145129f1e7",
+    "parent_id": "golden/test::rst/index.rst::welcome-to-examplelib#1"
+  },
+  {
+    "id": "golden/test::rst/index.rst::welcome-to-examplelib/streaming-mode#2",
+    "title": "Streaming mode",
+    "level": 2,
+    "byte_start": 735,
+    "byte_end": 875,
+    "content_hash": "7030c1646a55ef5063f26925f126330d2cd49bd7db484213d4bcc2ae5facbb1e",
+    "parent_id": "golden/test::rst/index.rst::welcome-to-examplelib#1"
+  },
+  {
+    "id": "golden/test::rst/index.rst::welcome-to-examplelib/error-handling#2",
+    "title": "Error handling",
+    "level": 2,
+    "byte_start": 875,
+    "byte_end": 1132,
+    "content_hash": "3eb5bb7113ce6b7e994df9ae0fed12d17b049f6ef85a4d87383ab770856ed16f",
+    "parent_id": "golden/test::rst/index.rst::welcome-to-examplelib#1"
+  }
+]

@@ -1,0 +1,56 @@
+[
+  {
+    "id": "golden/test::markdown/install.md::install#0",
+    "title": "install",
+    "level": 0,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::markdown/install.md::installation#1",
+    "title": "Installation",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 85,
+    "content_hash": "97f2603ff5e5b423bd5684781235a2b2e8e18a5e35dc0441fb2f920784c939a9",
+    "parent_id": "golden/test::markdown/install.md::install#0"
+  },
+  {
+    "id": "golden/test::markdown/install.md::installation/prerequisites#2",
+    "title": "Prerequisites",
+    "level": 2,
+    "byte_start": 85,
+    "byte_end": 237,
+    "content_hash": "5da9dcaed229c2fd06a53b47d850f599d712bcc027438f7f601b55ab148f971d",
+    "parent_id": "golden/test::markdown/install.md::installation#1"
+  },
+  {
+    "id": "golden/test::markdown/install.md::installation/quick-install#2",
+    "title": "Quick install",
+    "level": 2,
+    "byte_start": 237,
+    "byte_end": 352,
+    "content_hash": "c2efc2d542d26dde57dbf14b2d1e984eaaa9d483b368df5ebed3c574817748c2",
+    "parent_id": "golden/test::markdown/install.md::installation#1"
+  },
+  {
+    "id": "golden/test::markdown/install.md::installation/from-source#2",
+    "title": "From source",
+    "level": 2,
+    "byte_start": 352,
+    "byte_end": 503,
+    "content_hash": "88ce1042e3878cb7a3b4b5e91bb5d26a0a69c1d6c43e0a740a00f64617496986",
+    "parent_id": "golden/test::markdown/install.md::installation#1"
+  },
+  {
+    "id": "golden/test::markdown/install.md::installation/troubleshooting#2",
+    "title": "Troubleshooting",
+    "level": 2,
+    "byte_start": 503,
+    "byte_end": 781,
+    "content_hash": "9324bb5d01fdd66726d89445142eca8612696c539d575c7f1030a30f67c221da",
+    "parent_id": "golden/test::markdown/install.md::installation#1"
+  }
+]

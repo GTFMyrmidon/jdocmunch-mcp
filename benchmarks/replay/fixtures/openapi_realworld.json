@@ -1,0 +1,50 @@
+{
+  "name": "openapi_realworld",
+  "description": "OpenAPI 3.0 Petstore spec exercising operations + schemas + tag groupings. Locked at v1.21.0; future releases must hit >= 0.98 nDCG/MRR/Recall.",
+  "repo_path": "benchmarks/replay/corpus/openapi",
+  "repo_id": "oa_realworld",
+  "queries": [
+    {
+      "query": "list all pets",
+      "expected_top_k": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-listpets#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "delete pet deprecated",
+      "expected_top_k": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-deletepet#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "create new pet",
+      "expected_top_k": [
+        "local/oa_realworld::petstore.yaml::operations/pets/op-createpet#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "owner email field",
+      "expected_top_k": [
+        "local/oa_realworld::petstore.yaml::schemas/schema-owner#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "tag schema",
+      "expected_top_k": [
+        "local/oa_realworld::petstore.yaml::schemas/schema-tag#3"
+      ],
+      "k": 5
+    },
+    {
+      "query": "list pet owners",
+      "expected_top_k": [
+        "local/oa_realworld::petstore.yaml::operations/owners/op-listowners#3"
+      ],
+      "k": 5
+    }
+  ]
+}

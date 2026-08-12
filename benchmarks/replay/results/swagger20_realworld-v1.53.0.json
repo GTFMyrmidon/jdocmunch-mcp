@@ -1,0 +1,72 @@
+{
+  "fixture": "swagger20_realworld",
+  "version": "1.53.0",
+  "captured_at": "2026-04-27T01:27:27Z",
+  "n_queries": 4,
+  "aggregates": {
+    "ndcg": 1.0,
+    "mrr": 1.0,
+    "recall": 1.0
+  },
+  "per_query": [
+    {
+      "query": "list books pagination",
+      "predicted": [
+        "local/sw20_realworld::library.yaml::operations/books/op-listbooks#3",
+        "local/sw20_realworld::library.yaml::operations/books#2",
+        "local/sw20_realworld::library.yaml::operations/books/op-createbook#3",
+        "local/sw20_realworld::library.yaml::operations/books/op-getbook#3",
+        "local/sw20_realworld::library.yaml::operations/authors/op-listauthors#3"
+      ],
+      "expected": [
+        "local/sw20_realworld::library.yaml::operations/books/op-listbooks#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "create book request body",
+      "predicted": [
+        "local/sw20_realworld::library.yaml::schemas/schema-book#3",
+        "local/sw20_realworld::library.yaml::operations/books/op-createbook#3",
+        "local/sw20_realworld::library.yaml::operations/books/op-getbook#3"
+      ],
+      "expected": [
+        "local/sw20_realworld::library.yaml::schemas/schema-book#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "fetch book by id",
+      "predicted": [
+        "local/sw20_realworld::library.yaml::operations/books/op-getbook#3",
+        "local/sw20_realworld::library.yaml::schemas/schema-book#3",
+        "local/sw20_realworld::library.yaml::operations/books/op-createbook#3",
+        "local/sw20_realworld::library.yaml::schemas/schema-author#3"
+      ],
+      "expected": [
+        "local/sw20_realworld::library.yaml::operations/books/op-getbook#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    },
+    {
+      "query": "list authors",
+      "predicted": [
+        "local/sw20_realworld::library.yaml::operations/authors/op-listauthors#3",
+        "local/sw20_realworld::library.yaml::operations/authors#2",
+        "local/sw20_realworld::library.yaml::operations/books/op-listbooks#3"
+      ],
+      "expected": [
+        "local/sw20_realworld::library.yaml::operations/authors/op-listauthors#3"
+      ],
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

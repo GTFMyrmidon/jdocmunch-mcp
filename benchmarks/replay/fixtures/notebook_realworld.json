@@ -1,0 +1,29 @@
+{
+  "name": "notebook_realworld",
+  "description": "Tiny Jupyter notebook with markdown + code cells. Locked at v1.21.0; future releases must hit >= 0.98 nDCG/MRR/Recall.",
+  "repo_path": "benchmarks/replay/corpus/notebook",
+  "repo_id": "nb_realworld",
+  "queries": [
+    {
+      "query": "filtering events level ERROR",
+      "expected_top_k": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/filtering-events#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "stream_parse incremental memory",
+      "expected_top_k": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/streaming-mode#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "setup pip install",
+      "expected_top_k": [
+        "local/nb_realworld::quickstart.ipynb::quickstart/setup#2"
+      ],
+      "k": 5
+    }
+  ]
+}

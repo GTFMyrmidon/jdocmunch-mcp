@@ -19,7 +19,6 @@ from pathlib import Path
 from .sections import (
     Section,
     slugify,
-    resolve_slug_collision,
     make_section_id,
     make_hierarchical_slug,
     compute_content_hash,

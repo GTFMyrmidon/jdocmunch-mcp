@@ -1,83 +1,31 @@
 <!-- mcp-name: io.github.jgravelle/jdocmunch-mcp -->
 
-## Stop Feeding Documentation Trees to Your AI
-
-Most AI agents still explore documentation the expensive way:
-
-open file → skim hundreds of irrelevant paragraphs → open another file → repeat
-
-That burns tokens, floods context windows with noise, and forces models to reason through a lot of text they never needed in the first place.
-
-**jDocMunch-MCP lets AI agents navigate documentation by section instead of reading files by brute force.**  
-It indexes a documentation set once, then retrieves exactly the section the agent actually needs, with byte-precise extraction from the original file.
-
-| Task | Traditional approach | With jDocMunch |
-| --- | ---: | ---: |
-| Find a configuration section | ~12,000 tokens | ~400 tokens |
-| Browse documentation structure | ~40,000 tokens | ~800 tokens |
-| Explore a full doc set | ~100,000 tokens | ~2,000 tokens |
-
-Index once. Query cheaply forever.  
-**Precision context beats brute-force context.**
-
----
-
 # jDocMunch MCP
 
-### AI-native documentation navigation for serious agents
+**jDocMunch is an MCP server for coding agents that retrieves the exact documentation section a task needs, without loading whole files into the context window.**
 
+Index a documentation set once by heading hierarchy, then fetch a single section, a heading subtree, or a ranked search result — extracted byte-precisely from the original file.
+
+[**Install**](#install) · [**Quickstart**](#quickstart) · [**Benchmarks**](benchmarks/) · [**Commercial licensing**](#licensing-and-commercial-use)
+
+[![PyPI version](https://img.shields.io/pypi/v/jdocmunch-mcp)](https://pypi.org/project/jdocmunch-mcp/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/jdocmunch-mcp)](https://pypi.org/project/jdocmunch-mcp/)
 ![License](https://img.shields.io/badge/license-dual--use-blue)
 ![MCP](https://img.shields.io/badge/MCP-compatible-purple)
 ![Local-first](https://img.shields.io/badge/local--first-yes-brightgreen)
-![jMRI](https://img.shields.io/badge/jMRI-Full-blueviolet)
-[![PyPI version](https://img.shields.io/pypi/v/jdocmunch-mcp)](https://pypi.org/project/jdocmunch-mcp/)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/jdocmunch-mcp)](https://pypi.org/project/jdocmunch-mcp/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20102349.svg)](https://doi.org/10.5281/zenodo.20102349)
 
-> ## Commercial licenses
-> jDocMunch-MCP is **free for non-commercial use**.
->
-> **Commercial use requires a paid license.**
->
-> **jDocMunch-only licenses**
-> - [Builder — $29](https://j.gravelle.us/jCodeMunch/descriptions.php#builder) — 1 developer
-> - [Studio — $99](https://j.gravelle.us/jCodeMunch/descriptions.php#studio) — up to 5 developers
-> - [Platform — $499](https://j.gravelle.us/jCodeMunch/descriptions.php#platform) — org-wide internal deployment
->
-> **Want both code and docs retrieval?**
-> - [Munch Duo Builder Bundle — $89](https://j.gravelle.us/jCodeMunch/descriptions.php#builder)
-> - [Munch Duo Studio Bundle — $399](https://j.gravelle.us/jCodeMunch/descriptions.php#studio)
-> - [Munch Duo Platform Bundle — $2,249](https://j.gravelle.us/jCodeMunch/descriptions.php#platform)
-
-**Stop dumping documentation files into context windows. Start navigating docs structurally.**
-
-jDocMunch indexes documentation once by heading hierarchy and section structure, then gives MCP-compatible agents precise access to the explanations they actually need instead of forcing them to brute-read files.
-
-It is built for workflows where token efficiency, context hygiene, and agent reliability matter.
+**Free for personal use.** Commercial use requires a paid license — [terms below](#licensing-and-commercial-use).
 
 ---
 
-## Why this exists
+## Why jDocMunch?
 
-Large context windows do not fix bad retrieval.
+**The problem.** An agent asked "how do I configure authentication?" opens a documentation file, skims hundreds of paragraphs it does not need, opens another, and repeats. Large context windows do not fix this. They just make the waste affordable enough to ignore until the bill arrives, and they crowd out the context the model actually needed.
 
-Agents waste money and reasoning bandwidth when they:
+**The mechanism.** jDocMunch parses a documentation set into a section tree keyed by heading hierarchy, stores each section's byte offsets into the original file, and exposes retrieval over MCP. Sections keep durable identities across re-indexing as long as path, heading text, and heading level are unchanged.
 
-- open entire documents to find one configuration block
-- repeatedly re-read headings, boilerplate, and unrelated sections
-- lose important explanations inside oversized context payloads
-- consume documentation as flat text instead of structured knowledge
-
-jDocMunch fixes that by changing the unit of access from **file** to **section**.
-
-Instead of handing an agent an entire document, it can retrieve exactly:
-
-- an installation section
-- a configuration section
-- an API explanation
-- a troubleshooting section
-- a specific subtree of related headings
-
-That makes documentation exploration cheaper, faster, and more stable.
+**The outcome.** The unit of access changes from *file* to *section*. An agent retrieves the installation section, one configuration block, or a specific heading subtree — and nothing else.
 
 ---
 
@@ -92,414 +40,195 @@ Full content is pulled on demand from exact byte offsets into the original file.
 ### Stable section IDs
 Sections retain durable identities across re-indexing when path, heading text, and heading level remain unchanged.
 
-### Local-first architecture
-Indexes and raw docs are stored locally. No hosted dependency required.
+---
 
-### MCP-native workflow
-Works with Claude Desktop, Claude Code, Google Antigravity, and other MCP-compatible clients.
+## Evidence
+
+Four benchmarks against public documentation corpora, each with the corpus, date, and per-query results recorded in [`benchmarks/`](benchmarks/).
+
+| Corpus | Scale | Indexed in | Result |
+|---|---|---|---|
+| [Kubernetes](benchmarks/jDocMunch_Benchmark_Kubernetes.md) (`kubernetes/website`, 2026-03-04) | 1,569 `.md` files, 4,355 sections, 16 MB | 3,352 ms | 27,285 tokens saved on a single node-affinity query; 100 ms latency |
+| [SciPy](benchmarks/jDocMunch_Benchmark_SciPy.md) | 10,402 sections, ~855,000 corpus tokens | 2,247 ms | 135–152 ms per query across sparse-solver, FFT, and optimization lookups |
+| [LangChain](benchmarks/jDocMunch_Benchmark_LangChain_MDX.md) (MDX) | 5,973 sections | 5,204 ms | MDX-aware sectioning found 754% more sections than the naive pass |
+| [Wiki](benchmarks/jDocMunch_Benchmark_Wiki.md) | 7,449-token corpus | — | Search returns ranked metadata in ~190 tokens against a 7,449-token whole-corpus read |
+
+**Read these as per-corpus results, not as a single headline multiple.** Savings depend on how large the containing file is relative to the section you needed: a small file with one heading saves almost nothing, and the Kubernetes corpus saves a great deal. The benchmark files record the queries that did poorly alongside the ones that did well.
+
+A separate, measured result from the [v1.121.0](CHANGELOG.md) projection work, on this repository's own docs at `max_results=10`: a search row went **1,989 chars → 319 with `compact=true` (−84%)**, or 431 with `snippet_bytes=200` (−78%) while removing the follow-up `get_section` call entirely.
+
+**Retrieval quality is gated, not assumed.** Every release runs a replay fixture over a frozen golden set and fails below **nDCG 0.95**. That gate has failed builds and blocked releases; it is not decorative.
 
 ---
 
-## What gets indexed
+## Install
 
-Every section stores:
+**Requirements:** Python 3.10+, any MCP-compatible client.
 
-- title and heading level
-- one-line summary
-- extracted tags and references
-- SHA-256 content hash for drift detection
-- byte offsets into the original file
+```bash
+pip install jdocmunch-mcp
+jdocmunch-mcp init
+```
 
-This allows agents to discover documentation structurally, then request only the specific section they need.
+`init` detects your MCP clients, writes their config entries, installs the doc-exploration prompt policy so your agent actually reaches for the tools, and optionally installs hooks and indexes your docs.
+
+> **Ubuntu 24.04+ / Debian 12+:** system Python is externally managed (PEP 668). Use `pipx install jdocmunch-mcp` or `uv tool install jdocmunch-mcp`.
+
+Verify:
+
+```bash
+jdocmunch-mcp --version
+```
+
+**Manual Claude Code setup:**
+
+```bash
+pip install jdocmunch-mcp
+claude mcp add -s user jdocmunch jdocmunch-mcp
+```
+
+Installing the server makes the tools available; it does not break an agent's habit of brute-reading files. One line in your `CLAUDE.md` does that:
+
+```markdown
+Call the jdocmunch_guide tool and strictly follow its instructions.
+```
 
 ---
 
-## Why agents need this
+## Quickstart
 
-Traditional doc retrieval methods all break in different ways:
+**Assumes:** jDocMunch installed and registered with your client, and a folder of documentation.
 
-- **File scanning** loads far too much irrelevant text
-- **Keyword search** finds terms but often loses context
-- **Chunking** breaks authored hierarchy and separates explanations from examples
+Index a local documentation folder:
 
-jDocMunch preserves the structure the human author intended:
+```bash
+jdocmunch-mcp index-local --path ./docs
+```
 
-- heading hierarchy
-- parent/child relationships
-- section boundaries
-- coherent explanatory units
+It prints JSON naming the corpus and what it found:
 
-Agents do not need bigger context windows.  
-They need better navigation.
+```json
+{
+  "success": true,
+  "repo": "local/docs",
+  "file_count": 1,
+  "section_count": 4,
+  "doc_types": { ".md": 1 },
+  "semantic_search": false
+}
+```
+
+`section_count` greater than `file_count` is the whole point: the index addresses headings, not files.
+
+Then, inside your agent:
+
+> Using jdocmunch, search the docs for "authentication configuration" and show me that section.
+
+The agent should call `search_sections`, then `get_section` on the top hit — returning one section rather than a file. `_meta.tokens_saved` on the response reports what that cost versus reading the containing document.
+
+**Next step:** `get_toc_tree` for a structural view of the whole corpus, or `index_repo` to index documentation straight from a GitHub repository.
+
+---
+
+## What you can do
+
+- **Retrieve one section instead of a document.** `get_section` and `get_sections` pull byte-precise content from the original file; `get_section_excerpt` narrows further.
+- **Search by meaning, not just keywords.** `search_sections` fuses BM25 with semantic cosine when an embedding provider is configured. `compact=true`, `fields=[...]`, and `snippet_bytes=N` cut the response further.
+- **Navigate structure.** `get_toc`, `get_toc_tree`, `get_section_path`, `get_section_descendants`, and `section_neighbors` traverse the heading tree without reading content.
+- **Find what documentation is missing or rotting.** `get_doc_coverage`, `get_undocumented_symbols`, `get_stale_pages`, `get_orphan_sections`, `get_broken_links`, and `doc_health_radar`.
+- **Work across API specs.** `find_endpoint`, `list_endpoints_by_tag`, `find_operations_using_schema`, and `get_schema_graph` treat OpenAPI documents as first-class.
+- **Preflight documentation changes.** `check_section_delete_safe` and `get_section_blast_radius` before you remove or restructure.
+- **Know when an answer is stale.** Content reads disclose `_meta.freshness`, `_meta.verdict`, and which source layer answered.
+
+64 tools in total. The full reference is in [USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 
 ## How it works
 
-jDocMunch implements **[jMRI-Full](https://dev.to/jgravelle/your-ai-agent-is-dumpster-diving-through-your-code-326f)** — the open specification for structured retrieval MCP servers. jMRI-Full covers the full stack: discover, search, retrieve, and metadata operations with batch retrieval, hash-based drift detection, byte-offset addressing, and a complete `_meta` envelope on every call.
-
-1. **Discovery**
-   GitHub API or local directory walk
-
-2. **Security filtering**
-   Traversal protection, secret exclusion, binary detection
-
-3. **Parsing**
-   Format-aware section splitting: heading-based (Markdown/MDX/HTML/RST/AsciiDoc), structure-based (OpenAPI tags, JSON keys, XML elements), or cell-based (Jupyter)
-
-4. **Hierarchy wiring**
-   Parent/child relationships established
-
-5. **Summarization**
-   Heading text → AI batch summaries → title fallback
-
-6. **Storage**
-   JSON index + raw files stored locally under `~/.doc-index/`
-
-7. **Retrieval**
-   O(1) byte-offset seeking via stable section IDs
-
----
-
-## Stable section IDs
+Everything runs locally. Indexes live under your home directory; no hosted service is required for indexing or retrieval.
 
 ```text
-{repo}::{doc_path}::{ancestor-chain/slug}#{level}
+docs/ ──► parser (per format) ──► section tree ──► local index
+                                                      │
+                          MCP client ◄── retrieval ◄──┘
 ```
 
-The slug is prefixed with the ancestor heading chain, making IDs both readable and stable. A new heading inserted in one branch of a document never renumbers IDs in another branch.
+- **Parsing** is per format, one module each: Markdown/MDX, reStructuredText, AsciiDoc, Jupyter notebooks, HTML, plain text, OpenAPI (YAML), JSON/JSONC, XML/SVG/XHTML, Godot scenes, and — via the optional `[office]` extra — PDF, DOCX, PPTX, and EPUB.
+- **Storage** is a versioned local index (`INDEX_VERSION = 3`) that auto-migrates on first load. A 1.x release never forces a reindex.
+- **Retrieval** is lexical BM25 by default, hybrid when embeddings are available.
+- **Embeddings are optional and provider-agnostic** — Gemini, OpenAI, an OpenAI-compatible endpoint, or local sentence-transformers. Without one, search stays lexical and entirely offline.
 
-Examples:
-
-* `owner/repo::docs/install.md::installation#1`
-* `owner/repo::docs/install.md::installation/prerequisites#3`
-* `owner/repo::README.md::usage/configuration/advanced-configuration#4`
-* `local/myproject::guide.md::configuration#2`
-
-IDs remain stable across re-indexing when the file path, heading text, heading level, and parent heading chain do not change.
+Deeper detail: [ARCHITECTURE.md](ARCHITECTURE.md) and [SPEC.md](SPEC.md).
 
 ---
 
-## Installation
+## Security and privacy
 
-### Prerequisites
+Local-first by design. Your documentation is parsed and stored on your machine, and the base package's only default network behavior is an anonymous savings counter — a random ID plus aggregate token counts, no content, no paths, no PII.
 
-* Python 3.10+
-* `pip`
-
-### Install
-
-```bash
-pip install jdocmunch-mcp
-```
-
-Verify:
-
-```bash
-jdocmunch-mcp --help
-```
-
----
-
-## Configure an MCP client
-
-> **PATH note:** MCP clients often run with a restricted environment where `jdocmunch-mcp` may not be found even if it works in your shell. Using [`uvx`](https://github.com/astral-sh/uv) is the recommended approach because it resolves the package on demand without relying on your system PATH. If you prefer `pip install`, use the absolute path to the executable instead.
-
-### Common executable paths
-
-* **Linux:** `/home/<username>/.local/bin/jdocmunch-mcp`
-* **macOS:** `/Users/<username>/.local/bin/jdocmunch-mcp`
-* **Windows:** `C:\\Users\\<username>\\AppData\\Roaming\\Python\\Python3xx\\Scripts\\jdocmunch-mcp.exe`
-
----
-
-## Claude Desktop / Claude Code
-
-Config file location:
-
-| OS      | Path                                                              |
-| ------- | ----------------------------------------------------------------- |
-| macOS   | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Linux   | `~/.config/claude/claude_desktop_config.json`                     |
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json`                     |
-
-### Minimal config
-
-```json
-{
-  "mcpServers": {
-    "jdocmunch": {
-      "command": "uvx",
-      "args": ["jdocmunch-mcp"]
-    }
-  }
-}
-```
-
-### With optional AI summaries and GitHub auth
-
-```json
-{
-  "mcpServers": {
-    "jdocmunch": {
-      "command": "uvx",
-      "args": ["jdocmunch-mcp"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_...",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-For Anthropic or Gemini, the base `uvx jdocmunch-mcp` command is enough once the
-corresponding API key is present. For OpenAI-compatible providers such as OpenAI,
-MiniMax, or GLM-5, include the optional dependency in the launcher command:
-
-```json
-{
-  "mcpServers": {
-    "jdocmunch": {
-      "command": "uvx",
-      "args": ["--with", "openai", "jdocmunch-mcp"],
-      "env": {
-        "MINIMAX_API_KEY": "mx-...",
-        "JDOCMUNCH_SUMMARIZER_PROVIDER": "minimax"
-      }
-    }
-  }
-}
-```
-
-After saving the config, **restart Claude Desktop / Claude Code**.
-
----
-
-## Google Antigravity
-
-1. Open the Agent pane
-2. Click the `⋯` menu → **MCP Servers** → **Manage MCP Servers**
-3. Click **View raw config** to open `mcp_config.json`
-4. Add the entry below, save, then restart the MCP server
-
-```json
-{
-  "mcpServers": {
-    "jdocmunch": {
-      "command": "uvx",
-      "args": ["jdocmunch-mcp"]
-    }
-  }
-}
-```
-
----
-
-## Usage examples
-
-```json
-index_local:          { "path": "/path/to/docs" }
-index_repo:           { "url": "owner/repo" }
-
-get_toc:              { "repo": "owner/repo" }
-get_toc_tree:         { "repo": "owner/repo" }
-get_document_outline: { "repo": "owner/repo", "doc_path": "docs/config.md" }
-search_sections:      { "repo": "owner/repo", "query": "authentication" }
-get_section:          { "repo": "owner/repo", "section_id": "owner/repo::docs/config.md::authentication#1" }
-```
-
----
-
-## Tool surface
-
-| Tool                    | Purpose                                               |
-| ----------------------- | ----------------------------------------------------- |
-| `index_local`           | Index a local documentation folder                    |
-| `index_repo`            | Index a GitHub repository’s docs                      |
-| `list_repos`            | List indexed documentation sets                       |
-| `get_toc`               | Flat section list in document order                   |
-| `get_toc_tree`          | Nested section tree per document                      |
-| `get_document_outline`  | Section hierarchy for one document                    |
-| `search_sections`       | Weighted search returning summaries only              |
-| `get_section`           | Full content of one section                           |
-| `get_sections`          | Batch content retrieval                               |
-| `get_section_context`   | Section + ancestor headings + child summaries         |
-| `delete_index`          | Remove a doc index                                    |
-
-Search and retrieval tools include a `_meta` envelope with timing, token savings, and cost avoided.
-
-Example:
-
-```json
-"_meta": {
-  "latency_ms": 12,
-  "sections_returned": 5,
-  "tokens_saved": 1840,
-  "total_tokens_saved": 94320,
-  "cost_avoided": { "claude_opus": 0.0276, "gpt5_latest": 0.0184 },
-  "total_cost_avoided": { "claude_opus": 1.4148, "gpt5_latest": 0.9432 }
-}
-```
-
-`total_tokens_saved` and `total_cost_avoided` accumulate across tool calls and persist to `~/.doc-index/_savings.json`.
-
----
-
-## Supported formats
-
-| Format             | Extensions                          | Notes                                                                          |
-| ------------------ | ----------------------------------- | ------------------------------------------------------------------------------ |
-| Markdown           | `.md`, `.markdown`                  | ATX (`# Heading`) and setext headings                                          |
-| MDX                | `.mdx`                              | JSX tags, frontmatter, import/export stripped before parsing                   |
-| Plain text         | `.txt`                              | Paragraph-block section splitting                                              |
-| reStructuredText   | `.rst`                              | Adornment-based heading detection                                              |
-| AsciiDoc           | `.adoc`                             | `=` and `==` heading hierarchy                                                 |
-| Jupyter Notebook   | `.ipynb`                            | Markdown cells used as sections; code cells attached as content                |
-| HTML               | `.html`                             | `<h1>`–`<h6>` headings; boilerplate stripped                                  |
-| OpenAPI / Swagger  | `.yaml`, `.yml`, `.json`, `.jsonc`  | OpenAPI 3.x and Swagger 2.x; operations grouped by tag as sections             |
-| JSON / JSONC       | `.json`, `.jsonc`                   | Top-level keys as sections; JSONC comments stripped before parsing             |
-| XML / SVG / XHTML  | `.xml`, `.svg`, `.xhtml`            | Element hierarchy used for section structure                                   |
-
-See `ARCHITECTURE.md` for parser details.
-
----
-
-## Security
-
-Built-in protections include:
-
-* path traversal prevention
-* symlink escape protection
-* secret file exclusion (`.env`, `*.pem`, and similar)
-* binary file detection
-* configurable file size limits
-* storage path injection prevention via `_safe_content_path()`
-* atomic index writes
-
-See `SECURITY.md` for details.
-
----
-
-## Best use cases
-
-* agent-driven documentation exploration
-* finding configuration and API reference sections
-* onboarding to unfamiliar frameworks
-* token-efficient multi-agent documentation workflows
-* large documentation sets with dozens of files
-
----
-
-## Not intended for
-
-* source code symbol indexing (use [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp) for that)
-* real-time file watching
-* cross-repository global search
-* semantic/vector similarity search as a standalone product (semantic search is supported as an enhancement when embeddings are enabled via `use_embeddings=true`, but the core workflow is structure-first)
-
----
-
-## Environment variables
-
-| Variable                          | Purpose                                                           | Required |
-| --------------------------------- | ----------------------------------------------------------------- | -------- |
-| `GITHUB_TOKEN`                    | GitHub API auth                                                   | No       |
-| `ANTHROPIC_API_KEY`               | Section summaries via Claude Haiku                                | No       |
-| `GOOGLE_API_KEY`                  | Section summaries via Gemini Flash; also Gemini embeddings        | No       |
-| `OPENAI_API_KEY`                  | OpenAI embeddings (text-embedding-3-small)                        | No       |
-| `JDOCMUNCH_EMBEDDING_PROVIDER`    | Force provider: `gemini`, `openai`, `sentence-transformers`, `none` | No     |
-| `JDOCMUNCH_ST_MODEL`              | sentence-transformers model (default: `all-MiniLM-L6-v2`)        | No       |
-| `DOC_INDEX_PATH`                  | Custom cache path                                                 | No       |
-| `JDOCMUNCH_SHARE_SAVINGS`         | Set to `0` to disable anonymous community token savings reporting | No       |
-
----
-
-## Community savings meter
-
-Each tool call can contribute an anonymous delta to a live global counter at [j.gravelle.us](https://j.gravelle.us). Only two values are sent:
-
-* tokens saved
-* a random anonymous install ID
-
-No content, file paths, repo names, or identifying material are sent.
-
-The anonymous install ID is generated once and stored in `~/.doc-index/_savings.json`.
-
-To disable reporting, set:
+Opt out completely:
 
 ```bash
 JDOCMUNCH_SHARE_SAVINGS=0
 ```
 
+Embedding and summarizer providers call their configured API **only when you enable them**, and never by default. `watch-install` registers a login service **only** when you run it yourself.
+
+Path traversal prevention, symlink escape protection, secret exclusion, file-size limits, binary detection, and encoding safety are documented in [SECURITY.md](SECURITY.md), along with how to report a vulnerability.
+
 ---
 
-## Contributing
+## Limitations
 
-PRs welcome! All contributors must sign the [Contributor License Agreement](https://cla-assistant.io/jgravelle/jdocmunch-mcp) before their PR can be merged — CLA Assistant will prompt you automatically. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+- **Section retrieval helps least on small files.** If a document has one heading and 40 lines, retrieving the section and reading the file cost about the same.
+- **Semantic search requires an embedding provider.** Without one, search is lexical only — good for identifiers and exact phrasing, weaker for paraphrased questions.
+- **Office formats need the optional `[office]` extra** and are supported for local indexing only.
+- **Freshness is disclosed, not guaranteed.** A section whose source cannot be checked is reported as `unknown` rather than assumed current.
+- **jDocMunch does not parse code.** Symbols, signatures, and call graphs belong to [jcodemunch-mcp](https://github.com/jgravelle/jcodemunch-mcp); tabular data belongs to [jdatamunch-mcp](https://github.com/jgravelle/jdatamunch-mcp).
 
 ---
 
 ## Documentation
 
-* [USER_GUIDE.md](USER_GUIDE.md)
-* [ARCHITECTURE.md](ARCHITECTURE.md)
-* [SPEC.md](SPEC.md)
-* [SECURITY.md](SECURITY.md)
-* [TOKEN_SAVINGS.md](TOKEN_SAVINGS.md)
+| Doc | What it covers |
+|-----|----------------|
+| [USER_GUIDE.md](USER_GUIDE.md) | Full tool reference, workflows, and best practices |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Storage model, parsing pipeline, extension points |
+| [SPEC.md](SPEC.md) | Response contracts and reason-code vocabulary |
+| [SECURITY.md](SECURITY.md) | Security controls and vulnerability reporting |
+| [TOKEN_SAVINGS.md](TOKEN_SAVINGS.md) | How savings are counted and reported |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and the CLA requirement |
+| [CHANGELOG.md](CHANGELOG.md) · [ROADMAP.md](ROADMAP.md) | Release history and what's next |
 
 ---
 
-## License (dual use)
+## Licensing and commercial use
 
-This repository is **free for non-commercial use** under the terms below.
-**Commercial use requires a paid commercial license.**
+Released under the **jDocMunch-MCP Dual-Use License** ([full terms](LICENSE)). **Free for non-commercial use. Commercial use requires a paid license**, one-time, sold by jMunch LLC.
+
+**jDocMunch only:** [Builder, $29](https://jcodemunch.com/descriptions.php#builder) (1 developer) · [Studio, $99](https://jcodemunch.com/descriptions.php#studio) (up to 5) · [Platform, $499](https://jcodemunch.com/descriptions.php#platform) (org-wide internal deployment)
+
+**Full jMunch suite (code + docs + data):** [Trio Builder, $99](https://jcodemunch.com/descriptions.php#builder) · [Trio Studio, $449](https://jcodemunch.com/descriptions.php#studio) · [Trio Platform, $2,499](https://jcodemunch.com/descriptions.php#platform)
+
+Individual developers and non-commercial projects need no license. Organizations deploying jDocMunch across internal teams do.
+
+### 1.x compatibility commitment
+
+Every 1.x license entitles you to every future 1.x release. We will never ship a 1.x version that:
+
+- removes or renames an MCP tool (deprecated tool names keep their aliases),
+- drops a `Section` field from the response shape,
+- forces a reindex without auto-migrating your existing index on first load,
+- changes the JSON wire format of any tool response in a way that breaks an existing consumer,
+- or makes a previously-default behavior raise.
+
+Anything that would require breaking these promises is reserved for a future major version (2.x). The full machine-checked contract is enforced via `tests/test_server.py` (tool-name and required-field invariants) and the replay-fixture gate that runs on every release.
 
 ---
 
-## Star History
+## Support and project status
 
-<a href="https://www.star-history.com/?repos=jgravelle%2Fjdocmunch-mcp&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=jgravelle/jdocmunch-mcp&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=jgravelle/jdocmunch-mcp&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=jgravelle/jdocmunch-mcp&type=date&legend=top-left" />
- </picture>
-</a>
+Actively maintained. Issues and bug reports: [GitHub Issues](https://github.com/jgravelle/jdocmunch-mcp/issues). Security reports: see [SECURITY.md](SECURITY.md). Commercial licensing questions go through [jcodemunch.com](https://jcodemunch.com/).
 
----
-
-## Copyright and license text
-
-Copyright (c) 2026 J. Gravelle
-
-### 1. Non-commercial license grant (free)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to use, copy, modify, merge, publish, and distribute the Software for **personal, educational, research, hobby, or other non-commercial purposes**, subject to the following conditions:
-
-1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-2. Any modifications made to the Software must clearly indicate that they are derived from the original work, and the name of the original author (J. Gravelle) must remain intact. He's kinda full of himself.
-3. Redistributions of the Software in source code form must include a prominent notice describing any modifications from the original version.
-
-### 2. Commercial use
-
-Commercial use of the Software requires a separate paid commercial license from the author.
-
-“Commercial use” includes, but is not limited to:
-
-* use of the Software in a business environment
-* internal use within a for-profit organization
-* incorporation into a product or service offered for sale
-* use in connection with revenue generation, consulting, SaaS, hosting, or fee-based services
-
-For commercial licensing inquiries:
-**[j@gravelle.us](mailto:j@gravelle.us)**
-**[https://j.gravelle.us](https://j.gravelle.us)**
-
-Until a commercial license is obtained, commercial use is not permitted.
-
-### 3. Disclaimer of warranty
-
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
-
-IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Part of the jMunch suite alongside [jcodemunch-mcp](https://github.com/jgravelle/jcodemunch-mcp) (code symbols) and [jdatamunch-mcp](https://github.com/jgravelle/jdatamunch-mcp) (tabular data). All three implement [jMRI](https://github.com/jgravelle/mcp-retrieval-spec), the open retrieval interface spec.

@@ -1,0 +1,36 @@
+{
+  "name": "rst_realworld",
+  "description": "Hand-crafted RST corpus exercising index + api-reference patterns. Locked at v1.21.0; future releases must hit >= 0.98 nDCG/MRR/Recall.",
+  "repo_path": "benchmarks/replay/corpus/rst",
+  "repo_id": "rst_realworld",
+  "queries": [
+    {
+      "query": "streaming large files memory",
+      "expected_top_k": [
+        "local/rst_realworld::index.rst::welcome-to-examplelib/streaming-mode#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "stream_parse incremental",
+      "expected_top_k": [
+        "local/rst_realworld::api.rst::api-reference/stream-parse-generator#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "ParserConfig dataclass parameters",
+      "expected_top_k": [
+        "local/rst_realworld::api.rst::api-reference/parserconfig-dataclass#2"
+      ],
+      "k": 5
+    },
+    {
+      "query": "exception types library raises",
+      "expected_top_k": [
+        "local/rst_realworld::index.rst::welcome-to-examplelib/error-handling#2"
+      ],
+      "k": 5
+    }
+  ]
+}

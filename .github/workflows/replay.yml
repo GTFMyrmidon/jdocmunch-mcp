@@ -1,0 +1,49 @@
+name: Replay
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # Manual trigger. Both events above are gated to master, so a feature branch
+  # cannot fire CI on its own, and a draft PR's synchronize event has not been
+  # firing either. Without this there is no way to produce a green pinned SHA on
+  # a review branch, which is exactly what an external reviewer needs to verify
+  # against. Dispatch with:
+  #   gh workflow run test.yml --ref <branch>
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run all replay-fixture gates
+        # Gate of 0.06 absorbs cross-platform BM25 variance: baselines
+        # were captured on Windows (CRLF), CI runs on Linux (LF), and
+        # the ~1 byte/line avgdl shift can flip one tied ranking on the
+        # wiki benchmark query family. The release-time strict 0.02 gate
+        # still applies when run locally on the baseline platform.
+        run: |
+          for fixture in self_v1_11_0 markdown_realworld rst_realworld openapi_realworld notebook_realworld openapi31_realworld swagger20_realworld; do
+            echo "=== ${fixture} ==="
+            uv run python -m benchmarks.replay.run_replay \
+              --fixture "${fixture}" \
+              --baseline 1.29.0 \
+              --gate 0.06
+          done
+        env:
+          PYTHONPATH: src:.

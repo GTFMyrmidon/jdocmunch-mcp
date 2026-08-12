@@ -1,0 +1,47 @@
+[
+  {
+    "id": "golden/test::notebook/quickstart.ipynb::quickstart#0",
+    "title": "quickstart",
+    "level": 0,
+    "byte_start": 0,
+    "byte_end": 0,
+    "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "parent_id": ""
+  },
+  {
+    "id": "golden/test::notebook/quickstart.ipynb::quickstart#1",
+    "title": "Quickstart",
+    "level": 1,
+    "byte_start": 0,
+    "byte_end": 92,
+    "content_hash": "a4513ea0734355f878ce6cc16cfacb84698ae1b330fae7a0cf6046d5af11a993",
+    "parent_id": "golden/test::notebook/quickstart.ipynb::quickstart#0"
+  },
+  {
+    "id": "golden/test::notebook/quickstart.ipynb::quickstart/setup#2",
+    "title": "Setup",
+    "level": 2,
+    "byte_start": 92,
+    "byte_end": 250,
+    "content_hash": "df74f178e2f769b8ca0c4a530fccbfdca2e73bef1e1dec7769e62f5191696f1a",
+    "parent_id": "golden/test::notebook/quickstart.ipynb::quickstart#1"
+  },
+  {
+    "id": "golden/test::notebook/quickstart.ipynb::quickstart/filtering-events#2",
+    "title": "Filtering events",
+    "level": 2,
+    "byte_start": 250,
+    "byte_end": 501,
+    "content_hash": "d8af4c35c3517cf46c5796ad86ebd760f21d377c246874c4c39b66695cb53acd",
+    "parent_id": "golden/test::notebook/quickstart.ipynb::quickstart#1"
+  },
+  {
+    "id": "golden/test::notebook/quickstart.ipynb::quickstart/streaming-mode#2",
+    "title": "Streaming mode",
+    "level": 2,
+    "byte_start": 501,
+    "byte_end": 601,
+    "content_hash": "fa61a081384fbb75bab99495eeead054bc65719932d3599e291198a7c5c889e5",
+    "parent_id": "golden/test::notebook/quickstart.ipynb::quickstart#1"
+  }
+]
