@@ -465,11 +465,44 @@ class _SentenceTransformersProvider:
 # only via _get_provider().
 # ---------------------------------------------------------------------------
 
+def _embed_worker_enabled() -> bool:
+    """Whether sentence-transformers should be run out of process (jdoc#118).
+
+    ⚠ Imported lazily and failing closed: :mod:`worker` must never become a
+    hard dependency of provider detection, which runs on the startup path.
+    """
+    try:
+        from . import worker as _worker
+    except Exception:  # pragma: no cover - defensive
+        return False
+    try:
+        return _worker.worker_enabled()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _sentence_transformers_factory():
+    """Build the sentence-transformers provider, in this process or a child.
+
+    jdoc#118 phase 1: ``JDOCMUNCH_EMBED_WORKER=1`` swaps the implementation and
+    nothing else — same interface, same cache keys, same identity header. ⚠ The
+    identity is deliberately NOT changed to carry the dim the child reports:
+    ``_provider_identity`` returns ``None`` for this provider and the cache
+    treats that as a wildcard, so filling it in would flip
+    ``identity_matches`` and re-embed every existing corpus on first run
+    (jdoc#109's escalation, triggered by a refactor rather than a rotation).
+    """
+    if _embed_worker_enabled():
+        from . import worker as _worker
+        return _worker.WorkerProvider(_st_model_name())
+    return _SentenceTransformersProvider()
+
+
 _PROVIDER_FACTORIES: dict = {
     "gemini": _GeminiProvider,
     "openai": _OpenAIProvider,
     "openai-compatible": _OpenAICompatibleProvider,
-    "sentence-transformers": _SentenceTransformersProvider,
+    "sentence-transformers": _sentence_transformers_factory,
 }
 
 # Cache: {(provider_name, model_signature): provider_instance}
@@ -521,7 +554,17 @@ def _get_provider():
     # library load in this process. Cached, so this costs one subprocess at most
     # once per process — and only on the path that was about to pay for the
     # import anyway.
-    if name == "sentence-transformers" and not _sentence_transformers_imports_cleanly():
+    #
+    # ⚠ Skipped entirely when the worker is enabled: this process never imports
+    # sentence-transformers, so there is nothing here to protect, and the
+    # worker's own ready handshake is a strictly better probe — it tests the
+    # long-lived child that will do the work rather than a short-lived one that
+    # merely resembles it.
+    if (
+        name == "sentence-transformers"
+        and not _embed_worker_enabled()
+        and not _sentence_transformers_imports_cleanly()
+    ):
         logger.warning(
             "sentence-transformers is installed but could not be imported in a "
             "probe subprocess (%s); embeddings are unavailable. Lexical search "
@@ -852,7 +895,11 @@ def warmup() -> str:
     # in-process attempt that deadlocks in the native loader is unkillable and
     # poisons every subsequent library load in this process, so a failure here
     # is not confined to embeddings — it takes the whole server with it.
-    if not _sentence_transformers_imports_cleanly():
+    #
+    # ⚠ With the worker enabled the import happens in a child, so warming is
+    # both safe and worth doing on this daemon thread: the wait is bounded and
+    # the child, unlike a wedged thread, can be killed.
+    if not _embed_worker_enabled() and not _sentence_transformers_imports_cleanly():
         logger.warning(
             "skipping embedding warmup: sentence-transformers could not be "
             "imported in a probe subprocess (%s). Lexical search is "
