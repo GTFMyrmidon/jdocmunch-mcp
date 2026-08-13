@@ -57,6 +57,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _ENABLED = ("1", "true", "yes", "on")
+_DISABLED = ("0", "false", "no", "off")
 
 #: Texts per request. Bounds both the child's peak memory and, more
 #: importantly, the per-request timeout: ``embed_sections`` hands over every
@@ -85,13 +86,31 @@ class EmbedWorkerError(RuntimeError):
 
 
 def worker_enabled() -> bool:
-    """Whether sentence-transformers should run out of process.
+    """Whether sentence-transformers should run out of process. **On by default.**
 
-    Off unless explicitly on. Phase 1 changes no default: the in-process
-    provider, the jdoc#118 probe and the jdoc#132 preload switches all behave
-    exactly as they did until someone sets this.
+    ⚠⚠ **The default is the fix.** v1.132.0 left the user choosing between a
+    probabilistic hang and a cold-start failure, and jdoc#118 stayed open
+    because that choice is not a resolution — it is the defect restated as
+    configuration. An opt-in worker would have been a third switch on the same
+    pile. Defaulting it removes the question instead of adding to it.
+
+    Precedence, explicit before default:
+
+    1. ``JDOCMUNCH_EMBED_WORKER`` set either way wins outright.
+    2. ⚠ ``JDOCMUNCH_PRELOAD_EMBEDDINGS=1`` turns the worker OFF. That user
+       explicitly chose v1.132.0's main-thread import and is entitled to keep
+       getting it; the two mechanisms solve the same problem and running both
+       would import the stack into the process the worker exists to keep clean.
+    3. Otherwise on.
     """
-    return os.environ.get("JDOCMUNCH_EMBED_WORKER", "").strip().lower() in _ENABLED
+    setting = os.environ.get("JDOCMUNCH_EMBED_WORKER", "").strip().lower()
+    if setting in _ENABLED:
+        return True
+    if setting in _DISABLED:
+        return False
+    if os.environ.get("JDOCMUNCH_PRELOAD_EMBEDDINGS", "").strip().lower() in _ENABLED:
+        return False
+    return True
 
 
 def _timeout(var: str, default: float) -> float:
@@ -183,11 +202,20 @@ class WorkerProvider:
         self._next_id = 0
         self._spawns = 0
         self._permanently_failed = False
+        #: The child never started at all — no interpreter at ``sys.executable``,
+        #: a frozen bundle, a sandbox that forbids spawning. ⚠ Distinct from
+        #: every other failure because it is the one case where falling back to
+        #: the in-process import is right: nothing has been learned about the
+        #: import, and the caller would otherwise silently lose semantic search
+        #: on a machine where today it works. See
+        #: ``provider._sentence_transformers_factory``.
+        self.spawn_failed = False
         if spawn:
             try:
                 self._spawn()
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:
                 self._permanently_failed = True
+                self.spawn_failed = True
                 self._error = f"{type(exc).__name__}: {exc}"[:300]
                 logger.warning("embedding worker could not be started: %s", self._error)
 
@@ -375,7 +403,20 @@ class WorkerProvider:
                     f"embedding worker died {self._spawns} times "
                     f"({self._error or 'no detail'}); not restarting it again"
                 )
-            self._spawn()
+            try:
+                self._spawn()
+            except Exception as exc:
+                # ⚠ No in-process fallback here, unlike a failure to spawn at
+                # construction. By this point the child HAS run in this session,
+                # so the machine can spawn; something else broke. Importing the
+                # stack into a long-running, multi-threaded server to recover
+                # semantic search would be trading a degraded feature for the
+                # deadlock this module exists to prevent.
+                self._permanently_failed = True
+                self._error = f"{type(exc).__name__}: {exc}"[:300]
+                raise EmbedWorkerError(
+                    f"embedding worker could not be restarted: {self._error}"
+                ) from exc
         if self._ready is None:
             reply = self._await(
                 lambda m: m.get("op") == "ready", ready_timeout(), "startup"

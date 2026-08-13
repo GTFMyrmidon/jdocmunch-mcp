@@ -143,22 +143,45 @@ class TestWireFormat:
 # ---------------------------------------------------------------------------
 
 class TestEnablement:
-    def test_off_when_unset(self, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
         monkeypatch.delenv("JDOCMUNCH_EMBED_WORKER", raising=False)
-        assert w.worker_enabled() is False
+        monkeypatch.delenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", raising=False)
+
+    def test_on_when_unset(self):
+        # ⚠⚠ The default IS the fix. v1.132.0 left the user choosing between a
+        # probabilistic hang and a cold-start failure, and #118 stayed open
+        # because that choice is the defect restated as configuration. An
+        # opt-in worker would have been a third switch on the same pile.
+        assert w.worker_enabled() is True
 
     @pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on"])
     def test_on_for_affirmative_values(self, monkeypatch, value):
         monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", value)
         assert w.worker_enabled() is True
 
-    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "maybe"])
-    def test_off_for_everything_else(self, monkeypatch, value):
-        # ⚠ Asymmetric on purpose: a typo must not silently enable a new
-        # process, the same reasoning preload_enabled() uses in the other
-        # direction.
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+    def test_off_when_explicitly_disabled(self, monkeypatch, value):
         monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", value)
         assert w.worker_enabled() is False
+
+    @pytest.mark.parametrize("value", ["", "maybe"])
+    def test_an_unrecognised_value_falls_through_to_the_default(self, monkeypatch, value):
+        # A typo must not silently disable the fix.
+        monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", value)
+        assert w.worker_enabled() is True
+
+    def test_the_1_132_0_preload_flag_turns_the_worker_off(self, monkeypatch):
+        # ⚠ That user explicitly chose the main-thread import and is entitled
+        # to keep getting it. Running both would import the stack into the very
+        # process the worker exists to keep clean.
+        monkeypatch.setenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", "1")
+        assert w.worker_enabled() is False
+
+    def test_naming_the_worker_beats_the_preload_flag(self, monkeypatch):
+        monkeypatch.setenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", "1")
+        monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", "1")
+        assert w.worker_enabled() is True
 
     def test_garbage_timeout_falls_back_to_the_default(self, monkeypatch):
         monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER_TIMEOUT", "soon")
@@ -362,17 +385,14 @@ class TestProviderWiring:
         yield
         prov._reset_provider_cache()
 
-    def test_the_in_process_provider_is_still_the_default(self, monkeypatch):
+    def test_the_worker_is_used_by_default(self, monkeypatch):
         monkeypatch.delenv("JDOCMUNCH_EMBED_WORKER", raising=False)
-        sentinel = object()
-        monkeypatch.setattr(prov, "_SentenceTransformersProvider", lambda: sentinel)
-        assert prov._sentence_transformers_factory() is sentinel
-
-    def test_the_worker_is_used_when_enabled(self, monkeypatch):
-        monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", "1")
+        monkeypatch.delenv("JDOCMUNCH_PRELOAD_EMBEDDINGS", raising=False)
         seen = {}
 
         class _Stub:
+            spawn_failed = False
+
             def __init__(self, model_name):
                 seen["model"] = model_name
 
@@ -380,6 +400,65 @@ class TestProviderWiring:
         monkeypatch.setenv("JDOCMUNCH_ST_MODEL", "some-model")
         assert isinstance(prov._sentence_transformers_factory(), _Stub)
         assert seen["model"] == "some-model"
+
+    def test_the_in_process_provider_is_used_when_the_worker_is_disabled(self, monkeypatch):
+        monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", "0")
+
+        class _InProcess:
+            DEFAULT_MODEL = "some-model"
+
+        monkeypatch.setattr(prov, "_SentenceTransformersProvider", _InProcess)
+        assert isinstance(prov._sentence_transformers_factory(), _InProcess)
+
+    def test_a_child_that_cannot_spawn_falls_back_in_process(self, monkeypatch):
+        """⚠⚠ The guard that makes defaulting the worker ON safe.
+
+        Without it, anyone whose ``sys.executable`` cannot be spawned — a
+        frozen bundle, a locked-down sandbox — silently loses semantic search
+        that works for them today. That is a NEW defect traded for jdoc#118's,
+        which is not a trade to make on a user's behalf.
+        """
+        monkeypatch.delenv("JDOCMUNCH_EMBED_WORKER", raising=False)
+        monkeypatch.setenv("JDOCMUNCH_ST_MODEL", "some-model")
+
+        class _Unspawnable:
+            spawn_failed = True
+
+            def __init__(self, model_name):
+                pass
+
+        class _InProcess:
+            # ⚠ `_st_model_name` reads DEFAULT_MODEL off this class eagerly,
+            # even when JDOCMUNCH_ST_MODEL is set, so a bare lambda stub blows
+            # up before the code under test runs.
+            DEFAULT_MODEL = "some-model"
+
+        monkeypatch.setattr(w, "WorkerProvider", _Unspawnable)
+        monkeypatch.setattr(prov, "_SentenceTransformersProvider", _InProcess)
+        assert isinstance(prov._sentence_transformers_factory(), _InProcess)
+
+    def test_a_real_unspawnable_command_sets_spawn_failed(self, tmp_path):
+        # Through the real Popen, not a stub: the flag is only worth anything
+        # if an actual spawn failure sets it.
+        provider = w.WorkerProvider(
+            "fake-model", command=[str(tmp_path / "no-such-interpreter")],
+        )
+        assert provider.spawn_failed is True
+
+    def test_a_child_that_dies_later_does_not_fall_back_in_process(self, tmp_path):
+        """A restart failure must NOT import the stack into a running server.
+
+        By then the child HAS run, so the machine can spawn; something else
+        broke. Recovering semantic search by importing in-process would trade a
+        degraded feature for the deadlock this module exists to prevent.
+        """
+        provider = w.WorkerProvider("fake-model", command=_fake_child(tmp_path, "die_on_ready"))
+        try:
+            with pytest.raises(w.EmbedWorkerError):
+                provider.embed_texts(["x"])
+            assert provider.spawn_failed is False
+        finally:
+            provider.close()
 
     def test_the_import_probe_is_skipped_when_the_worker_owns_the_import(self, monkeypatch):
         # The probe protects THIS process from an import it no longer performs.
@@ -396,7 +475,7 @@ class TestProviderWiring:
         assert called == []
 
     def test_the_import_probe_still_runs_without_the_worker(self, monkeypatch):
-        monkeypatch.delenv("JDOCMUNCH_EMBED_WORKER", raising=False)
+        monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", "0")
         called = []
         monkeypatch.setattr(
             prov, "_sentence_transformers_imports_cleanly",
@@ -440,7 +519,7 @@ def test_the_identity_header_does_not_change_when_the_worker_is_enabled(monkeypa
     — jdoc#109's escalation, triggered by a refactor rather than a rotation.
     """
     monkeypatch.setenv("JDOCMUNCH_ST_MODEL", "all-MiniLM-L6-v2")
-    monkeypatch.delenv("JDOCMUNCH_EMBED_WORKER", raising=False)
+    monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", "0")
     without = prov._provider_identity("sentence-transformers")
     signature_without = prov._provider_signature("sentence-transformers")
     monkeypatch.setenv("JDOCMUNCH_EMBED_WORKER", "1")

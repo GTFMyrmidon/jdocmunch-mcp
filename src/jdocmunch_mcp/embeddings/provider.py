@@ -494,7 +494,23 @@ def _sentence_transformers_factory():
     """
     if _embed_worker_enabled():
         from . import worker as _worker
-        return _worker.WorkerProvider(_st_model_name())
+        instance = _worker.WorkerProvider(_st_model_name())
+        if not getattr(instance, "spawn_failed", False):
+            return instance
+        # ⚠⚠ The guard that makes defaulting the worker ON safe. If the child
+        # could not be spawned at all — no interpreter at `sys.executable`, a
+        # frozen bundle, a sandbox that forbids it — then degrading to lexical
+        # would silently remove semantic search from machines where it works
+        # today. That is a NEW defect traded for jdoc#118's, which is not a
+        # trade worth making by default. Nothing has been learned about the
+        # import here, so the in-process provider is exactly as safe as it was
+        # before this change.
+        logger.warning(
+            "the embedding worker could not be started; falling back to the "
+            "in-process provider. On Windows this restores the jdoc#118 "
+            "deadlock exposure — set JDOCMUNCH_PRELOAD_EMBEDDINGS=1 to import "
+            "the stack on the main thread instead."
+        )
     return _SentenceTransformersProvider()
 
 

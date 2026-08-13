@@ -1,5 +1,62 @@
 # Changelog
 
+## [1.133.0] - 2026-08-13 - The embedding import leaves the server, and the choice goes with it
+
+[#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118) closed properly.
+`sentence-transformers` now loads in a **child process**, on by default.
+
+v1.132.0 shipped a switch, not a fix, and said so: the import was either on the
+main thread (a cold `torch` load measured **73.77 s**, past a client's 30 s
+connect timeout) or on a background thread (Windows loader lock, wedged
+indefinitely). Both contracts cannot hold in one process — so the process was
+the thing to change. The import now runs concurrently with the live server
+**and** alone in its own loader, which makes backgrounding safe again.
+
+**The default is the fix.** Leaving the worker opt-in would have added a third
+switch to a pile of two and left the user picking between outages, which is the
+defect restated as configuration. `JDOCMUNCH_EMBED_WORKER=0` opts out;
+`JDOCMUNCH_PRELOAD_EMBEDDINGS=1` still selects v1.132.0's main-thread import for
+anyone who chose it.
+
+Measured here (deltas, not absolutes): `initialize` with the worker is
+**indistinguishable from the in-process default** — +0.04 s across three runs,
+inside run-to-run noise — against **+5.6 s** for the v1.132.0 preload; 1000 sections embed in **1.72 s**
+through the pipe against **1.64 s** in-process. The handshake cost is a spawn,
+not an import, so it does not grow on a healthy install.
+
+**What crosses the boundary is one method**, `embed_texts`. Provider detection,
+the HuggingFace-cache probe, cache keys, the sidecar, identity headers and
+rotation detection all need no import and stay in the server. numpy stays too —
+`doc_store` and `related_persist` use it to *score*, and a section matrix down a
+pipe per query would be absurd; the existing numpy preload still covers them.
+The server now loads numpy and nothing else native.
+
+Details that are load-bearing rather than incidental:
+
+- **A spawn failure falls back to the in-process provider.** Without that,
+  defaulting the worker on would silently remove semantic search from machines
+  with an unusual `sys.executable` — a new defect traded for the old one. A
+  child that dies *later* does not fall back, because by then the machine has
+  proven it can spawn and importing the stack into a running server would trade
+  a degraded feature for the deadlock.
+- **The cache identity is unchanged.** `_provider_identity` still reports `None`
+  for this provider's dim; adopting the child's reported dim would fail
+  `identity_matches` on every existing sidecar and re-embed every corpus.
+- **A timeout raises** rather than returning empty vectors, so `embed_sections`
+  records `embed_failed` and preserves the sidecar. Requests chunk at 256,
+  because `embed_sections` submits every cache miss in one call.
+- **A wedged child is killed.** That is the property a thread cannot offer, and
+  the reason this is a fix rather than a relocation.
+- The child claims a private stdout for its protocol, inherits stderr, and exits
+  when the server does. It opens no network connection and registers nothing —
+  disclosed in the README's new "Background behavior, fully disclosed" section.
+
+⚠ **The wedge itself still does not reproduce on the machine that reported it**,
+so there is no A/B and this does not claim one. What is asserted instead is
+stronger and deterministic: after a real embed, the server process's
+`sys.modules` contains none of `sentence_transformers`, `transformers`, `torch`,
+`scipy` or `sklearn`. The deadlock is unreachable rather than unobserved.
+
 ## [1.132.0] - 2026-08-12 - The loader deadlock has a stack, and the fix has a price tag
 
 [#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118) named at last, with
