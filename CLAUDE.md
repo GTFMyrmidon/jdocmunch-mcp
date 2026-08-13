@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.132.0 |
+**Version:** 1.133.0 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,77 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.133.0 — #118 CLOSED: the import leaves the server, and the choice goes with it
+
+⚠⚠ **This is the exit #118 named for itself, and it is ON BY DEFAULT.**
+sentence-transformers runs in a child process, so the import is concurrent with
+the live server AND alone in its own loader. **Backgrounding becomes safe again
+because the concurrency leaves the loader that deadlocks** — the only way out of
+v1.132.0's structural collision (main thread ⇒ slow handshake, background thread
+⇒ possible indefinite hang).
+
+⚠⚠ **THE DEFAULT IS THE FIX, and shipping it opt-in was a mistake caught in
+review.** The first cut of this was `JDOCMUNCH_EMBED_WORKER=1`, off by default —
+i.e. **a third switch on a pile of two, leaving the user picking between
+outages, which is exactly why #118 stayed open after v1.132.0.** A fix the
+reporter has to opt into has not resolved their issue; it has documented it.
+`JDOCMUNCH_EMBED_WORKER=0` opts out and `JDOCMUNCH_PRELOAD_EMBEDDINGS=1` still
+selects v1.132.0's main-thread import, so nobody loses a choice they made — but
+nobody has to make one.
+
+⚠⚠ **Defaulting it required the spawn-failure fallback FIRST.** A child that
+cannot be spawned (odd `sys.executable`, frozen bundle, locked-down sandbox)
+would otherwise silently remove semantic search from machines where it works
+today — **a NEW defect traded for #118's**, which is not a trade to make on a
+user's behalf. ⚠ A child that dies LATER does not fall back: by then the machine
+has proven it can spawn, and importing the stack into a running multi-threaded
+server would trade a degraded feature for the deadlock.
+
+⚠ **One method crosses the boundary**: `embed_texts`. Provider detection, the
+HF-cache probe, cache keys, the sidecar, identity headers and rotation detection
+all need no import and stay put. ⚠⚠ **numpy STAYS in the server** — `doc_store`
+and `related_persist` use it to SCORE, and a section matrix down a pipe per query
+is absurd; `preload_native_deps()` still covers them and is unchanged. End state:
+the server loads numpy and nothing else native.
+
+⚠⚠ **The identity header is deliberately NOT given the dim the child reports.**
+`_provider_identity` returns `None` for sentence-transformers and the cache reads
+that as a wildcard; filling it in would fail `identity_matches` on every sidecar
+written before this change — **jdoc#109's corpus-wide re-embed, triggered by a
+refactor instead of a rotation.** Pinned by a test.
+
+⚠ **A timeout is what makes this a fix and not a relocation.** A thread wedged in
+`LdrLoadDll` is a kernel-mode wait that no timeout, thread-kill or try/except can
+touch; a process is killable. Timeouts RAISE rather than returning empty vectors —
+`embed_sections` reads an exception as `embed_failed` and preserves the sidecar,
+while empty vectors read as "this corpus has none" (jdoc#107/#109's shape).
+Requests are chunked at 256 because `embed_sections` hands over every cache miss
+in ONE call, so an unchunked request has no timeout that is both survivable and
+meaningful.
+
+⚠ **The guard that can close #118 without reproducing the race:** after a real
+embed, the parent's `sys.modules` holds none of sentence_transformers / transformers
+/ torch / scipy / sklearn. That proves the deadlock **unreachable** rather than
+observing it did not fire this time. Detector proven non-vacuous against a probe
+that imports sklearn.
+
+⚠ `test_subprocess_stdin_guard` FAILED on `stdin=PIPE` and its own docstring named
+the remedy — an explicit `_INTENTIONAL_STDIN_PIPE` entry with a reason, never a
+loosened rule, plus a test that the exempted module really does pass PIPE.
+
+Measured here, healthy install, delta not absolute (jdoc#114): `initialize` with
+the worker is **inside run-to-run noise of the in-process default** (+0.04 s over
+3 runs) vs +**5.6 s** for 1.132.0's `JDOCMUNCH_PRELOAD_EMBEDDINGS`. ⚠ The cost is
+a SPAWN, not an import, so it does not grow on a healthy install.
+1000 sections **1.72 s** through the pipe vs **1.64 s** in-process (base64 float32,
+~5%). Real 384-dim vector end to end in 8.62 s cold. ⚠ **The wedge itself is still
+not reproducible on this box**, which is exactly why the `sys.modules` guard exists.
+⚠ This adds a child process, so it is README-disclosed under the PyPI-quarantine
+rule — new "Background behavior, fully disclosed" section, written BEFORE release.
+⚠ **Four version pin sites, and the fourth is `.claude-plugin/plugin.json`** — the
+suite caught it, which is the only reason it is not still at 1.132.0.
+Suite **2539 / 6**.
 
 ## v1.132.0 — #118: the loader deadlock has a stack, and the fix has a price tag
 
