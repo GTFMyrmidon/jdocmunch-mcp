@@ -107,7 +107,7 @@ not reproducible on this box**, which is exactly why the `sys.modules` guard exi
 rule — new "Background behavior, fully disclosed" section, written BEFORE release.
 ⚠ **Four version pin sites, and the fourth is `.claude-plugin/plugin.json`** — the
 suite caught it, which is the only reason it is not still at 1.132.0.
-Suite **2538 / 6**.
+Suite **2539 / 6**.
 
 ## v1.132.0 — #118: the loader deadlock has a stack, and the fix has a price tag
 
