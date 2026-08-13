@@ -222,6 +222,31 @@ class TestRoundTrip:
         provider = fake_worker("silent")
         assert provider._ready is None
 
+    def test_a_process_that_never_calls_close_still_exits_clean(self, tmp_path):
+        """atexit must reap the child, and the pipes must be closed.
+
+        ⚠ Not a tidiness point. The PostToolUse reindex hook is a whole process
+        per edited file, so "the caller forgot to close" is the common case,
+        not the exceptional one. `-W error::ResourceWarning` turns an unclosed
+        pipe into a non-zero exit.
+        """
+        script = tmp_path / "no_close.py"
+        script.write_text(
+            "import sys\n"
+            "from jdocmunch_mcp.embeddings import worker as w\n"
+            "p = w.WorkerProvider('fake-model', command=[sys.executable, sys.argv[1]])\n"
+            "assert len(p.embed_texts(['x'])) == 1\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [sys.executable, "-W", "error::ResourceWarning", str(script),
+             _fake_child(tmp_path, "ok")[1]],
+            capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace",
+        )
+        assert proc.returncode == 0, proc.stderr[-1500:]
+        assert "ResourceWarning" not in proc.stderr
+
     def test_close_stops_the_child(self, fake_worker):
         provider = fake_worker()
         provider.embed_texts(["x"])

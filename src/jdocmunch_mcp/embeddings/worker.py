@@ -210,6 +210,7 @@ class WorkerProvider:
         #: on a machine where today it works. See
         #: ``provider._sentence_transformers_factory``.
         self.spawn_failed = False
+        self._atexit_registered = False
         if spawn:
             try:
                 self._spawn()
@@ -281,6 +282,14 @@ class WorkerProvider:
             daemon=True,
         )
         reader.start()
+        if not self._atexit_registered:
+            # Short-lived callers matter here as much as the server: the
+            # PostToolUse reindex hook is a whole process per edited file, and
+            # leaving each one's child to be collected by interpreter teardown
+            # produces ResourceWarnings and a window where it is still running.
+            import atexit
+            atexit.register(self.close)
+            self._atexit_registered = True
         self._send({"op": "ready", "model": self._model_name})
 
     @staticmethod
@@ -347,6 +356,24 @@ class WorkerProvider:
             if predicate(reply):
                 return reply
 
+    @staticmethod
+    def _close_pipes(proc: subprocess.Popen) -> None:
+        """Close the child's pipes once it has exited.
+
+        Popen does not do this for us, and leaving them to interpreter teardown
+        raises ResourceWarning in short-lived callers (the reindex hook is one
+        process per edited file). The reader thread may be mid-iteration on
+        stdout; it catches the resulting error and stops, which is what we want
+        anyway.
+        """
+        for stream in (proc.stdin, proc.stdout):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except Exception:
+                pass
+
     def _kill(self, reason: str) -> None:
         """Terminate the child. ⚠ This is the property a thread cannot offer.
 
@@ -361,13 +388,16 @@ class WorkerProvider:
         if proc is None:
             return
         logger.warning("killing the embedding worker: %s", reason)
-        for step in (proc.terminate, proc.kill):
-            try:
-                step()
-                proc.wait(timeout=5)
-                return
-            except Exception:
-                continue
+        try:
+            for step in (proc.terminate, proc.kill):
+                try:
+                    step()
+                    proc.wait(timeout=5)
+                    return
+                except Exception:
+                    continue
+        finally:
+            self._close_pipes(proc)
 
     def close(self) -> None:
         """Ask the child to exit, then make sure it did."""
@@ -379,6 +409,7 @@ class WorkerProvider:
                 self._send({"op": "shutdown"})
                 proc.wait(timeout=5)
                 self._proc = None
+                self._close_pipes(proc)
                 return
             except Exception:
                 pass
