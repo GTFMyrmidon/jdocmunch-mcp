@@ -175,6 +175,26 @@ JDOCMUNCH_SHARE_SAVINGS=0
 
 Embedding and summarizer providers call their configured API **only when you enable them**, and never by default. `watch-install` registers a login service **only** when you run it yourself.
 
+### Background behavior, fully disclosed
+
+**A child process, when local embeddings are in use.** When the
+`sentence-transformers` provider is active, jDocMunch runs the embedding model
+in a **child process** (`python -m jdocmunch_mcp.embeddings.worker`) instead of
+inside the server. It:
+
+- starts when something first needs an embedding — at startup if the model is
+  already in your local HuggingFace cache, otherwise on the first search or
+  index that uses it. A lexical-only install never spawns it;
+- opens **no network connection** and speaks only to its parent, over a private pipe;
+- exits when the server exits, and is killed if it stops responding;
+- is **not** a login service, is not registered anywhere, and survives nothing.
+
+This exists because importing the embedding stack inside the server process can
+deadlock in the Windows loader
+([#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118)), hanging every
+tool call for as long as the server runs. Disable it with
+`JDOCMUNCH_EMBED_WORKER=0`, which restores the previous in-process import.
+
 Path traversal prevention, symlink escape protection, secret exclusion, file-size limits, binary detection, and encoding safety are documented in [SECURITY.md](SECURITY.md), along with how to report a vulnerability.
 
 ---

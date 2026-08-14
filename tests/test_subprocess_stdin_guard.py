@@ -34,6 +34,22 @@ _NOT_SERVER_PATH = {
     "service_installer.py",
 }
 
+# Server-path modules whose child speaks a protocol over stdin, so `PIPE` is
+# the correct value rather than an oversight. ⚠ This is the escape hatch this
+# file's own docstring names — an explicit list with a reason, not a loosened
+# rule. The hazard DEVNULL prevents is a child blocking on a pipe nobody
+# writes to; a child the parent is actively writing to and killing on a
+# timeout is the opposite case.
+#
+# ⚠ Entries here are still bound by every other rule: the module must pass
+# `stdin=` explicitly, and it must not inherit fd 0.
+_INTENTIONAL_STDIN_PIPE = {
+    "embeddings/worker.py": (
+        "jdoc#118: the sentence-transformers child is driven over a private "
+        "NDJSON pipe on its stdin, and the parent bounds and kills it."
+    ),
+}
+
 
 def _spawn_sites() -> list[tuple[str, int, bool]]:
     """(relative_path, lineno, passes_stdin) for every subprocess spawn in src."""
@@ -91,14 +107,14 @@ def test_no_server_path_subprocess_inherits_stdin():
 def test_server_path_stdin_is_devnull():
     """`stdin=` alone isn't enough: PIPE would reintroduce a blocking child.
 
-    jdoc has no LSP-style child that speaks over stdin, so DEVNULL is the only
-    correct value here. If that ever changes, add the module to an explicit
-    intentional-PIPE list rather than loosening this.
+    DEVNULL is the only correct value except in the modules named in
+    `_INTENTIONAL_STDIN_PIPE`, which drive a child over stdin on purpose.
+    Add a module there, with its reason, rather than loosening this.
     """
     wrong: list[str] = []
     for path in sorted(SRC_ROOT.rglob("*.py")):
         rel = path.relative_to(SRC_ROOT).as_posix()
-        if rel in _NOT_SERVER_PATH:
+        if rel in _NOT_SERVER_PATH or rel in _INTENTIONAL_STDIN_PIPE:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -128,5 +144,39 @@ def test_exemption_list_has_no_dead_entries():
     than leaving standing cover for a future call site at the same path.
     """
     spawning = {rel for rel, _, _ in _spawn_sites()}
-    dead = _NOT_SERVER_PATH - spawning
+    dead = (_NOT_SERVER_PATH | set(_INTENTIONAL_STDIN_PIPE)) - spawning
     assert not dead, f"exemption entries no longer spawn any process: {sorted(dead)}"
+
+
+def test_intentional_pipe_modules_really_pass_pipe():
+    """The narrow exemption must not become cover for a missing `stdin=`.
+
+    A module on that list is excused from DEVNULL and from nothing else. If its
+    spawn stops passing `stdin=subprocess.PIPE`, the entry is describing a call
+    site that no longer exists and the real one is unguarded.
+    """
+    seen: dict[str, list[str]] = {rel: [] for rel in _INTENTIONAL_STDIN_PIPE}
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        rel = path.relative_to(SRC_ROOT).as_posix()
+        if rel not in _INTENTIONAL_STDIN_PIPE:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "subprocess"
+                and func.attr in _SPAWNERS
+            ):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "stdin" and isinstance(kw.value, ast.Attribute):
+                    seen[rel].append(kw.value.attr)
+    for rel, values in seen.items():
+        assert "PIPE" in values, (
+            f"{rel} is exempted as an intentional stdin=PIPE site but passes "
+            f"{values or 'nothing'}; drop the exemption or fix the call"
+        )

@@ -263,6 +263,13 @@ def preload_embedding_stack() -> dict:
     from jdocmunch_mcp.embeddings import provider as prov
 
     try:
+        # ⚠⚠ jdoc#118 phase 1: the worker exists so this process NEVER imports
+        # the stack. Preloading it here anyway would import it into the very
+        # process the worker is keeping clean — paying the slow handshake the
+        # opt-in exists to trade for, and getting nothing back for it.
+        from jdocmunch_mcp.embeddings import worker as _worker
+        if _worker.worker_enabled():
+            return {"sentence_transformers": "absent: embedding worker owns the import"}
         if prov.get_provider_name() != "sentence-transformers":
             return {"sentence_transformers": "absent: provider not selected"}
         if not prov._st_model_is_cached(prov._st_model_name()):
