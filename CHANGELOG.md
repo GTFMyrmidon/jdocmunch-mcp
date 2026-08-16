@@ -35,6 +35,31 @@ session live in it is not a release-safe build directory. This release was built
 from a dedicated `git worktree`, which is the standing remedy and was not applied
 to 1.134.0.
 
+### Twenty tools that never named a boundary
+
+The descriptions above were not an accident of content, only of timing. They are
+the jdocmunch share of a suite-wide pass against the tool-description rubric in
+[arXiv:2602.14878](https://arxiv.org/abs/2602.14878) (Hasan, Li, Rajbahadur, Adams
+& Hassan, Queen's University), which scored 856 tools across 103 MCP servers and
+found 97.1% carrying at least one description smell. Method, both scoring frames,
+and the before/after numbers live in jcodemunch-mcp under
+`benchmarks/description_smells/`.
+
+Across the three servers, 99 of 194 tools carried the Unstated Limitation smell:
+they never said what they do not return, when they refuse, or when an empty result
+means "nothing matched" rather than "nothing is indexed". jdocmunch was flagged on
+35 tools, of which 19 were real gaps and the rest were phrasing the scanner failed
+to match. Those 19 got a clause each, and `doc_list_repos` was rewritten outright
+from a single sentence, which is the twenty above.
+
+Every clause is grounded in the tool's own behaviour rather than written to satisfy
+the rubric. `delete_index` now says it never touches your source documents and that
+there is no undo. `get_section` says nested child sections are not included, which
+is the difference between a thin answer and a wrong one. `doc_health_radar` says it
+grades the index and not the prose, because none of its six axes read the writing.
+`get_orphan_sections` says inbound links are counted across indexed docs only, so a
+link from code does not rescue a section.
+
 ## [1.134.0] - 2026-08-16 - The installed watcher runs the flags you chose
 
 [#120](https://github.com/jgravelle/jdocmunch-mcp/issues/120), reported by
