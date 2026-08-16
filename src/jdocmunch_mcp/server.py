@@ -3015,9 +3015,20 @@ def main(argv: Optional[list] = None):
         help="Suppress per-change stderr log lines",
     )
 
-    subparsers.add_parser(
+    # jdoc#120: the installed service wraps this same daemon, so it takes the
+    # same flags. Same spellings as `watch` — one source of truth for what the
+    # watcher does, whether it runs in the foreground or at login.
+    watch_install_parser = subparsers.add_parser(
         "watch-install",
         help="Install the doc watcher as a login service (systemd/launchd/Task Scheduler)",
+    )
+    watch_install_parser.add_argument(
+        "--no-ai-summaries", action="store_true",
+        help="Install the watcher with AI section summaries off (no summarizer calls)",
+    )
+    watch_install_parser.add_argument(
+        "--quiet", action="store_true",
+        help="Install the watcher with per-change log lines suppressed",
     )
     subparsers.add_parser(
         "watch-uninstall",
@@ -3149,9 +3160,28 @@ def main(argv: Optional[list] = None):
     if args.command in ("watch-install", "watch-uninstall", "watch-status"):
         from . import service_installer
         if args.command == "watch-install":
+            watch_args = []
+            if getattr(args, "no_ai_summaries", False):
+                watch_args.append("--no-ai-summaries")
+            if getattr(args, "quiet", False):
+                watch_args.append("--quiet")
             try:
-                result = service_installer.install_service()
+                result = service_installer.install_service(watch_args)
                 print(json.dumps(result, indent=2))
+                # jdoc#120: the install always rewrites the service definition.
+                # Say so when that discarded a hand-edited one, so the revert is
+                # visible at the moment it happens rather than at the next
+                # unexplained re-index.
+                replaced = result.get("replaced_exec")
+                if replaced:
+                    print(
+                        "\nWARNING: this replaced a customised service definition.\n"
+                        f"  was:  {replaced['previous']}\n"
+                        f"  now:  {replaced['installed']}\n"
+                        "Pass the watcher's flags to `watch-install` itself "
+                        "(--no-ai-summaries, --quiet) so the next install keeps them.",
+                        file=sys.stderr,
+                    )
                 print(
                     "\nInstalled. The doc watcher runs in the background and keeps "
                     "every locally-indexed doc repo fresh. Remove it with "

@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.134.0] - 2026-08-16 - The installed watcher runs the flags you chose
+
+[#120](https://github.com/jgravelle/jdocmunch-mcp/issues/120), reported by
+@williamblair333. `watch --no-ai-summaries` worked in the foreground;
+`watch-install` wrapped that same daemon and could not pass it through, because
+its parser took no arguments and `_exec_cmd()` was a constant. So a corpus
+indexed with `--no-ai-summaries` regained summaries the first time the installed
+watcher touched it — no prompt, no log line.
+
+`watch-install` now takes `watch`'s flags, `--no-ai-summaries` and `--quiet`,
+under the same spellings, and threads them into the argv on all three platforms.
+One source of truth for what the daemon does, whether it runs in the foreground
+or at login.
+
+The asymmetry underneath is what made this bite. `index-local`'s file exclusions
+persist as `corpus_shape_patterns` and a later refresh that omits them inherits
+them ([#116](https://github.com/jgravelle/jdocmunch-mcp/issues/116));
+`use_ai_summaries` has no such persistence and is a per-call argument, so the
+watcher's default answered a question the user had already answered.
+
+**The hand-edit is still reverted, and that part is deliberate.** Every installer
+rewrites its whole service definition, which is why the reporter's `systemctl
+edit --full` did not survive an upgrade. Merging a user's argv with a generated
+one makes what the service runs unpredictable, so the rewrite stays — but
+`watch-install` now reports the definition it replaced, on stdout as
+`replaced_exec` and in words on stderr. The revert was the smaller half of the
+complaint; the silence was the rest of it.
+
+Also disclosed: the README's background-behavior section now describes the login
+service itself — what it runs, which flags it carries, where it logs, and how to
+remove it. It previously covered the embedding child process and said only that
+`watch-install` registers a service when you run it.
+
+⚠ Reading the installed definition back is comparison-only and fails quiet. A
+`schtasks` reading in a non-English display language, an unreadable plist, or a
+missing unit all report nothing rather than guessing — a false "we overwrote your
+customisation" is worse than no warning.
+
+Tests `tests/test_jdoc_120_watch_install_flags.py` (30; **22 fail pre-fix**, 8
+controls pass both sides). One of those controls earned its place: the first cut
+split `ExecStart` back into an argv with `shlex.split`, which eats backslashes in
+POSIX mode, so an interpreter path containing one never round-tripped and every
+re-install claimed a customisation nobody had made. Suite **2569 / 6**;
+`ruff check src/` clean. Additive, no INDEX_VERSION or tool-count change.
+
 ## [1.133.0] - 2026-08-13 - The embedding import leaves the server, and the choice goes with it
 
 [#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118) closed properly.
