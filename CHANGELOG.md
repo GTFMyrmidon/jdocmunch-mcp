@@ -7,9 +7,16 @@ are already running 1.134.0.
 
 1.134.0 was built from a working tree that carried uncommitted tool-description
 edits from a concurrent editing session, so the published package did not match
-the `v1.134.0` tag. The delta was 12 `description=` strings across ten tools —
-no schema change, no code, verified by diffing every shipped module against the
-tag, and only `server.py` differed at all.
+the `v1.134.0` tag. **The delta was the `description=` text of 20 tools** — no
+schema change, no code. Verified two ways: every shipped module diffed against
+the tag, and only `server.py` differed at all; then both versions of `server.py`
+compared with every description value stripped, which produced zero differences.
+
+⚠ Corrected after 1.134.1 shipped: this entry first said "12 `description=`
+strings across ten tools". That figure came from counting changed LINES — a
+multi-line description contributes one changed line and its continuations
+contribute none, so it undercounted both numbers. The description-only finding
+was re-verified and stands; only the count was wrong.
 
 PyPI cannot be re-uploaded, so the fix is forward: those descriptions are now
 committed, and 1.134.1 is built from a clean worktree. **1.134.1 is byte-equal to
