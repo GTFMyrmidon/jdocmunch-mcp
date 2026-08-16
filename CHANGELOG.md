@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.134.1] - 2026-08-16 - The tag attests the artifact
+
+Provenance repair. No code change, no behavior change, nothing to act on if you
+are already running 1.134.0.
+
+1.134.0 was built from a working tree that carried uncommitted tool-description
+edits from a concurrent editing session, so the published package did not match
+the `v1.134.0` tag. The delta was 12 `description=` strings across ten tools —
+no schema change, no code, verified by diffing every shipped module against the
+tag, and only `server.py` differed at all.
+
+PyPI cannot be re-uploaded, so the fix is forward: those descriptions are now
+committed, and 1.134.1 is built from a clean worktree. **1.134.1 is byte-equal to
+the 1.134.0 that shipped**, plus the version bump — the point is that this time
+the tag attests it. Nothing an existing user has is revoked, which is why the
+descriptions were carried forward rather than reverted to the tag.
+
+The improved descriptions are additive prose on `doc_list_repos`,
+`doc_index_repo`, `list_docs`, `get_index_overview`, `get_sections`,
+`get_section_excerpts`, `get_document_outline`, `get_backlinks`,
+`get_orphan_sections` and `get_watch_status` — each saying what the tool does
+*not* cover, so an agent stops inferring coverage the tool never had.
+
+⚠ The build reads the WORKING TREE, not `HEAD`. A shared checkout with a second
+session live in it is not a release-safe build directory. This release was built
+from a dedicated `git worktree`, which is the standing remedy and was not applied
+to 1.134.0.
+
 ## [1.134.0] - 2026-08-16 - The installed watcher runs the flags you chose
 
 [#120](https://github.com/jgravelle/jdocmunch-mcp/issues/120), reported by

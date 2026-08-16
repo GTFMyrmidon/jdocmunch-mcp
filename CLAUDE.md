@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.134.0 |
+**Version:** 1.134.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,34 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.134.1 — ⚠⚠ the build reads the WORKING TREE, and a shared checkout is not release-safe
+
+Provenance repair, no behavior change. 1.134.0 was built in the main checkout
+while a **concurrent session** held uncommitted `description=` edits there, so
+`python -m build` put them in the wheel and the published package did not match
+its own tag. Caught AFTER the upload, by the post-publish credential sweep
+noticing an unexpected `M src/jdocmunch_mcp/server.py`.
+
+⚠ **Severity was measured, not assumed**: every shipped module was diffed against
+`v1.134.0` — only `server.py` differed, 12 `description=` strings, zero
+non-description added lines, no schema and no code. So the artifact was
+functionally the tag.
+
+⚠⚠ **The remedy is FORWARD, and it carries the descriptions rather than
+reverting them.** PyPI cannot be re-uploaded. Building 1.134.1 from the tag would
+have REVOKED descriptions users installing 1.134.0 already received — trading a
+provenance defect for a silent downgrade. So the edits were committed with
+credit and 1.134.1 is **byte-equal to the shipped 1.134.0** plus the bump. jjg's
+call, and the right one.
+
+⚠⚠ **The standing remedy already existed and I did not apply it**: build from a
+dedicated `git worktree`. It is in the release skill, it is
+[[feedback_build_reads_the_working_tree_not_head]], and jcm hit the neighbouring
+form of it twice (.278 nearly published .277 because `server.json` was stale in
+the publish directory). **Committing by name protects HISTORY, not the ARTIFACT.**
+⚠ `git worktree add` needs `-b` here — `master` is already checked out in the
+main tree, so a bare `worktree add <path> master` fails.
 
 ## v1.134.0 — #120: the installed watcher runs the flags you chose
 

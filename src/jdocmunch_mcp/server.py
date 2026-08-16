@@ -378,7 +378,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="doc_index_repo",
-            description="Index a GitHub repository's documentation. Fetches .md/.txt files, parses sections, and saves to local storage. Embeddings auto-enable when a provider is configured (GOOGLE_API_KEY, OPENAI_API_KEY, openai-compatible + JDOCMUNCH_OPENAI_COMPAT_URL + JDOCMUNCH_OPENAI_COMPAT_MODEL, or sentence-transformers).",
+            description="Index a GitHub repository's documentation. Fetches .md/.txt files, parses sections, and saves to local storage. Embeddings auto-enable when a provider is configured (GOOGLE_API_KEY, OPENAI_API_KEY, openai-compatible + JDOCMUNCH_OPENAI_COMPAT_URL + JDOCMUNCH_OPENAI_COMPAT_MODEL, or sentence-transformers). Indexes .md and .txt only; every other file in the repo is ignored.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -414,7 +414,9 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="doc_list_repos",
-            description="List all indexed documentation repositories.",
+            description=(
+                "List every indexed documentation repo with its identifier and storage location. Call it first to find out whether the docs you need are already indexed, and to get the repo id every other tool needs. Lists only indexes under the active storage_path, so an empty list means nothing is indexed there."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {}
@@ -422,7 +424,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_index_overview",
-            description="v1.56+ — single-call repo snapshot: doc_count, section_count, total_byte_size, format_breakdown, top_tags, top_roles, indexed_at. Composition of v1.46/v1.50/v1.55 aggregations. Use for 'what is this repo at a glance?'",
+            description="v1.56+ — single-call repo snapshot: doc_count, section_count, total_byte_size, format_breakdown, top_tags, top_roles, indexed_at. Composition of v1.46/v1.50/v1.55 aggregations. Use for 'what is this repo at a glance?'. Counts come from the index, so they are only as fresh as the last index run.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -454,7 +456,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="list_docs",
-            description="v1.55+ — flat per-doc inventory of an indexed repo: doc_path, section_count, format, byte_size for each indexed document. Lighter than get_toc_tree (which returns full section trees per doc). Sorted by doc_path.",
+            description="v1.55+ — flat per-doc inventory of an indexed repo: doc_path, section_count, format, byte_size for each indexed document. Lighter than get_toc_tree (which returns full section trees per doc). Sorted by doc_path. Inventory only; it returns no section titles and no content.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -504,7 +506,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_document_outline",
-            description="Get the section hierarchy for a single document file, without content.",
+            description="Get the section hierarchy for a single document file, without content. Headings only, no content. Read a section with get_section.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -648,7 +650,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="count_sections",
-            description="v1.59+ — count sections matching the same filter set as search_sections (path_glob, role/roles/exclude_roles, tags/exclude_tags, min/max_level, min/max_byte_length) but skip ranking. Use for UI counters or 'does anything match?' probes.",
+            description="v1.59+ — count sections matching the same filter set as search_sections (path_glob, role/roles/exclude_roles, tags/exclude_tags, min/max_level, min/max_byte_length) but skip ranking. Use for UI counters or 'does anything match?' probes. Returns the count only, never the matching sections.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -693,7 +695,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_section",
-            description="Retrieve the full content of a specific section using byte-range reads. Use after identifying section IDs via search_sections or get_toc.",
+            description="Retrieve the full content of a specific section using byte-range reads. Use after identifying section IDs via search_sections or get_toc. Returns this section's own bytes; nested child sections are not included.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -726,7 +728,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_sections",
-            description="Batch content retrieval for multiple sections in one call.",
+            description="Batch content retrieval for multiple sections in one call. Content only for the ids you pass; unknown ids come back as per-id errors, not a failed call.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -883,7 +885,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_all_tags",
-            description="v1.46+ — list every unique #hashtag across the repo with per-tag section counts. Companion to the v1.45 `tags` filter on search_sections — use this to discover what tag namespaces exist before constructing a tag-filtered query. Lowercase-normalized.",
+            description="v1.46+ — list every unique #hashtag across the repo with per-tag section counts. Companion to the v1.45 `tags` filter on search_sections — use this to discover what tag namespaces exist before constructing a tag-filtered query. Lowercase-normalized. Aggregates the tags the index stored on each section, so a tag added since the last index is missing.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -926,7 +928,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_section_excerpts",
-            description="v1.49+ — batch counterpart to get_section_excerpt. Resolves N previews in one call against a single index load. Per-id errors reported in-line. _meta.tokens_saved aggregates byte savings across the batch.",
+            description="v1.49+ — batch counterpart to get_section_excerpt. Resolves N previews in one call against a single index load. Per-id errors reported in-line. _meta.tokens_saved aggregates byte savings across the batch. Previews are truncated by design; read full content with get_sections.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -991,7 +993,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="get_orphan_sections",
-            description="v1.39+ — list sections whose doc_path receives zero inbound references from any other doc. Companion to get_broken_links and get_stale_pages: documentation that exists but nobody links to.",
+            description="v1.39+ — list sections whose doc_path receives zero inbound references from any other doc. Companion to get_broken_links and get_stale_pages: documentation that exists but nobody links to. Inbound links are counted across indexed docs only, so a link from code or an external site does not rescue a section.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1047,7 +1049,7 @@ def _all_tools() -> list[Tool]:
         ),
         Tool(
             name="delete_index",
-            description="Remove a repo index and its cached raw files.",
+            description="Remove a repo index and its cached raw files. Deletes the index and its cached files, never your source documents. There is no undo; re-index to restore.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1110,6 +1112,8 @@ def _all_tools() -> list[Tool]:
                 "Find all sections that link TO a given document (inverse reference graph). "
                 "Useful for the LLM Wiki pattern: when a source changes, find which wiki pages reference it. "
                 "Output: list of {source_file, source_section, source_section_id, link}."
+            
+                " Counts links found inside indexed docs only."
             ),
             inputSchema={
                 "type": "object",
@@ -1195,6 +1199,8 @@ def _all_tools() -> list[Tool]:
                 "Session self-monitor: returns {latency_per_tool, total_tokens_saved}. "
                 "Lightweight; reads the in-memory latency ring + persistent savings counter. "
                 "For windowed analysis use analyze_perf."
+            
+                " The latency ring lives in memory, so a server restart clears it."
             ),
             inputSchema={
                 "type": "object",
@@ -1210,6 +1216,8 @@ def _all_tools() -> list[Tool]:
                 "Returns {service, watchable_repo_count, local_repo_count, repos[], hint}. "
                 "Run `jdocmunch-mcp watch` (foreground) or `watch-install` (login service) "
                 "to keep indexes fresh on any on-disk doc change."
+            
+                " Covers locally-indexed repos only; a GitHub-indexed repo has no source_root to watch."
             ),
             inputSchema={
                 "type": "object",
@@ -1423,6 +1431,8 @@ def _all_tools() -> list[Tool]:
                 "Return every operation whose request body or any response references the "
                 "given schema. Each row gets a referenced_in list of all schema names that "
                 "operation pulls in (so you can see the broader dependency cluster)."
+            
+                " Resolves references inside the indexed OpenAPI document only."
             ),
             inputSchema={
                 "type": "object",
@@ -1525,6 +1535,8 @@ def _all_tools() -> list[Tool]:
                 "One-shot index health diagnostics. Returns section_count, doc_count, "
                 "role_distribution, freshness counts, broken_link_count, drift status, "
                 "BM25 corpus sanity, and embedding coverage."
+            
+                " Diagnoses the index, not the writing; a healthy report says nothing about whether the docs are correct."
             ),
             inputSchema={
                 "type": "object",
@@ -1542,6 +1554,8 @@ def _all_tools() -> list[Tool]:
                 "(omitted when no canary). Each axis is 0-100, plus composite + A-F grade. "
                 "Pairs with diff_doc_health_radar for snapshot deltas. Mirrors jcm's "
                 "and jData's health-radar shape — third leg of the suite-wide pattern."
+            
+                " Grades the index, not the prose; none of the six axes read the writing itself."
             ),
             inputSchema={
                 "type": "object",
@@ -1615,6 +1629,8 @@ def _all_tools() -> list[Tool]:
                 "frontmatter next:/prev: keys, inline 'Next:' / 'Previous:' markdown links, "
                 "or ordered numeric filename prefixes (01-intro.md). Returns chain[] of "
                 "{section_id, doc_path, title} plus the strategy used."
+            
+                " Follows only the three conventions above, so a tutorial wired up any other way returns a short chain."
             ),
             inputSchema={
                 "type": "object",
@@ -1649,6 +1665,8 @@ def _all_tools() -> list[Tool]:
                 "List defined repo groups (v1.26+). Each group is a named alias for a "
                 "set of indexed repos that search_sections can fan out across via the "
                 "repo_group kwarg."
+            
+                " Lists the group definitions only; it does not check that every member repo is still indexed."
             ),
             inputSchema={"type": "object", "properties": {}}
         ),
