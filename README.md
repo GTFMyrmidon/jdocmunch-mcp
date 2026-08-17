@@ -66,13 +66,24 @@ A separate, measured result from the [v1.121.0](CHANGELOG.md) projection work, o
 **Requirements:** Python 3.10+, any MCP-compatible client.
 
 ```bash
-pip install jdocmunch-mcp
+uv tool install jdocmunch-mcp
 jdocmunch-mcp init
 ```
 
+No virtualenv to manage, nothing written into system Python, and it works as-is on PEP 668 distros (Ubuntu 24.04+, Debian 12+) where bare `pip install` is refused. [Don't have `uv` yet?](https://docs.astral.sh/uv/getting-started/installation/)
+
 `init` detects your MCP clients, writes their config entries, installs the doc-exploration prompt policy so your agent actually reaches for the tools, and optionally installs hooks and indexes your docs.
 
-> **Ubuntu 24.04+ / Debian 12+:** system Python is externally managed (PEP 668). Use `pipx install jdocmunch-mcp` or `uv tool install jdocmunch-mcp`.
+<details>
+<summary><b>Other install paths</b></summary>
+
+| Command | Use it when |
+|---|---|
+| `uvx jdocmunch-mcp` | **Zero install.** Runs from an ephemeral environment — nothing lands on disk permanently. The client entries `init` writes already invoke the server this way, so for most setups this is all that ever runs. ⚠ Hooks are the exception: they're spawned by a minimal-PATH subshell and resolve the executable by name, so they need `uv tool install` (or `pipx`/`pip`) to work. |
+| `pipx install jdocmunch-mcp` | You already standardise on pipx |
+| `pip install jdocmunch-mcp` | Inside a virtualenv you manage yourself |
+
+</details>
 
 Verify:
 
@@ -83,9 +94,10 @@ jdocmunch-mcp --version
 **Manual Claude Code setup:**
 
 ```bash
-pip install jdocmunch-mcp
-claude mcp add -s user jdocmunch jdocmunch-mcp
+claude mcp add -s user jdocmunch -- uvx jdocmunch-mcp
 ```
+
+No install step — `uvx` fetches and runs the server on demand. Prefer it on your PATH (and required for hooks)? `uv tool install jdocmunch-mcp`, then `claude mcp add -s user jdocmunch jdocmunch-mcp`.
 
 Installing the server makes the tools available; it does not break an agent's habit of brute-reading files. One line in your `CLAUDE.md` does that:
 
