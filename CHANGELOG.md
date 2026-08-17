@@ -1,5 +1,110 @@
 # Changelog
 
+## [1.134.1] - 2026-08-16 - The tag attests the artifact
+
+Provenance repair. No code change, no behavior change, nothing to act on if you
+are already running 1.134.0.
+
+1.134.0 was built from a working tree that carried uncommitted tool-description
+edits from a concurrent editing session, so the published package did not match
+the `v1.134.0` tag. **The delta was the `description=` text of 20 tools** — no
+schema change, no code. Verified two ways: every shipped module diffed against
+the tag, and only `server.py` differed at all; then both versions of `server.py`
+compared with every description value stripped, which produced zero differences.
+
+⚠ Corrected after 1.134.1 shipped: this entry first said "12 `description=`
+strings across ten tools". That figure came from counting changed LINES — a
+multi-line description contributes one changed line and its continuations
+contribute none, so it undercounted both numbers. The description-only finding
+was re-verified and stands; only the count was wrong.
+
+PyPI cannot be re-uploaded, so the fix is forward: those descriptions are now
+committed, and 1.134.1 is built from a clean worktree. **1.134.1 is byte-equal to
+the 1.134.0 that shipped**, plus the version bump — the point is that this time
+the tag attests it. Nothing an existing user has is revoked, which is why the
+descriptions were carried forward rather than reverted to the tag.
+
+The improved descriptions are additive prose on `doc_list_repos`,
+`doc_index_repo`, `list_docs`, `get_index_overview`, `get_sections`,
+`get_section_excerpts`, `get_document_outline`, `get_backlinks`,
+`get_orphan_sections` and `get_watch_status` — each saying what the tool does
+*not* cover, so an agent stops inferring coverage the tool never had.
+
+⚠ The build reads the WORKING TREE, not `HEAD`. A shared checkout with a second
+session live in it is not a release-safe build directory. This release was built
+from a dedicated `git worktree`, which is the standing remedy and was not applied
+to 1.134.0.
+
+### Twenty tools that never named a boundary
+
+The descriptions above were not an accident of content, only of timing. They are
+the jdocmunch share of a suite-wide pass against the tool-description rubric in
+[arXiv:2602.14878](https://arxiv.org/abs/2602.14878) (Hasan, Li, Rajbahadur, Adams
+& Hassan, Queen's University), which scored 856 tools across 103 MCP servers and
+found 97.1% carrying at least one description smell. Method, both scoring frames,
+and the before/after numbers live in jcodemunch-mcp under
+`benchmarks/description_smells/`.
+
+Across the three servers, 99 of 194 tools carried the Unstated Limitation smell:
+they never said what they do not return, when they refuse, or when an empty result
+means "nothing matched" rather than "nothing is indexed". jdocmunch was flagged on
+35 tools, of which 19 were real gaps and the rest were phrasing the scanner failed
+to match. Those 19 got a clause each, and `doc_list_repos` was rewritten outright
+from a single sentence, which is the twenty above.
+
+Every clause is grounded in the tool's own behaviour rather than written to satisfy
+the rubric. `delete_index` now says it never touches your source documents and that
+there is no undo. `get_section` says nested child sections are not included, which
+is the difference between a thin answer and a wrong one. `doc_health_radar` says it
+grades the index and not the prose, because none of its six axes read the writing.
+`get_orphan_sections` says inbound links are counted across indexed docs only, so a
+link from code does not rescue a section.
+
+## [1.134.0] - 2026-08-16 - The installed watcher runs the flags you chose
+
+[#120](https://github.com/jgravelle/jdocmunch-mcp/issues/120), reported by
+@williamblair333. `watch --no-ai-summaries` worked in the foreground;
+`watch-install` wrapped that same daemon and could not pass it through, because
+its parser took no arguments and `_exec_cmd()` was a constant. So a corpus
+indexed with `--no-ai-summaries` regained summaries the first time the installed
+watcher touched it — no prompt, no log line.
+
+`watch-install` now takes `watch`'s flags, `--no-ai-summaries` and `--quiet`,
+under the same spellings, and threads them into the argv on all three platforms.
+One source of truth for what the daemon does, whether it runs in the foreground
+or at login.
+
+The asymmetry underneath is what made this bite. `index-local`'s file exclusions
+persist as `corpus_shape_patterns` and a later refresh that omits them inherits
+them ([#116](https://github.com/jgravelle/jdocmunch-mcp/issues/116));
+`use_ai_summaries` has no such persistence and is a per-call argument, so the
+watcher's default answered a question the user had already answered.
+
+**The hand-edit is still reverted, and that part is deliberate.** Every installer
+rewrites its whole service definition, which is why the reporter's `systemctl
+edit --full` did not survive an upgrade. Merging a user's argv with a generated
+one makes what the service runs unpredictable, so the rewrite stays — but
+`watch-install` now reports the definition it replaced, on stdout as
+`replaced_exec` and in words on stderr. The revert was the smaller half of the
+complaint; the silence was the rest of it.
+
+Also disclosed: the README's background-behavior section now describes the login
+service itself — what it runs, which flags it carries, where it logs, and how to
+remove it. It previously covered the embedding child process and said only that
+`watch-install` registers a service when you run it.
+
+⚠ Reading the installed definition back is comparison-only and fails quiet. A
+`schtasks` reading in a non-English display language, an unreadable plist, or a
+missing unit all report nothing rather than guessing — a false "we overwrote your
+customisation" is worse than no warning.
+
+Tests `tests/test_jdoc_120_watch_install_flags.py` (30; **22 fail pre-fix**, 8
+controls pass both sides). One of those controls earned its place: the first cut
+split `ExecStart` back into an argv with `shlex.split`, which eats backslashes in
+POSIX mode, so an interpreter path containing one never round-tripped and every
+re-install claimed a customisation nobody had made. Suite **2569 / 6**;
+`ruff check src/` clean. Additive, no INDEX_VERSION or tool-count change.
+
 ## [1.133.0] - 2026-08-13 - The embedding import leaves the server, and the choice goes with it
 
 [#118](https://github.com/jgravelle/jdocmunch-mcp/issues/118) closed properly.

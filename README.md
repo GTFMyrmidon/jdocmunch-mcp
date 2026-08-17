@@ -195,6 +195,23 @@ deadlock in the Windows loader
 tool call for as long as the server runs. Disable it with
 `JDOCMUNCH_EMBED_WORKER=0`, which restores the previous in-process import.
 
+**A login service, only if you install one.** `jdocmunch-mcp watch-install`
+registers the doc watcher to start at login (systemd user unit, launchd agent,
+or a Task Scheduler task named `jdocmunch-watch`). Nothing installs it for you.
+Once installed it:
+
+- re-indexes every locally-indexed doc repo when a doc file on disk changes;
+- runs **exactly** `jdocmunch-mcp watch` with the flags you passed to
+  `watch-install` — `--no-ai-summaries` to keep the summarizer out of it,
+  `--quiet` to suppress its per-change log lines;
+- writes to `watch.log` and `watch.err` under your doc-index directory;
+- is removed by `jdocmunch-mcp watch-uninstall`.
+
+⚠ Re-running `watch-install` **rewrites** the service definition, so a
+hand-edited one is replaced. It now prints what it replaced; pass the flags to
+`watch-install` itself so an upgrade keeps them
+([#120](https://github.com/jgravelle/jdocmunch-mcp/issues/120)).
+
 Path traversal prevention, symlink escape protection, secret exclusion, file-size limits, binary detection, and encoding safety are documented in [SECURITY.md](SECURITY.md), along with how to report a vulnerability.
 
 ---

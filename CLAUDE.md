@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.133.0 |
+**Version:** 1.134.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
@@ -37,6 +37,74 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## v1.134.1 — ⚠⚠ the build reads the WORKING TREE, and a shared checkout is not release-safe
+
+Provenance repair, no behavior change. 1.134.0 was built in the main checkout
+while a **concurrent session** held uncommitted `description=` edits there, so
+`python -m build` put them in the wheel and the published package did not match
+its own tag. Caught AFTER the upload, by the post-publish credential sweep
+noticing an unexpected `M src/jdocmunch_mcp/server.py`.
+
+⚠ **Severity was measured, not assumed**: every shipped module was diffed against
+`v1.134.0` — only `server.py` differed, 12 `description=` strings, zero
+non-description added lines, no schema and no code. So the artifact was
+functionally the tag.
+
+⚠⚠ **The remedy is FORWARD, and it carries the descriptions rather than
+reverting them.** PyPI cannot be re-uploaded. Building 1.134.1 from the tag would
+have REVOKED descriptions users installing 1.134.0 already received — trading a
+provenance defect for a silent downgrade. So the edits were committed with
+credit and 1.134.1 is **byte-equal to the shipped 1.134.0** plus the bump. jjg's
+call, and the right one.
+
+⚠⚠ **The standing remedy already existed and I did not apply it**: build from a
+dedicated `git worktree`. It is in the release skill, it is
+[[feedback_build_reads_the_working_tree_not_head]], and jcm hit the neighbouring
+form of it twice (.278 nearly published .277 because `server.json` was stale in
+the publish directory). **Committing by name protects HISTORY, not the ARTIFACT.**
+⚠ `git worktree add` needs `-b` here — `master` is already checked out in the
+main tree, so a bare `worktree add <path> master` fails.
+
+## v1.134.0 — #120: the installed watcher runs the flags you chose
+
+`watch --no-ai-summaries` worked; `watch-install` wrapped the same daemon and
+could not pass it through (`subparsers.add_parser("watch-install")` took no
+arguments, `_exec_cmd()` was a constant). A corpus indexed without summaries
+regained them on the watcher's first refresh, silently. `watch-install` now
+takes `watch`'s flags under the same spellings and threads them through
+`install_service(watch_args)` into all three platform installers.
+
+⚠⚠ **The asymmetry is the reason this bit, and it is worth carrying forward.**
+#116 made `index-local`'s exclusions DURABLE (`corpus_shape_patterns`, inherited
+by a silent re-entry point); `use_ai_summaries` is a per-call argument with no
+manifest field. **A setting that persists and a setting that does not will
+diverge at the first background caller** — and the watcher is a background
+caller by construction. Check both halves when adding a per-call knob.
+
+⚠ **The hand-edit is STILL reverted, on purpose.** Every installer rewrites its
+whole definition; merging a user's argv with a generated one makes the installed
+command unpredictable. What changed is that the rewrite REPORTS what it replaced
+(`replaced_exec` + a stderr warning). The reporter filed the revert and the
+silence as one issue; only the silence was fixable without making the argv
+unknowable.
+
+⚠⚠ **The first cut of the comparison was WRONG and a control caught it.**
+Reading `ExecStart` back with `shlex.split` (POSIX mode) eats backslashes, so an
+interpreter path containing one never round-tripped and EVERY re-install reported
+a customisation nobody had made. The comparison target is a string this module
+generated — so it is compared as a string, no quoting convention in the middle.
+Same reasoning already applied to the `schtasks` reading. ⚠ Every reader fails
+QUIET (localised `schtasks` labels, unreadable plist, absent unit → None): a
+false "we overwrote your customisation" is worse than no warning.
+
+⚠ README's "Background behavior, fully disclosed" gained the LOGIN SERVICE
+itself — it previously documented only the embedding child process. Per the
+PyPI-quarantine standing rule, that section is the compliance surface and the
+login service is exactly the behavior the quarantine was about.
+
+Tests `tests/test_jdoc_120_watch_install_flags.py` (30; **22 fail pre-fix**).
+Suite **2569 / 6**; `ruff check src/` clean.
 
 ## v1.133.0 — #118 CLOSED: the import leaves the server, and the choice goes with it
 
@@ -1412,7 +1480,7 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 | `hook-posttooluse` | PostToolUse hook: auto-reindex doc files after Edit/Write (reads stdin) |
 | `hook-precompact` | PreCompact hook: session snapshot before context compaction (reads stdin) |
 | `watch` | (#78) Foreground daemon: auto-reindex every locally-indexed doc repo on any on-disk doc change. `--no-ai-summaries`, `--quiet` |
-| `watch-install` / `watch-uninstall` | (#78) Install/remove the doc watcher as a login service (systemd/launchd/Task Scheduler; `jdocmunch-watch`) |
+| `watch-install` / `watch-uninstall` | (#78) Install/remove the doc watcher as a login service (systemd/launchd/Task Scheduler; `jdocmunch-watch`). `watch-install` takes `watch`'s flags: `--no-ai-summaries`, `--quiet` (#120) |
 | `watch-status` | (#78) Print doc-watcher service state + per-repo watch coverage (also the `get_watch_status` MCP tool) |
 
 ## 1.x compatibility contract (license-binding)
