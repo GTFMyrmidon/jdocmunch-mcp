@@ -1,7 +1,9 @@
 # jdocmunch-mcp
 
-**Version:** 1.134.1 |
+**Version:** 1.135.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
+
+- **Unreleased - the one string that survives tool deferral.** The MCP `initialize` response now carries an `instructions` string; it did not before, because the transport called `create_initialization_options()` bare and the field went out empty. ⚠⚠ **Invisible in a normal session, CONCENTRATED in a deferred one**: a host over its schema budget ships tool NAMES and withholds the JSONSchemas, so an agent sees 64 bare strings and none of the descriptions. The spec delivers `instructions` on a SEPARATE TRACK from the tool list, so it arrives whole - in a plain MCP client it is the entire steering budget this server gets. 909 chars against a 1,000 cap. ⚠ Also sets `Server(..., version=__version__)`: without it the SDK reports ITS OWN version in `serverInfo`. ⚠ `__version__` is `"unknown"` under `PYTHONPATH=src`, so a green test does NOT prove the wire carries a real number. ⚠⚠ **Ported from jcodemunch-mcp v1.108.292 - both defects were present here unchanged, and neither had a symptom anyone could report.** ⚠⚠ **The port also reproduced a NameError in BOTH repos** (`logger` through a module-level name neither server.py defines) and **only jdoc caught it** - jdata's suite was GREEN with the identical bug, because it had no F821 gate. jdoc's `test_lint_gate_regressions.py` did its job. **A setting fixed in one repo of a suite is fixed in one repo, and that applies to the GATES as much as the code.** `tests/test_mcp_instructions.py` binds the prose to the catalog; all three guards were verified by reintroducing the defect each names.
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
 distributed.** `tests/infographic.png` — a 5.9 MB promotional image, referenced
@@ -37,6 +39,106 @@ against the API that exists.
 a count into this file. **The `coordinated-retirement` hold is OVER** — #92
 merged as `3037428`, branch deleted from the workflow. Nothing is held; ship
 from `master`.
+
+## Standing lessons (suite-wide)
+
+Drawn from jcodemunch-mcp 1.108.291 (2026-08-22) and recorded here because each
+one is about how we WORK, not about that repo's code. ⚠ **The byte-mass defect itself was CHECKED HERE and is ABSENT** (2026-08-22),
+so do not re-run the audit: `get_document_outline` / `get_toc` / `get_toc_tree`
+sum `content` over `index.sections`, which LOOKS like the jcm defect but is not.
+`markdown_parser._finalize_section` slices each section from its own heading to
+the NEXT heading of any level, so sections PARTITION the document instead of
+nesting. Measured on this repo's own README: file 15,967 bytes, sum of 19
+sections 15,967 — ratio exactly **1.0000**. ⚠⚠ **It is clean for a REASON, not
+by luck, and the reason is load-bearing**: if section bodies ever become
+descendant-inclusive, every one of those sums silently starts double-counting.
+
+- **A competitor's fix list is a free defect probe.** A rival shipped
+  `fix(gini): measure a file's lines as its own span, not the sum of every node`
+  and named the defect precisely enough to check ours in one query — jcm's
+  byte-concentration metric summed nested symbol spans and read 2.85x the real
+  size of the files it described. Read competitors' `fix(...)` TITLES against
+  whatever we built the same way; it is minutes, and it finds what our own tests
+  were written not to see.
+- **A ratchet can pass against the defect it names.** The guard written for that
+  fix used a depth-limited regex and walked straight past
+  `sum(int(s.get("byte_length", 0) or 0) for ...)`, two parens deep. **A green
+  ratchet and an absent ratchet look identical**, because the tree is clean when
+  you write it. Run every text-scanning guard against the defect PUT BACK, and
+  add a positive test pinning a correct shape it must not flag — otherwise the
+  ratchet becomes standing pressure to "fix" working code.
+- **A defect is not evidence against the number it did not produce.** The same
+  release nearly published a claim that the correction put a basis change behind
+  our public savings figure. It did not: the number quoted was one seat's local
+  meter, the site publishes a separate opt-in aggregate, and the tools feeding it
+  were already correct. **Trace the path from a defect to the SPECIFIC figure
+  before implicating it**, and never net coverage-conservatism (who reports)
+  against a per-call arithmetic error (one call's maths) — different axes,
+  opposite directions. If the apportionment cannot be computed, the honest output
+  is "not computable" plus the bound, never a restated number. **Not restating is
+  the conservative action, not the convenient one.**
+- **A metric that credits us is the one direction a defect must never sit.** When
+  the same shape turned up in jcm's token-savings baseline, the correction
+  LOWERED our own reported numbers and shipped in the same release rather than
+  as follow-up work. Where history could not be recomputed it was disclosed
+  (`lifetime_unattributed`, a basis generation) rather than quietly carried or
+  quietly rewritten — **a recomputed history is a guess wearing a measurement's
+  clothes.**
+
+
+## v1.135.0 — #121: the filter keys on the SUFFIX, because the orphan case is the worse one
+
+`list_repos` globbed `*/*.json`, excluded only `_` and `.summary.json`, and so
+opened and json-parsed every `.terms`/`.related`/`.boilerplate`/`.duplicates`
+sidecar in the store before discarding it for lacking primary-index fields.
+@rknighton measured it on a controlled 75-index store: **2,044.2 ms → 3,459.5 ms
+median, non-overlapping ranges, 300 extra parses.** Documented first-call hot
+path, also hit by the PreCompact hook.
+
+⚠⚠ **Keying on "does the primary exist" would have fixed the LIVE case and left
+the worse one untouched.** A store that lost an index to a pre-1.108.0
+`delete_index` still carries all four sidecars; theirs held **1,093 such files,
+2.0 GB, opened on every call to return nothing** — `.related.json` was 98.3% of
+those bytes and ONE file was 1.24 GB. Their repro ships both arrangements
+precisely so the fix cannot be shaped to the easy half.
+
+⚠ **Row counts cannot test this.** The primary-absent case returns zero repos
+pre- and post-fix. The tests patch `json.load` and assert on what was OPENED.
+
+⚠⚠ **The tuple was hand-copied to three places and the copy that mattered was
+NEVER WRITTEN — that absence IS #121.** `delete_index` had one,
+`_leftover_artifacts` had another, `list_repos` had none. Now one
+`INDEX_OWNED_SIDECAR_SUFFIXES` in `storage/doc_store.py`, read by all three,
+with a test that derives each suffix from the module that WRITES it (each
+`_path`/`_terms_path` called with a sentinel name) and fails if one is missing.
+**Same shape as jdoc#116's `_index_to_dict` allow-list**: a convention held in
+three copies is a convention with a hole in it.
+
+⚠ **Repo names may contain dots** — `is_safe_path_component` allows
+`[A-Za-z0-9._-]` — so a repo named `api.related` writes its PRIMARY monolith to
+`api.related.json`, and a bare suffix test would have silently unlisted it. A
+sidecar-looking candidate is readmitted when it has its own `.summary.json`
+(every index saved since jdoc#77 writes one; nothing writes a summary beside a
+real sidecar). One `stat`, zero parses. ⚠ A **pre-jdoc#77** index whose name
+ends in a sidecar suffix has no summary to vouch for it and is not listed —
+recorded, not solved: distinguishing it from an orphan requires opening the
+file, which is the cost being removed.
+
+⚠ One test asserts each suffix **ALONE**, no siblings. A filter reasoning from
+the sidecar SET (`.related` is a sidecar because `.terms` sits beside it) passes
+every other test here and then parses the 1.24 GB file once its peers are
+cleaned up by hand.
+
+Local A/B on a **synthetic** 40-index store (23.1 MB, 22.8 MB of it
+`.related.json`) — the reporter's fixture is private and was NOT re-run:
+json loads **200 → 40**, median **188.9 ms → 8.0 ms** over 5 runs. ⚠ The ratio
+is a property of that store's sidecar bytes; the LOAD COUNTS are the durable
+claim, the milliseconds are an illustration.
+
+Tests `tests/test_jdoc_121_list_repos_sidecars.py` (13). ⚠ The file cannot
+IMPORT pre-fix, so non-vacuity used a behaviour-only subset: **9 fail / 1 pass**
+(the `_`-prefix control). Suite **2582 / 6**; `ruff check src/` clean. No tool,
+schema or INDEX_VERSION change.
 
 ## v1.134.1 — ⚠⚠ the build reads the WORKING TREE, and a shared checkout is not release-safe
 
@@ -1079,6 +1181,74 @@ stall a release, careful review becomes expensive to accept, which is backwards.
 **3. A contributor's PR is never the only path.** Timebox and keep our own path
 warm.
 
+**3a. NO TIMEBOX WE OFFER RUNS LONGER THAN 24 HOURS — absolute, no exceptions**
+(jjg, 2026-08-14; closed to exceptions 2026-08-20). It covers every shape:
+signing the CLA, opening a PR already written, and taking an issue to implement.
+
+⚠⚠ **The window is only fair BECAUSE the default action preserves credit.** At
+expiry we implement the fix ourselves and credit them in the CHANGELOG, the
+release notes and the close comment. So the 24 hours decide whose COMMIT it is,
+never whether they are credited and never whether the fix ships. **Quote the
+default in the same comment as the deadline** — a clock with an unstated
+consequence reads as a threat, and it is not one.
+
+⚠⚠ **The failure mode has a name: a CLA hostage negotiation.** jcodemunch-mcp
+#443 ran EIGHT DAYS on a 2026-08-26 window — a real security fix, reviewed and
+green, held behind a 30-second form, while SEVEN of our own merges conflicted its
+branch. **Not one of those days bought anything.** A window over 24 hours
+purchases exactly one thing, the chance the contributor's commit is theirs, and
+pays for it in users' exposure to an unfixed defect.
+
+⚠ **An extension the contributor ASKS FOR is not the same as a default we hand
+out**, and CONTRIBUTING.md invites the ask by name. Hold it when they ask; the
+clock exists to stop work going quiet, not to catch anyone out.
+
+⚠ **Do not shorten a timebox already posted.** A public promise outlives the
+policy that produced it. State the new window on new PRs.
+
+**3b. A MERGEABLE contributor PR merges BEFORE any changelog-touching work of
+our own.** Every entry we add occupies the same `[Unreleased]` block a
+contributor's entry occupies, so each of our merges conflicts their branch — and
+**a CONFLICTING fork PR has no `refs/pull/N/merge` and therefore gets NO CI AT
+ALL.** Their branch goes dark for a reason unrelated to their change.
+
+```bash
+GITHUB_TOKEN="" gh pr list --state open --json number,author,mergeable,mergeStateStatus   --jq '.[] | select(.author.login != "jgravelle") | "#\(.number) \(.author.login) \(.mergeable) \(.mergeStateStatus)"'
+```
+
+⚠ **The boundary:** a BLOCKED PR cannot go first. Then we ship anyway (policy 2)
+and **we own the resolution** — push the merge to their branch and say on the
+thread that the conflict was ours.
+
+⚠⚠ **`license/cla` IS A REQUIRED STATUS CHECK ON `master` (2026-08-21).** Until
+that date this repo was PROTECTED BUT REQUIRED NOTHING, so the CLA was
+read and never enforced — an open PR read `MERGEABLE/UNSTABLE` and one distracted
+click could have merged unsigned code. jcm has had this since 2026-08-17 (policy
+3d); **a setting fixed in one repo of a suite is fixed in one repo.** All three
+now read `contexts ["license/cla"]`, `strict false`, `enforce_admins false`,
+force-push and deletion off.
+⚠ `enforce_admins: false` is deliberate — it is what lets a merge be pushed to a
+contributor's fork. `strict: false` avoids forcing a rebase after every release.
+⚠⚠ **This composes with the status-erasure hazard below and now FAILS CLOSED.**
+Our push to a fork wipes `license/cla` from the new head, and with the check
+required that reads as `BLOCKED` until the bot re-posts. Correct, and it will
+look like a new problem the first time.
+
+⚠⚠ **A FORK PR SHOWING ONLY `license/cla` HAS NOT BEEN TESTED — IT HAS BEEN
+SILENTLY HELD**, and `gh pr checks` lists only checks that RAN, so the hold is
+invisible from the place you would look. Measured on jdoc #122 and jdata #4 on
+2026-08-20: four and two held runs respectively.
+
+```bash
+GITHUB_TOKEN="" gh api "repos/jgravelle/<repo>/actions/runs?status=action_required&per_page=30"   --jq '.workflow_runs[] | "\(.id)|\(.name)|\(.head_branch)"'
+GITHUB_TOKEN="" gh api --method POST "repos/jgravelle/<repo>/actions/runs/<id>/approve"
+```
+
+⚠ **Both repos' `fork-pr-contributor-approval` was relaxed to
+`first_time_contributors_new_to_github` on 2026-08-20**, matching jcm since
+2026-08-13. Until then every first-time fork contributor's runs were created
+`action_required` and never executed.
+
 ⚠⚠ **Do NOT answer "an issue is stuck" with aggregate stats.** jdoc's median
 time-to-close is 1 day (60 issues, 45 within a day, 1 ever past a week). True,
 and NOT a response: the cost of a blocked issue is CONCENTRATED, not
@@ -1451,6 +1621,27 @@ path ([[feedback_fixture_query_corpus_pollution]]).
 Versions 1.115.0 and earlier: see `docs/CLAUDE-history.md` (moved out of this file
 2026-07-25). `CHANGELOG.md` covers most of them, but 1.67.0-1.92.0 and 1.96.0 exist
 ONLY in the history file.
+
+⚠⚠ **The rotation now has a GATE: `tests/test_claude_md_size.py`.** This file is
+budgeted at 130,000 chars against the 150,000 the harness will load, and today it
+is ~101,600 with 27 embedded release sections making up 96% of it. When the gate
+fires, move the OLDEST `## vX.Y.Z` sections into `docs/CLAUDE-history.md`.
+**Rotate, never delete** — every version here also exists in `CHANGELOG.md`, but
+four sections carry analysis the CHANGELOG does not.
+
+⚠⚠ **Rotate into THAT path, not a new one.** The replay self-fixture indexes
+`repo_path: "."`, so a large markdown file at a new path joins the retrieval
+corpus and outranks the goldens — measured once at nDCG 0.906 against a 0.95 gate
+with recall still 1.0. `CLAUDE.md` and `docs/CLAUDE-history.md` are both in the
+fixture's `extra_ignore_patterns`, and the gate asserts it for every whole-repo
+fixture. ⚠ jcodemunch-mcp rotates into a ROOT-LEVEL `ISSUE-HISTORY.md`; copying
+that choice here is the specific mistake the gate exists to stop.
+
+⚠ **The sibling repo is why this exists.** jcm's `CLAUDE.md` hit 200,543 chars
+and stopped loading on 2026-08-21 while its size practice was being followed —
+the practice named one section and the growth was everywhere else. **A rule that
+names one section licenses every other section to grow**, and a budget stated
+only in prose is not a budget.
 
 ## Purpose
 Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp (which owns code symbols). Do NOT add code/docstring parsing here.

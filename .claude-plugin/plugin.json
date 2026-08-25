@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "jdocmunch",
   "displayName": "jDocMunch",
-  "version": "1.134.1",
+  "version": "1.136.0",
   "description": "Token-efficient MCP server for structured documentation retrieval via section-level indexing",
   "author": {
     "name": "J. Gravelle",
@@ -10,7 +10,7 @@
   },
   "homepage": "https://github.com/jgravelle/jdocmunch-mcp#readme",
   "repository": "https://github.com/jgravelle/jdocmunch-mcp",
-  "license": "LicenseRef-Dual-Use",
+  "license": "LicenseRef-jDocMunch-Dual-Use",
   "keywords": [
     "docs",
     "mcp",

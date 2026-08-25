@@ -1,5 +1,166 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.136.0] - 2026-08-23 - The one string that survives tool deferral
+
+### Added - the one string that survives tool deferral
+
+The MCP `initialize` response now carries an `instructions` string. It did not
+before: the transport called `create_initialization_options()` bare, so the
+field went out empty and nothing anywhere said so.
+
+The cost is invisible in a normal session and concentrated in a deferred one. A
+host over its schema budget sends tool NAMES and withholds the JSONSchemas until
+a `ToolSearch`-style lookup fetches them. That is 64 bare strings here,
+with none of the descriptions. The spec delivers `instructions` on a separate
+track from the tool list, so it arrives whole - in a plain MCP client with no
+hooks and no skill listing it is the entire steering budget this server gets.
+
+It does two things, in this order: load the working set in ONE lookup, a round
+trip for the session instead of two calls per use, then a decision rule per tool
+rather than a feature summary. 909 characters against a 1,000 cap; nothing
+proves a longer string survives un-truncated.
+
+### Fixed - `serverInfo` named the SDK's version, not ours
+
+`Server("jdocmunch-mcp")` was constructed with no `version=`, so the SDK filled the
+field with its own package version. Every host that displays a server version
+displayed the mcp package number instead of 1.135.1.
+
+⚠⚠ **Green tests do not prove the wire carries a real number.**
+`__version__` falls back to `"unknown"` when distribution metadata is absent,
+which is every `PYTHONPATH=src` run. That fallback is deliberate and older than
+this fix: `"unknown"` is an honest could-not-establish, where the SDK's number
+was a confident answer about a different package.
+
+### The tests
+
+`tests/test_mcp_instructions.py` binds the prose to the catalog, because prose
+is what rots. It fails when the string names a tool the server does not
+dispatch, when the `select:` query and the bullet list disagree about what to
+load, and - parsing the dispatcher's own AST - when `server.run()` goes back to
+a bare `create_initialization_options()`.
+
+⚠⚠ **A handshake that sends nothing raises no error and serves every
+request normally, so the only witness is a test.** Each of the three guards was
+verified by reintroducing the defect it names and watching it fail, not only by
+watching it pass.
+
+⚠ Ported from jcodemunch-mcp v1.108.292. **A setting fixed in one repo of
+a suite is fixed in one repo** - both defects were present here, unchanged,
+and neither had a symptom anyone could have reported.
+
+## [1.135.1] - 2026-08-20 - The licence became something you can point at
+
+A licensing release, no behaviour change. PyPI published neither `info.license`
+nor `info.license_expression` for this package, so an organisation with a
+commercial licence had nothing to allowlist — not a wrong identifier, no
+identifier. It has one from this version.
+
+### The aside came out of the LICENSE
+
+`He's kinda full of himself.` sat inside condition 2, in the middle of the
+derivation-and-attribution obligation. It stays in jCodeMunch's README, where it
+reads as the author's voice; a licence is the document a customer's counsel reads
+before allowlisting, and a joke inside an operative clause makes a reader stop
+and work out whether it is operative.
+
+⚠ **Editorial, and deliberately so.** It grants and removes nothing, so the
+licence version and the identifier are untouched — a downstream allowlist on
+this identifier is not churned. jcodemunch-mcp #521 pins that distinction with a
+digest; these files state no licence version yet, so the same routing is a
+convention here rather than a check.
+
+### PyPI published no license identifier at all (#122, @marcelruhf)
+
+`pyproject.toml` had no `license` key, so PyPI left `info.license` and
+`info.license_expression` empty and a commercial user could not allowlist us
+by identifier. Packaging metadata is PEP 639 now:
+`license = "LicenseRef-jDocMunch-Dual-Use"` plus
+`license-files = ["LICENSE"]`.
+
+The LICENSE file still ships, at `dist-info/licenses/LICENSE` in the wheel.
+
+⚠ **PyPI metadata is immutable per version, so 1.135.1 is where this starts.**
+Every version up to and including 1.135.0 keeps empty licence fields, permanently.
+
+⚠⚠ **The report named one surface and the licence is declared on three.**
+`.claude-plugin/plugin.json` and the mcpb manifest both said
+`LicenseRef-Dual-Use` — no product prefix — so an allowlist keyed on the
+identifier still needed two entries. That is the reported defect one surface
+over, and fixing only what was reported would have left it. Both now name the
+same identifier, and the mcpb generator DERIVES it from `pyproject.toml` rather
+than carrying its own copy, which is how the two spellings drifted apart to
+begin with.
+
+⚠ **LICENSE has no Version line, so the identifier has no version suffix.**
+jcodemunch-mcp #518 pins the suffix to LICENSE's `Version X.Y` so 1.2 cannot
+ship under 1.1's identifier. The same ratchet is here: if a Version line
+appears without a matching suffix (or the reverse), the build fails.
+`tests/test_license_identifier_agreement.py` is that pin.
+
+## [1.135.0] - 2026-08-18 - list_repos stops parsing the files it throws away
+
+`list_repos` globbed `*/*.json` and excluded only `_`-prefixed files and
+`.summary.json`, so it opened and json-parsed every `.terms.json`,
+`.related.json`, `.boilerplate.json` and `.duplicates.json` sidecar in the
+store, then discarded each one for lacking primary-index fields. Reported by
+@rknighton ([#121](https://github.com/jgravelle/jdocmunch-mcp/issues/121)) with
+a controlled 75-index comparison: adding only the 300 auxiliary sidecars owned
+by those same indexes moved the median from 2,044.2 ms to 3,459.5 ms with
+non-overlapping ranges, and 300 extra parses. This is a documented first-call
+hot path, also hit by the PreCompact snapshot hook.
+
+⚠⚠ **The filter is keyed on the SIDECAR SUFFIX, not on whether a primary index
+sits beside it, and the reporter is the reason.** Keying on the primary fixes
+the live case and leaves the worse one alone: a store that lost an index to a
+pre-1.108.0 `delete_index` still carries all four of its sidecars, and those
+were being parsed in full to return no row at all. Their store held 1,093 such
+files — **2.0 GB opened on every call to produce nothing**, of which
+`.related.json` was 98.3% and a single file was 1.24 GB. Their reproduction
+ships both arrangements for exactly this reason.
+
+⚠ **The counts are the assertion, not the rows.** The primary-absent case
+returns zero repositories before and after, so a row-count test passes against
+the unfixed code. The regression tests patch `json.load` and assert on what was
+opened.
+
+⚠ **Repo names may contain dots** (`is_safe_path_component` allows
+`[A-Za-z0-9._-]`), so a repo genuinely named `api.related` writes its PRIMARY
+monolith to `api.related.json` — a bare suffix test would have quietly removed
+it from the listing, trading a performance fix for a repo that stopped
+existing. A candidate that looks like a sidecar is readmitted when it has its
+own `.summary.json`: every index saved since jdoc#77 writes one, and nothing
+anywhere writes a summary beside a real sidecar. One `stat`, no parse.
+⚠ A pre-jdoc#77 legacy index whose name ends in a sidecar suffix has no summary
+to vouch for it and is not listed — recorded rather than solved, because the
+only way to tell it from an orphaned sidecar is to open the file, which is the
+cost being removed.
+
+⚠⚠ **The suffix tuple existed in three hand-copied places and the copy that
+mattered was never written at all.** `delete_index` had one, `_leftover_artifacts`
+had another, `list_repos` had none — which IS #121. Now one
+`INDEX_OWNED_SIDECAR_SUFFIXES` in `storage/doc_store.py`, read by all three,
+with a test that derives each suffix from the module that WRITES it and fails
+if one is missing. A fifth sidecar cannot be added without joining the list.
+
+⚠ One test asserts each suffix **alone**, with no siblings beside it. A filter
+that reasoned from the sidecar set (`.related` is a sidecar because `.terms`
+sits next to it) would pass every other test here and then parse that 1.24 GB
+file once its peers were cleaned up by hand.
+
+Measured locally on a synthetic 40-index store, 23.1 MB of which 22.8 MB is
+`.related.json` — **not** the reporter's fixture, which is private: json loads
+200 → 40, median 188.9 ms → 8.0 ms over 5 runs. The ratio is a property of that
+store's sidecar bytes, so take the load counts as the durable claim and the
+milliseconds as an illustration.
+
+Tests `tests/test_jdoc_121_list_repos_sidecars.py` (13). ⚠ The file cannot
+IMPORT pre-fix, so non-vacuity used a behaviour-only subset: **9 fail / 1
+pass**, the pass being the `_`-prefix control. Suite **2582 / 6**;
+`ruff check src/` clean. No tool, schema or INDEX_VERSION change.
+
 ## [1.134.1] - 2026-08-16 - The tag attests the artifact
 
 Provenance repair. No code change, no behavior change, nothing to act on if you
