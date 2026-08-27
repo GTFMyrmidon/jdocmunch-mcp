@@ -1,9 +1,9 @@
 # jdocmunch-mcp
 
-**Version:** 1.135.1 |
+**Version:** 1.136.1 |
 **Tests:** `PYTHONPATH=src pytest tests/ -q`
 
-- **Unreleased - the one string that survives tool deferral.** The MCP `initialize` response now carries an `instructions` string; it did not before, because the transport called `create_initialization_options()` bare and the field went out empty. ⚠⚠ **Invisible in a normal session, CONCENTRATED in a deferred one**: a host over its schema budget ships tool NAMES and withholds the JSONSchemas, so an agent sees 64 bare strings and none of the descriptions. The spec delivers `instructions` on a SEPARATE TRACK from the tool list, so it arrives whole - in a plain MCP client it is the entire steering budget this server gets. 909 chars against a 1,000 cap. ⚠ Also sets `Server(..., version=__version__)`: without it the SDK reports ITS OWN version in `serverInfo`. ⚠ `__version__` is `"unknown"` under `PYTHONPATH=src`, so a green test does NOT prove the wire carries a real number. ⚠⚠ **Ported from jcodemunch-mcp v1.108.292 - both defects were present here unchanged, and neither had a symptom anyone could report.** ⚠⚠ **The port also reproduced a NameError in BOTH repos** (`logger` through a module-level name neither server.py defines) and **only jdoc caught it** - jdata's suite was GREEN with the identical bug, because it had no F821 gate. jdoc's `test_lint_gate_regressions.py` did its job. **A setting fixed in one repo of a suite is fixed in one repo, and that applies to the GATES as much as the code.** `tests/test_mcp_instructions.py` binds the prose to the catalog; all three guards were verified by reintroducing the defect each names.
+- **v1.136.0 - the one string that survives tool deferral.** The MCP `initialize` response now carries an `instructions` string; it did not before, because the transport called `create_initialization_options()` bare and the field went out empty. ⚠⚠ **Invisible in a normal session, CONCENTRATED in a deferred one**: a host over its schema budget ships tool NAMES and withholds the JSONSchemas, so an agent sees 64 bare strings and none of the descriptions. The spec delivers `instructions` on a SEPARATE TRACK from the tool list, so it arrives whole - in a plain MCP client it is the entire steering budget this server gets. 909 chars against a 1,000 cap. ⚠ Also sets `Server(..., version=__version__)`: without it the SDK reports ITS OWN version in `serverInfo`. ⚠ `__version__` is `"unknown"` under `PYTHONPATH=src`, so a green test does NOT prove the wire carries a real number. ⚠⚠ **Ported from jcodemunch-mcp v1.108.292 - both defects were present here unchanged, and neither had a symptom anyone could report.** ⚠⚠ **The port also reproduced a NameError in BOTH repos** (`logger` through a module-level name neither server.py defines) and **only jdoc caught it** - jdata's suite was GREEN with the identical bug, because it had no F821 gate. jdoc's `test_lint_gate_regressions.py` did its job. **A setting fixed in one repo of a suite is fixed in one repo, and that applies to the GATES as much as the code.** `tests/test_mcp_instructions.py` binds the prose to the catalog; all three guards were verified by reintroducing the defect each names.
 
 ⚠ **`tests/` is shipped inside the sdist, so anything dropped there is
 distributed.** `tests/infographic.png` — a 5.9 MB promotional image, referenced
@@ -985,6 +985,22 @@ Tests: `test_gitignore_dot_directories.py` (20; **10 fail pre-fix**, 10 controls
 pass BOTH sides), `test_dedup_ceiling.py` (17), `test_unknown_arguments.py` (15,
 incl. a whole-catalog round-trip proving no tool flags its OWN declared args),
 `test_verify_index_source_layer.py` (19, the reporter's 4-file fixture).
+
+⚠⚠ **A SECOND blindness in the same tool, found 2026-08-25 by sweeping for jcm
+v1.108.298's defect class, SHIPPED IN v1.136.1 (#125)**: the comparison was `if expected_hash and actual !=
+expected`, so a section with **no stored hash** fell to the `else` and was
+counted **CLEAN**. Unverifiable is not verified, and a caller gating on
+`drift_count == 0` reads the two identically. ⚠⚠ **The accounting invariant
+`clean+drift+missing+error+skipped == section_count` still held** -- the row was
+counted, just misfiled -- so a totals check cannot see this class at all. Now
+`skipped` with reason `no_stored_hash`, beside `empty_byte_range`. ⚠ **LATENT,
+not live**: every producer goes through `compute_content_hash()` (sha256 of ""
+for an empty body, never `""`), but `Section.content_hash` DEFAULTS to `""` and
+the text parsers assign it at the END of a loop, so one early return
+reintroduces it silently. `TestTheProducerIsCurrentlyClean` pins that premise
+and fails if it ever goes live. ⚠ The non-vacuity test EXECUTES the pre-fix
+module source; simulating it by patching `hashlib.sha256` broke every section
+and passed for the wrong reason.
 Suite **2144 passed / 6 skipped / 0 failed**. No INDEX_VERSION change.
 
 ## v1.123.0 — offloadable-work annotation, OFF BY DEFAULT
