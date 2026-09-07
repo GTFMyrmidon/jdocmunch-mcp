@@ -201,6 +201,17 @@ def _initialization_options():
 # Mirrors jcodemunch-mcp's _TOOL_TIER_* design (issue #297).                  #
 # Config via JDOCMUNCH_TOOL_PROFILE ("core" | "standard" | "full"; default    #
 # "full"). Config via JDOCMUNCH_DISABLED_TOOLS (comma-separated tool names).  #
+#                                                                             #
+# ⚠⚠ MEASURED 2026-08-30, benchmarks/tool_surface/: at 64 tools / 13,252      #
+# schema tokens, `core` drops 62.08% of the payload and `standard` drops       #
+# 9.39% (8 tools). **`standard` is not a token lever** — pick it because you   #
+# want the doc tools without the OpenAPI and telemetry surfaces, not to shrink #
+# the payload; pick `core` for that. It stays because removing a shipped       #
+# profile breaks a 1.x config, and a setting that implies a saving it does not #
+# deliver is the same defect class as an unstated basis.                       #
+# ⚠ Those tokens are PAYLOAD SIZE, not a per-request saving — see              #
+# `schema_basis`. The schema block is stable, so it is paid at full rate about #
+# once per cache lifetime and at cache-read rates thereafter.                  #
 # --------------------------------------------------------------------------- #
 _TOOL_TIER_CORE: frozenset[str] = frozenset({
     # Indexing
@@ -335,14 +346,22 @@ def _catalog_names() -> set[str]:
     return {t.name for t in _all_tools() if t.name not in _COUNTER_FRONT_DOOR}
 
 
-def _filter_tools(tools: list[Tool]) -> list[Tool]:
-    """Apply tool_surface + tool_profile + disabled_tools filtering."""
-    if _effective_surface() == "counter":
+def _filter_tools(tools: list[Tool], profile_override: str | None = None) -> list[Tool]:
+    """Apply tool_surface + tool_profile + disabled_tools filtering. Preserves order.
+
+    `profile_override` prices a tier WITHOUT switching to it: the meter and the
+    benchmark ask what a profile would publish, and answering by mutating the
+    environment would change the session to answer a question about it. An
+    unrecognized override falls back the same way the env var does.
+    """
+    if _effective_surface() == "counter" and profile_override is None:
         front_door = _apply_readonly_annotations(_counter_front_door_tools())
         always = [t for t in tools if t.name in _ALWAYS_PRESENT_TOOLS]
         return front_door + always
 
-    profile = _get_tool_profile()
+    profile = profile_override.strip().lower() if profile_override else _get_tool_profile()
+    if profile not in _PROFILE_TIERS:
+        profile = "full"
     allowed = _PROFILE_TIERS.get(profile)
     if allowed is not None:
         tools = [t for t in tools if t.name in allowed or t.name in _ALWAYS_PRESENT_TOOLS]
@@ -354,25 +373,57 @@ def _filter_tools(tools: list[Tool]) -> list[Tool]:
     return tools
 
 
-def _tool_surface_stats(top_n: int = 15) -> dict:
-    """Schema token weight of the visible tool surface vs the full catalog."""
+def _build_tools_list(profile_override: str | None = None) -> list[Tool]:
+    """The tool list a client actually receives, for a profile.
+
+    ⚠⚠ The ONE producer of the published surface. `list_tools`, the meter and
+    the tier benchmark all route through it. jcodemunch's first tier
+    measurement filtered the raw catalog by the tier bundle instead and was
+    wrong by three tools in every tier — it kept a hidden tool set, dropped the
+    force-included ones, and priced a surface no client is ever sent.
+    """
+    return _apply_readonly_annotations(_filter_tools(_all_tools(), profile_override))
+
+
+def _schema_weight(tool: Tool) -> int:
+    """Schema token weight of ONE tool, estimator bytes/4.
+
+    ⚠ The single producer of this number. It was a closure inside
+    `_tool_surface_stats` until the tier benchmark needed the same scale; two
+    weighers that agree digit for digit today are what make a later divergence
+    invisible. Pinned by `tests/test_schema_tokens_basis.py`.
+    """
     import json as _json
 
-    def _weight(tool: Tool) -> int:
-        payload = _json.dumps(
-            {
-                "name": tool.name,
-                "description": tool.description or "",
-                "inputSchema": tool.inputSchema or {},
-            },
-            separators=(",", ":"),
-            default=str,
-        )
-        return max(1, len(payload.encode("utf-8")) // 4)
+    payload = _json.dumps(
+        {
+            "name": tool.name,
+            "description": tool.description or "",
+            "inputSchema": tool.inputSchema or {},
+        },
+        separators=(",", ":"),
+        default=str,
+    )
+    return max(1, len(payload.encode("utf-8")) // 4)
+
+
+def _tool_surface_stats(top_n: int = 15) -> dict:
+    """Schema token weight of the visible tool surface vs the full catalog.
+
+    Suite parity with jcodemunch-mcp v1.108.153. Estimated at the meter's
+    bytes/4 scale over the {name, description, inputSchema} serialization.
+    Advisory receipt only — never blocks, nothing persisted.
+
+    ⚠⚠ Every token figure here carries `schema_tokens_basis`. A bare
+    "tokens avoided" count has no time basis and a reader supplies the wrong
+    one — PER REQUEST — when the block is stable and is paid at full rate
+    roughly once, then at cache-read rates. See `schema_basis`.
+    """
+    from .schema_basis import SCHEMA_TOKENS_BASIS, SCHEMA_TOKENS_BASIS_NOTE
 
     catalog_tools = _all_tools()
-    visible = {t.name: _weight(t) for t in _filter_tools(catalog_tools)}
-    catalog = {t.name: _weight(t) for t in catalog_tools}
+    visible = {t.name: _schema_weight(t) for t in _build_tools_list()}
+    catalog = {t.name: _schema_weight(t) for t in catalog_tools}
     visible_total = sum(visible.values())
     catalog_total = sum(catalog.values())
     heaviest = dict(sorted(visible.items(), key=lambda kv: -kv[1])[:top_n])
@@ -385,6 +436,8 @@ def _tool_surface_stats(top_n: int = 15) -> dict:
         "schema_tokens_visible": visible_total,
         "schema_tokens_catalog": catalog_total,
         "schema_tokens_avoided": max(0, catalog_total - visible_total),
+        "schema_tokens_basis": SCHEMA_TOKENS_BASIS,
+        "schema_tokens_basis_note": SCHEMA_TOKENS_BASIS_NOTE,
         "heaviest_tools": heaviest,
         "estimator": "bytes/4",
     }
@@ -626,7 +679,7 @@ def _apply_readonly_annotations(tools: list[Tool]) -> list[Tool]:
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List all available tools."""
-    return _apply_readonly_annotations(_filter_tools(_all_tools()))
+    return _build_tools_list()
 
 
 def _all_tools() -> list[Tool]:
@@ -634,7 +687,7 @@ def _all_tools() -> list[Tool]:
     return [
         Tool(
             name="index_local",
-            description="Index a local folder containing documentation files (.md, .txt, .rst; plus .pdf/.docx/.pptx/.epub when the optional [office] extra is installed — converted to Markdown locally). Parses by heading hierarchy into sections for efficient retrieval. An already-indexed source is recognized before storage is chosen: the established handle is reused (or refreshed), an explicit conflicting name returns a conflict instead of creating a duplicate index, and multiple equivalent legacy indexes return bounded ambiguity. Embeddings auto-enable when a provider is configured (GOOGLE_API_KEY, OPENAI_API_KEY, openai-compatible + JDOCMUNCH_OPENAI_COMPAT_URL + JDOCMUNCH_OPENAI_COMPAT_MODEL, or sentence-transformers).",
+            description="Index a local folder containing documentation files (.md, .txt, .rst; plus .pdf/.docx/.pptx/.epub when the optional [office] extra is installed — converted to Markdown locally). Parses by heading hierarchy into sections for efficient retrieval. An already-indexed source is recognized before storage is chosen: the established handle is reused (or refreshed), an explicit conflicting name returns a conflict instead of creating a duplicate index, and multiple equivalent legacy indexes return bounded ambiguity. Embeddings auto-enable when a provider is configured (GOOGLE_API_KEY, OPENAI_API_KEY, openai-compatible + JDOCMUNCH_OPENAI_COMPAT_URL + JDOCMUNCH_OPENAI_COMPAT_MODEL, or sentence-transformers). Coverage: `coverage_complete` answers 'did I get everything', with `skip_counts` / `skipped_paths` naming what was dropped and why; `truncated` answers ONLY the max_files cap and is false when a file was dropped for any other reason. Files over the per-file size cap (5MB default, JDOCMUNCH_MAX_FILE_SIZE) are reported under skip_counts.oversize.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2111,10 +2164,13 @@ def _all_tools() -> list[Tool]:
             name="find_similar_sections",
             description=(
                 "Multi-signal section dedup detection. Fuses embedding cosine "
-                "(when available) with title + body lexical Jaccard, clusters via "
-                "union-find, ranks each cluster's canonical by backlink_count + "
-                "size. Verdict tiers: near_duplicate, overlapping_topic, "
-                "parallel_tutorial. Read-only."
+                "(when available) with lexical Jaccard over the section title and "
+                "its ACTUAL body bytes, clusters via union-find, ranks each "
+                "cluster's canonical by backlink_count + size. Verdict tiers: "
+                "near_duplicate, overlapping_topic, parallel_tutorial. Each "
+                "cluster and variant carries signal=body|title_only; a title_only "
+                "comparison had no body evidence and is never near_duplicate. "
+                "Read-only."
             ),
             inputSchema={
                 "type": "object",
@@ -3301,7 +3357,7 @@ async def run_sse_server(host: str, port: int):
             await server.run(
                 read_stream,
                 write_stream,
-                server.create_initialization_options(),
+                _initialization_options(),
             )
 
     middleware = []
@@ -3446,7 +3502,7 @@ async def run_streamable_http_server(host: str, port: int):
                     await server.run(
                         read_stream,
                         write_stream,
-                        server.create_initialization_options(),
+                        _initialization_options(),
                     )
             except asyncio.CancelledError:
                 pass

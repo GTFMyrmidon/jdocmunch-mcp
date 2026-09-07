@@ -2,6 +2,580 @@
 
 ## [Unreleased]
 
+## [1.139.1] - 2026-09-01 - the Sonnet rate was written for a date that never arrived
+
+### Fixed - the Sonnet rate in `PRICING` was written for a date that never arrived
+
+`token_tracker.PRICING["claude_sonnet"]` was `$3.00 / 1M` input tokens. Claude
+Sonnet 5 is **$2.00 / 1M** and always has been: it launched at $2.00 with an
+increase to $3.00 scheduled for 2026-09-01, and Anthropic cancelled that
+increase the day before it would have applied. $3.00 is the superseded Sonnet
+4.6's rate, which the line's comment ("Claude Sonnet 5 / 4.6") conflated with
+Sonnet 5's.
+
+⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
+before it, and reads identically to a stale one.** The table's header said "As
+of 2026-06-24", which made the value look checked. It was wrong on that date
+too.
+
+⚠ **A key that names a FAMILY inherits whichever member's price someone last
+looked at.** Three of the four keys are family names; each comment now names
+the one model its rate belongs to. The **keys are unchanged** - `claude_sonnet`
+is emitted verbatim in the `cost_avoided` block of every retrieval response, so
+renaming it would be a wire change on 1.x.
+
+Verified 2026-09-01 against the Model pricing table's *Base Input Tokens*
+column at <https://platform.claude.com/docs/en/about-claude/pricing>, including
+the note recording that the scheduled increase "will not occur". ⚠ **Re-read
+the source page, not another copy of the table** - four copies of this rate
+exist across the suite and they agreed with each other while being wrong
+together, which is why nothing caught it.
+
+⚠ **`gpt5_latest` is untouched.** It is not an Anthropic model, no source was
+consulted for it, and it is pinned at the value it shipped with so that a drift
+is visible - not because $10.00 was verified.
+
+`TOKEN_SAVINGS.md` published the same rate plus two figures derived from it
+(`0.0055` / `0.2830` in the worked `_meta` example); both were recomputed.
+
+### Added - value pins for the pricing table
+
+`tests/test_pricing_rates.py` (4). The only prior reference to `PRICING` was a
+key-presence check (`tests/test_storage.py:259`), so no test pinned any value
+and a wrong rate could sit here indefinitely. The expected prices are
+**restated** from the source page rather than imported from the module - a pin
+that reads the value it checks asserts nothing. Proven non-vacuous: with the
+$3.00 put back, 3 of the 4 fail.
+
+## [1.139.0] - 2026-08-30 - A token count with no time basis, and a tier that is not a lever
+
+### Fixed - `schema_tokens_avoided` shipped a count with no time basis
+
+`get_session_stats`'s `tool_surface` block reported `schema_tokens_avoided`
+beside `schema_tokens_visible` / `schema_tokens_catalog` with nothing saying
+over what interval. A reader supplies the missing basis, and supplies the wrong
+one: **per request**.
+
+⚠⚠ **The tool-schema block is stable across requests**, so it is paid at full
+rate roughly once per cache lifetime and at cache-read rates (~0.1x) thereafter.
+jcodemunch-mcp measured **86% of baseline input cached** (1,938,176 of 2,247,575
+tokens, `benchmarks/codex_surface/`) and states in its own words that the
+"N tokens in every request" framing is wrong - *and that the repository said
+exactly that before measuring*. Read per-request, the field overstated the cost
+impact by roughly an order of magnitude, **in the direction that flatters us.**
+
+The response now carries `schema_tokens_basis` and `schema_tokens_basis_note`
+beside every count. ⚠ **The arithmetic is untouched, deliberately.** The count
+answers a real question - how much payload the surface carries - and a silently
+discounted one answers neither that nor the cost question. Same rule as
+`analyze_perf`'s raw `hit_rate` kept beside `hit_rate_basis`. Additive keys
+only; no existing key changed meaning.
+
+⚠ **The constants live in ONE module** (`schema_basis.py`) and are imported. A
+second copy that agrees today is what makes a later divergence invisible.
+
+⚠⚠ **Ported from jcodemunch-mcp 1.108.312. Its SIBLING release, 1.108.311, was
+deliberately NOT ported**: that one refuses a mid-session tool-tier switch that
+cannot repay the prompt cache it invalidates, and the defect cannot occur here -
+`JDOCMUNCH_TOOL_PROFILE` is read at startup and there is no runtime switch, so
+there is no invalidation to price. Porting the gate would be machinery for a
+mechanism we do not have. A ratchet fails the day a
+`notifications/tools/list_changed` appears in `src/` without a pricing helper
+beside it, and names the module to port from. **Proven non-vacuous by adding the
+forbidden call and watching it fire** - it is the one new test that passes
+against the unfixed tree, so it is the one that needed proving.
+
+⚠ **jdatamunch-mcp still ships the field unbased** as of 2026-08-30, checked and
+not fixed from this session.
+
+### Added - the tool-profile tiers are measured, and `standard` is not a token lever
+
+`benchmarks/tool_surface/` - a regenerable harness plus its JSON artifact. It
+reads the tier lists **live from `server._build_tools_list`**, the same function
+`list_tools` returns, and weighs them with the server's own `_schema_weight`.
+
+⚠⚠ **Weigh what the client RECEIVES, not the catalog filtered by the tier
+bundle.** jcodemunch's first attempt did the latter and was wrong by three tools
+in every tier: it kept a hidden tool set and dropped force-included ones,
+pricing a surface no client is ever sent. Here `_ALWAYS_PRESENT_TOOLS` and
+`JDOCMUNCH_DISABLED_TOOLS` both change the answer and only the builder knows it.
+
+Measured at 64 tools / 13,252 schema tokens: **`core` drops 62.08% of the
+payload (49 tools). `standard` drops 9.39% (8 tools)** - `analyze_perf`,
+`check_embedding_drift`, `find_endpoint`, `find_operations_using_schema`,
+`get_schema_graph`, `get_session_stats`, `list_endpoints_by_tag`,
+`tune_weights`, i.e. the whole OpenAPI query surface for a tenth of the payload.
+jcm's `standard` measured 9 of 91 tools and 6.7%; the shape is the same in both.
+
+⚠ **`standard` stays and is documented, not deleted.** Removing a shipped
+profile breaks an existing 1.x config. But a setting that implies a saving it
+does not deliver is the same defect class as an unstated basis, so the config
+comment now says what it is: a scope choice, not a token lever. Choose `core`
+for that.
+
+⚠ `list_tools`, the meter and the benchmark now share one builder and one
+weigher; the closure inside `_tool_surface_stats` is gone. `_filter_tools`
+takes a `profile_override` so a tier can be priced **without switching to it** -
+answering a question about a surface must not mutate the session's.
+
+`tests/test_schema_tokens_basis.py` (9). **8 of the 9 were run against the
+unfixed tree and failed there**; the ninth is the ratchet described above.
+
+### Changed - the brief rotates, and three of its claims are now bound to what they describe
+
+No version bump: documentation and tests only, no `src/` change.
+
+**`CLAUDE.md` 122,832 -> 61,332 chars.** 31 dated `## vX.Y.Z` sections had grown
+to **74.7% of the file** (91,699 chars) against a 130,000 budget. The three
+newest stay; v1.116.0 through v1.135.0 moved VERBATIM into
+`docs/CLAUDE-history.md`.
+
+⚠⚠ **The lever was real and the proposed remedy was wrong.** The brief driving
+this work said to create a root-level `ISSUE-HISTORY.md`, copying
+jcodemunch-mcp. **That is the specific mistake `tests/test_claude_md_size.py`
+exists to stop**, and it says so in its own docstring: the replay self-fixture
+indexes `repo_path: "."`, and `CLAUDE.md` and `docs/CLAUDE-history.md` are both
+in its `extra_ignore_patterns`. A new root-level path would move ~74KB of
+tool-keyword-dense release prose back into the retrieval corpus and re-break the
+same three CHANGELOG goldens - measured once at nDCG 0.906 against a 0.95 gate
+with recall still 1.0. The rotation target was already established and already
+existed; only the rotation itself was overdue.
+
+⚠⚠ **Four standing operational rules were orphaned under a DATED heading and
+would have rotated away with it.** The `tests/`-ships-in-the-sdist warning, the
+gitignored-`uv.lock` note, the numpy-is-dev-only rule and the CI-reproduce
+command all sat inside `## v1.137.0`. **A standing rule filed under a dated
+heading has an expiry date nobody chose.** They now live in a new
+`## Standing operational notes (jdoc-specific)` section, and a
+`## Lessons from rotated entries` section carries what the other 28 entries
+earned, each naming the version whose evidence is in the archive.
+
+### Fixed - the documented CI-reproduce command did not build CI's environment
+
+`CLAUDE.md` told a human to reproduce CI with `uv run --python 3.13 python -m
+pytest tests/ -q`. **There is no sync in that command**, so it ran against
+whatever `.venv` happened to hold - it inherited a state it did not create,
+while `.github/workflows/test.yml` installs with `uv sync --group dev` first.
+
+⚠⚠ jcm shipped this exact command and measured what it costs: the run came back
+**exit 0 with the totals reconciling exactly** while `passed` fell 8,721 to
+8,634 and `skipped` rose 19 to 124 - **105 tests silently did not execute**.
+Exit code and total were both "green". **Read the SKIP count.**
+
+⚠ **jcm's command is NOT the fix here.** Its `uv sync --locked --group dev
+--extra watch` fails in this repo: `uv.lock` is gitignored so `--locked` cannot
+work, and there is no `watch` extra. The documented command is now
+`uv sync --group dev --python 3.13` then `uv run --python 3.13 pytest tests/ -q`.
+
+### Added - three claims that only lived in a gitignored, machine-local skill
+
+The full release checklist lives in the `release` skill, which is **gitignored
+and therefore machine-local**. A fresh clone, another box, or a session without
+it loaded has none of it. Two items are restated in `CLAUDE.md` because each has
+already cost an incident:
+
+- **Read CI for the pushed SHA BEFORE any irreversible step.** ⚠⚠ This matters
+  more here than anywhere else in the suite: jdatamunch auto-releases behind a
+  `workflow_run` gate requiring Tests to have passed, and **jdoc has no release
+  workflow at all**, so every irreversible step is taken by a human who can take
+  it against a red build. Four consecutive jcm releases were published, tagged
+  and PyPI-uploaded on a red lint nobody read.
+- **The MCP registry's rows are nested** - `{server: {...}, _meta: {...}}`, with
+  `isLatest` under `_meta`. A flat `row["name"]` read returns ZERO rows on a
+  publish that completely succeeded, and unlike the known paging trap it
+  **survives `&limit=100`**, so the documented remedy does not help and the
+  symptom is indistinguishable from failure. **A zero-row read is never grounds
+  to re-publish.** Read-after-write lag is real; absence is not evidence of
+  failure.
+
+The header test command now matches the suite rule (`python -m pytest`, not a
+bare `pytest` shim), with the reason stated rather than the form asserted.
+
+### Added - `tests/test_brief_bindings.py` (14)
+
+Prose is what drifted, so the durable half is bindings, not better prose. Each
+asserts a PROPERTY that survives a rewording: the documented reproduce command
+carries the same sync flags as `test.yml` and never `--locked`; the brief says
+to read CI before the irreversible steps; it carries the nested-row warning and
+the do-not-re-publish rule; at most three dated sections remain; and every dated
+heading present at the previous commit now lives in **exactly one** of
+`CLAUDE.md` and `docs/CLAUDE-history.md` - not zero, not both.
+
+⚠ **Seven were seen RED against the unfixed file before any edit.** ⚠⚠ Three of
+them were then found to be wrong BY THEMSELVES rather than by review, which is
+the argument for writing them first: one asserted `"packages" in brief` and
+passed against the unfixed file by matching `site-packages`; one anchored on the
+literal phrase `reproduce CI with` and broke when the fix reworded it; one took
+the FIRST `reproduce CI` in the file and had it stolen by a cross-reference
+added in the same session. **A binding that passes for the wrong reason reports
+the hole as covered.**
+
+
+## [1.138.0] - 2026-08-29 - A two-channel fusion reported over one channel counted twice, and a 1.25 MB document on the floor
+
+Four findings, all reported from OUTSIDE this repo while doc-indexing
+`jcodemunch-mcp` from a jcodemunch session. The tracker was clean when the work
+started (0 open issues, 0 open PRs, re-verified rather than trusted).
+
+### #129 - `find_similar_sections` scored summaries and called them bodies
+
+The tool advertised a fusion of "title + body lexical Jaccard". **It had no body
+channel.** `body_text = sec.get("summary")` was unconditional, and under
+`index_local(use_ai_summaries=False)` a summary IS the heading text - documented
+in the tool's own schema. So `body_tokens == title_tokens`, and the
+no-embeddings score `0.70 * body_jac + 0.30 * title_jac` was **one input
+weighted against itself**.
+
+⚠⚠ **The interesting part is not that a score was wrong. It is that a
+two-channel fusion was reported over one channel counted twice**, with a
+`dominant_signal` naming which of the two channels won. Any two sections
+sharing a heading name scored exactly 1.0 and came back `near_duplicate`.
+Measured on a 955-section corpus: **8 of 8 clusters were that artifact** - four
+files with an `Architecture` heading, two with `Watch mode`. Ground truth on one
+such "identical" pair: 1,105 bytes of ASCII sequence diagram against a
+`> **Version note:**` paragraph.
+
+⚠ **The tool's own diff output was the tell it could not read.** Every variant
+returned `body_unique_a: []` AND `body_unique_b: []`. "No unique content on
+either side" is indistinguishable from "I did not read either side", and two
+sections with different byte ranges cannot be both.
+
+**The body channel now reads the section's actual bytes.** The cost was measured
+rather than assumed, because the comment being deleted named a real tradeoff:
+reading every examined body costs **0.24 s** at the default 1000-section cap
+(2.5 s for all 9,507). Deferring the read until after the title pre-filter - the
+obvious optimisation - saves **~6%**, because 899 of 955 sections survive into
+some pair on a doc set with repetitive headings. Not worth two-phase scoring.
+
+⚠⚠ **A pair whose body adds nothing beyond its own title is `title_only` and can
+never be `near_duplicate`.** This is the fail-closed half, and it is what
+protects the case where bytes genuinely cannot be read.
+
+⚠⚠ **An "all pairs were title_only" cap does NOT close it, and the corpus proved
+that.** Union-find merges transitively, so two empty `## Architecture` stubs
+(title_only, score 1.0) join a cluster holding two real, unrelated Architecture
+sections. The cluster then contains a body-bearing pair, passes an all-pairs
+test, and takes its 1.0 from the pair that read nothing. The verdict now rests
+on **`evidence_max_score`** - the best pair that actually compared bodies.
+Reported `max_score` is unchanged, so the two numbers together show exactly what
+happened: that cluster now reads `max_score: 1.0`, `evidence_max_score: 0.3406`,
+`overlapping_topic`.
+
+⚠ The `title_only` refusal is scoped to the lexical-only path deliberately. When
+cosine is available the fusion has a channel that did not come from the title,
+and refusing there would suppress genuine duplicates the embedding channel
+found. Pinned by a test so the scope is not "simplified" away.
+
+⚠ **The sibling was checked and is CLEAN.** `search_sections(dedupe=true)`
+consumes the v1.34 cluster sidecar from `retrieval/dedup.py`, which reads real
+`content`. The defect did not reach ranked search results.
+
+New response keys (additive, 1.x-safe): `signal` on clusters and variants,
+`evidence_max_score` on clusters, `body_signal` inside `differs_by`,
+`body_sources` and `title_only_pairs` in `_meta`. The MCP tool description no
+longer advertises a channel the code does not have, and
+`tests/test_jdoc_129_body_channel.py` binds the description to the behaviour.
+
+⚠⚠ **Both this file's fixtures and the pre-existing
+`tests/test_find_similar_sections.py` now PIN `use_embeddings=False`.** They left
+it at `"auto"`, which turns embeddings on whenever an offline provider happens to
+be installed - so a dev box with fastembed ran a different program from CI, which
+installs neither. Measured: with `"auto"` the two empty-stub sections came back
+at **cosine 1.0** and the guard under test never fired. The v1.137.1 lesson, one
+release later, in a different file.
+
+### #130 - the best retrieval target in the corpus was silently dropped
+
+`jcodemunch-mcp`'s `CHANGELOG.md` is **1,252,519 bytes** and was **not in the
+index at all**. Not gitignored, no error: `index_local` returned
+`file_count: 124`, `success: true` and `truncated: false`.
+
+`DEFAULT_MAX_FILE_SIZE` was **500 KB**. The skip was counted, and
+`coverage.skip_counts` was PERSISTED with the index - **and the response carried
+none of it.**
+
+⚠⚠ **A count computed and withheld at the one moment the caller could act on it
+is the same defect as not computing it.** `truncated` refers only to the
+`max_files` cap, so it was answering a different question truthfully while the
+caller read it as "did I get everything".
+
+**Two halves, and the disclosure is the one that generalises** - it covers every
+future oversize file rather than this one:
+
+- `skip_counts`, `skipped_paths` and `coverage_complete` are now on the response.
+  ⚠ `truncated` KEEPS its documented `max_files` meaning; changing what a shipped
+  key means is forbidden on 1.x. `coverage_complete` is the field it was being
+  misread as.
+- ⚠ `coverage_complete` is keyed on **actionable** skips only. `gitignored` and
+  `unsupported_extension` fire on every real repo (16 and 900 on this corpus);
+  keying on all of them makes it `false` always, and a signal that always fires
+  hides the case it exists for.
+- ⚠⚠ The disclosure is on **all four** response paths, including
+  `"No documentation files found"`. A corpus whose every candidate was dropped
+  for size reported that error verbatim - which reads as "there is nothing here"
+  when the truth is "there is something here and I refused it", and it is the one
+  payload with no `file_count` for a caller to be suspicious of.
+- `skipped_paths` names the file. A caller told `oversize: 1` still cannot tell
+  which file to go and look at. Capped at 20 per reason; the COUNT stays exact
+  and `skipped_paths_truncated` says when the sample is not.
+
+**`DEFAULT_MAX_FILE_SIZE` is now 5 MB, overridable via
+`JDOCMUNCH_MAX_FILE_SIZE`.** ⚠ The number is measured: that real 1.25 MB file
+parses in **1.03 s** with an **8.3 MB** peak into 1,515 sections at a 565-byte
+median, so the parser was never the constraint. ⚠⚠ **The asymmetry is what made
+500 KB indefensible, not the absolute value**: the same walk already granted
+`OFFICE_MAX_FILE_SIZE = 25 MB` to `.pdf`/`.docx`, so the old rule accepted a
+25 MB PowerPoint and refused a 600 KB Markdown file. ⚠ The resolver fails OPEN on
+garbage, `0` and negatives - a typo in an env var must not silently shrink a
+corpus, which is the failure mode this whole change removes. ⚠ The cap is
+resolved at CALL time, not as a default argument, or an env var set after import
+would be read and ignored.
+
+Measured end to end on the reported corpus: **9,624 to 11,138 sections**, full
+re-index 4.7 s. ⚠ The disclosure immediately surfaced a SECOND skip nobody had
+filed - `office_extra_not_installed: 1`, `jcodemunch_whitepaper.pdf` - which had
+been persisted and unreported the whole time. That is the generalising half
+paying for itself on its first run.
+
+### The sdist allowlist guard, ported
+
+jcm 1.108.305 shipped `relnotes.md` - a scratch copy of release notes - inside a
+published sdist, swept up by `git add -A`. **This repo had neither the canary
+tests nor the allowlist**; `pyproject.toml` excluded only `.claude/`.
+
+⚠ The canary half proves NAMED bad paths are absent, and a scratch file has no
+name to plant a canary under. The allowlist catches the class; the denylist
+catches the instance.
+
+`tests/test_sdist_exclusions.py` builds a real sdist and asserts: no canary
+survives an excluded path, nothing ships from one, the allowlist covers every
+root file, **and the allowlist names nothing that has stopped shipping** - a list
+that does not match the artifact is not a guard, and that reverse assertion is
+what catches a wholesale copy of jcm's list (which carries `uv.lock`,
+`Dockerfile` and two dozen root docs this repo does not have).
+
+⚠ Also a per-member size budget. `tests/infographic.png` - 5.9 MB, referenced by
+nothing - was 87% of this source distribution until 1.123.2. It was a TRACKED
+file, so exclusion rules and untracked-file scans were both blind to it, and
+nothing asserted a size budget. All four guards were proven by putting each
+defect back.
+
+⚠⚠ **jdatamunch-mcp was checked and is missing the same guard** - same
+`.claude/`-only exclude, no allowlist. Ported there separately.
+
+### Not changed: JSON indexing (investigated, and the obvious remedy is wrong)
+
+The reported corpus indexed **54 `.json` files producing 88.2% of its sections**,
+80.8% of the total from `benchmarks/` alone, so a prose search returned rows like
+`files_indexed` and `clean_files`.
+
+**General JSON indexing is intended**, established in the code rather than
+assumed: `parser/json_parser.py` exists to convert arbitrary JSON to sections,
+`.json`/`.jsonc` is a documented supported format, and OpenAPI is a separate
+sniffed path that gets richer treatment.
+
+⚠⚠ **A `benchmarks/` skip rule was measured and REJECTED. The directory is the
+wrong axis.** Excluding it drops **20 genuine documentation files** -
+`METHODOLOGY.md`, `REPRODUCING.md`, `whitepaper.md`, four `README.md`s - to
+remove 37 data files. Neither `.gitignore` nor a skip list can separate them,
+because the split is by file KIND and not by location. `SKIP_PATTERNS` is also
+matched as a path SUBSTRING, so a `benchmarks/` entry would take
+`docs/benchmarks/` with it.
+
+⚠ The skip-name authority was checked for the fourth-undeclared-copy problem and
+is clean: `tools/_constants.py` holds `SKIP_PATTERNS`, `DOT_DIR_ALLOWLIST` and
+`is_skipped_dot_dir`, imported by `index_local` and `index_repo` and defined
+nowhere else. `extra_ignore_patterns` remains the mechanism, and it has been
+durable across silent re-entry points since #116.
+
+### Tests
+
+`tests/test_jdoc_129_body_channel.py` (20; **11 fail / 9 pass** against the full
+pre-fix behaviour, the 9 being controls),
+`tests/test_jdoc_130_oversize_disclosure.py` (21; 10 fail with the disclosure
+withheld, 10 with the cap restored, 1 with `coverage_complete` keyed on all
+reasons), `tests/test_sdist_exclusions.py` (10; each of the four guards proven
+against its own defect put back). Suite **2700 passed / 6 skipped** (was
+2646/6); `ruff check src/` clean. No INDEX_VERSION or tool-count change.
+
+## [1.137.1] - 2026-08-28 - The equivalence is measured, and five tests were reading site-packages
+
+### The measurement behind 1.137.0's allow-list
+
+`sentence-transformers/all-MiniLM-L6-v2` is on the allow-list because it was
+measured, on 2026-08-28, with the tool the allow-list names for the purpose:
+`capture_canary` under sentence-transformers 2.5.0 / torch 2.5.1, then
+`check_drift` under fastembed 0.8.0 / onnxruntime 1.23.2 against that snapshot.
+
+Over the 16 canary strings, **max drift 6.0e-13** (min cosine
+0.9999999999993988) and **max absolute per-component delta 1.9e-07** on 384
+dims. That is float32 rounding, not a difference between models. The control
+that makes it a measurement of ONNX rather than of torch: after the FastEmbed
+pass, `sys.modules` held none of `torch`, `sentence_transformers` or
+`transformers`, and `onnxruntime` was loaded.
+
+End to end on a 32-section corpus indexed under sentence-transformers, then
+re-indexed with `incremental=False` under FastEmbed: **0 calls to the embedder,
+0 texts sent**, no `embedding_rotation` in the response, sidecar header
+unchanged at `sentence-transformers` / `all-MiniLM-L6-v2`, coverage 1.0. The
+fail-closed half was checked at the same entry point: with
+`JDOCMUNCH_FASTEMBED_MODEL=BAAI/bge-small-en-v1.5` the same store discloses
+`embedding_rotation ... full_re_embed` and re-embeds all 32 sections.
+
+⚠ One box, one version pair. The numbers say these two runtimes agree here;
+they are not a claim about every future release of either, which is why the
+allow-list is a list rather than a rule.
+
+### Fixed - five tests pinned half the offline fallback
+
+Adding a second offline provider to auto-detect broke five existing tests that
+stub `_sentence_transformers_available` and not `_fastembed_available` - they
+pinned half the fallback and read the machine for the other half. Invisible on
+CI, which installs neither. A new AST ratchet fails the build when a test pins
+one probe and not the other, scoped to functions that actually call
+`get_provider_name`/`should_embed` so the jdoc#118 probe tests are not false
+positives, with an exemption list carrying reasons. Proven against the defect
+put back and against three shapes it must not flag.
+
+
+## [1.137.0] - 2026-08-28 - FastEmbed, and an alias narrow enough to be safe
+
+Reported by @LuigiNicaPRO ([#126](https://github.com/jgravelle/jdocmunch-mcp/issues/126)).
+
+### Added - FastEmbed as an offline embedding provider
+
+`pip install jdocmunch-mcp[fastembed]` runs `all-MiniLM-L6-v2` through
+onnxruntime instead of torch. `JDOCMUNCH_EMBEDDING_PROVIDER=fastembed` selects
+it, `JDOCMUNCH_FASTEMBED_MODEL` picks a different model, and auto-detect
+prefers it over sentence-transformers when both are installed —
+`JDOCMUNCH_EMBEDDING_PROVIDER=sentence-transformers` is the way back.
+
+The reported defect was narrow: `get_provider_name()` is a closed if-chain, so
+`fastembed` fell through it to auto-detect and `_PROVIDER_FACTORIES` was
+unreachable for the name. A closed chain and a factory map are two lists that
+have to agree, and nothing asserted that they did; now something does.
+
+### Fixed - the sidecar alias keys on the MODEL, because the sidecar has no dim backstop
+
+Switching runtimes should not re-embed a corpus that has not changed, so the
+reporter proposed normalizing the provider name after `_get_provider()`
+resolves — the header keeps saying `sentence-transformers` and the existing
+vectors load. Right goal. The problem is that the proposed normalization is
+**unconditional**.
+
+`cache.load` matches the header by exact equality on `(provider, model, dim)`,
+and `_provider_identity` returns `dim=None` for both offline providers — which
+the cache reads as a **wildcard**. So there is nothing underneath a normalized
+provider name to catch a mismatch. `JDOCMUNCH_ST_MODEL` is user-settable, so a
+blanket rename writes `sentence-transformers` over vectors some other model
+produced, `cache.load` then **matches**, the two derivations merge into one
+sidecar, and search ranks across both. That is jdoc#111's shape, and it is
+worse than the re-embed it avoids: a full re-embed is expensive and
+observable, this is cheap and invisible.
+
+So the alias is an explicit allow-list of model ids
+(`_FASTEMBED_ST_EQUIVALENT_MODELS`), and it fails closed on every axis — an
+unlisted model, a `JDOCMUNCH_ST_MODEL` naming a different model, or an empty
+model all keep the `fastembed` provider name and re-embed. A model earns a
+place on that list by being measured identical across the two runtimes;
+`check_embedding_drift` is the measurement, since a canary captured under one
+runtime and re-run under the other reports exactly that.
+
+Two details that look like oversights and are not. The alias writes the
+sentence-transformers side's **spelling** (`all-MiniLM-L6-v2` by default), not
+the canonical hub id, because the header is an exact string match against a
+file that already exists. And the dim stays `None`: every sentence-transformers
+sidecar ever written stores `None` there, so an active dim of 384 would compare
+unequal and purge the file the alias exists to reuse — the same trap the embed
+worker documents.
+
+New `sidecar_identity()` is the single place that resolves the header triple.
+`index_local`'s rotation detector reads it too; a reader that skipped the alias
+would report a rotation on every index for a corpus that never moved
+(jdoc#109).
+
+### Fixed - the model-cache probe reads FastEmbed's cache, not HuggingFace's
+
+`_st_model_is_cached()` probes the HuggingFace hub layout, and jdoc#110's
+warmup gate calls it to decide whether a model load would block the MCP
+handshake on a download. FastEmbed downloads into its own directory
+(`FASTEMBED_CACHE_PATH`, otherwise `<tempdir>/fastembed_cache`), so the HF
+probe would answer about a directory FastEmbed does not read: it reports
+"cached" for a machine whose HF cache holds the model for torch while FastEmbed
+still has to fetch it, and warmup then stalls the handshake — jdoc#110's outage,
+which reaches the user as nothing but "connection timed out". A populated HF
+cache is deliberately **not** taken as evidence; guessing "cached" is the
+harmful guess, and guessing "not cached" costs a deferred load.
+
+### Unchanged, on purpose
+
+The sentence-transformers import probe and the embed worker do not fire for
+FastEmbed. Neither one is about embeddings in general; both are about torch.
+onnxruntime loads a different DLL set, so jdoc#118's Windows loader deadlock is
+an argument here rather than evidence, and probing a package this provider
+never imports would suppress a working provider on a machine where
+sentence-transformers happens to be broken. If FastEmbed turns out to wedge the
+same way on Windows, the worker is the fix and the measurement comes first.
+
+`fastembed` is an optional extra and never a runtime dependency — a lexical
+install must not acquire a native runtime it will never call. The first-use
+model download is README-disclosed under "Background behavior, fully disclosed"
+before shipping, per the PyPI-quarantine rule.
+
+Tests `tests/test_jdoc_126_fastembed_provider.py` (42; **41 fail pre-fix**).
+The single both-sides pass is the control that demonstrates the unconditional
+alias matching a sidecar it should not. Suite **2646 / 6**; `ruff check src/`
+clean. No tool, schema or INDEX_VERSION change.
+
+
+## [1.136.1] - 2026-08-26 - Unverifiable is not verified
+
+### Fixed - `verify_index` counted a section it could not verify as verified
+
+The hash comparison read:
+
+```python
+if expected_hash and actual_hash != expected_hash:
+    drift.append(...)
+else:
+    clean += 1
+```
+
+A section with **no stored `content_hash` has nothing to compare against**, so
+it fell to the `else` and was counted CLEAN. A caller gating CI on
+`drift_count == 0` would read "we checked it and it was fine" where the truth
+is "we could not check it" -- inside the one tool whose entire job is to
+certify integrity.
+
+⚠⚠ **The accounting invariant could not catch it.** `clean + drift + missing +
+error + skipped == section_count` still held, because the section WAS counted,
+just in the wrong bucket. A consistency check over totals is blind to a
+misfiled row.
+
+Now routed to `skipped` with reason `no_stored_hash`, beside the existing
+`empty_byte_range` -- the file already had the right home for "unverifiable by
+design" and this case simply was not sent there.
+
+⚠ **LATENT, and recorded as latent rather than sold as a live bug.** Every
+shipped producer routes through `compute_content_hash()`, which returns the
+sha256 of the empty string rather than `""`, so no parser emits this today.
+But `Section.content_hash` DEFAULTS to `""` (`parser/sections.py`) and the
+text parsers assign it at the end of a loop, so one producer that returns early
+reintroduces it with no symptom. A certifier must not depend on every producer
+remembering. `TestTheProducerIsCurrentlyClean` pins that premise: if it ever
+fails, this entry is understating the severity.
+
+⚠⚠ `tests/test_verify_index_unhashed.py` runs the **pre-fix module source** for
+its non-vacuity pass rather than simulating it. The first draft monkeypatched
+`hashlib.sha256` to return `""`, which broke every section at once and drove
+`clean_count` to 0 -- it manufactured a different defect and would have passed
+as "the guard fires" for the wrong reason.
+
+Found by sweeping jdoc and jdata for the defect class behind jcm v1.108.298
+(a check that certifies what it could not observe). jdata's `validate_index`
+was clean: it already fails on an unknown `PRAGMA integrity_check` and warns
+rather than passes when a checksum cannot be read.
+
 ## [1.136.0] - 2026-08-23 - The one string that survives tool deferral
 
 ### Added - the one string that survives tool deferral
