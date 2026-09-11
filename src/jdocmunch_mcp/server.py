@@ -3258,7 +3258,6 @@ def _make_rate_limit_middleware():
 
 async def run_server():
     """Run the MCP server with stdio transport."""
-    import contextlib
     import threading
 
     import anyio
