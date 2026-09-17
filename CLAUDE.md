@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.139.1 |
+**Version:** 1.140.0 |
 **Tests:** `PYTHONPATH=src python -m pytest tests/ -q`
 
 ⚠ **`python -m pytest`, not bare `pytest`**, matching the suite rule in
@@ -9,6 +9,56 @@
 into a different environment, and without `PYTHONPATH` the INSTALLED package
 shadows `src/`. ⚠⚠ **Neither form reproduces CI** — see "reproduce CI" under
 Standing operational notes; this one is the edit loop, not the gate.
+
+## v1.140.0 — #129 + #130: a hint nobody received, and a budget spent on the weakest word
+
+⚠ **Tracker-number collision.** These are jdocmunch's own #129 (mimosel, issue)
+and #130 (whakomatic, PR). The rotated v1.138.0 entry also says "#129 + #130",
+and those were jcodemunch-side finding numbers. Read the author, not the number.
+
+**#129 — the PreToolUse hint went to stderr on exit 0, which the model never
+sees.** From 1.66.3 through 1.139.1, `run_pretooluse` printed "prefer
+search_sections + get_section" to stderr and returned 0. Claude Code sends
+that to the debug log. The docstring said "directing Claude". Now emitted as
+`hookSpecificOutput.additionalContext` JSON on stdout via a new
+`_emit_additional_context`, the shape ported from jcm's `hooks/_common.py`.
+
+⚠⚠ **An exit-0 hook has ONE model-facing channel per event, and it differs by
+event.** stderr → debug log. Plain stdout → model only on UserPromptSubmit /
+SessionStart-class events. Top-level `systemMessage` → the user. PreCompact
+has NO channel and discards `systemMessage`. **A hook whose output is on the
+wrong channel is indistinguishable from one that fired correctly and was
+ignored**, which is why this sat for 73 minor versions.
+
+⚠⚠ **`run_precompact` has the SAME defect and is NOT fixed here.** It writes
+`{"systemMessage": snapshot}` on PreCompact. Filed as #131 rather than folded
+in: the remedy is a new `SessionStart` hook on `source=compact` plus `init`
+wiring (jcm's `hooks/snapshot.py` is the model), and one-issue-one-verdict
+says a channel fix and a new hook are two verdicts.
+
+`tests/test_jdoc_129_hint_channel.py` (6). The source-level ratchet against
+`print(..., file=sys.stderr)` inside `run_pretooluse` was proven non-vacuous
+with the old print restored: 2 of 6 fail. ⚠ The ratchet is scoped to
+`run_pretooluse` on purpose; `run_posttooluse` legitimately passes
+`stderr=subprocess.DEVNULL`.
+
+**#130 — Stage-A pruning admitted the most common term first (whakomatic).**
+`PostingIndex.candidates` walked terms in query order and returned at 200
+ids, so a term with document frequency over the cap took every slot and the
+section carrying the rare terms never reached BM25. Contributor measured on a
+4,970-section index: 0% hit rate with the common word first, 100% with it last.
+Now rarest-first with a total tiebreak; the overflowing list fills the rest via
+`heapq.nsmallest`, which also removed a pre-existing hash-seed dependence.
+
+⚠ **Raising the cap is the wrong lever**: in query order it must exceed the
+corpus's highest document frequency, which grows with the corpus. ⚠ **The
+replay gate cannot express this** — the self-fixture's top term is in 105 of
+570 sections, under the cap, so both algorithms admit identical candidates
+there. Tests use a 500-section corpus.
+
+⚠ **Contributor PR merged FIRST, before any CHANGELOG work of ours** (policy
+3b). Trial-merged onto master locally before approving: 2733 / 6, ruff clean.
+CLA status read on the head SHA (`count=1`, not from `gh pr checks`).
 
 ## v1.139.1 — a rate written for a date that never arrived
 
@@ -110,137 +160,7 @@ question about a surface must not mutate the session's.
 `tests/test_schema_tokens_basis.py` (9; **8 seen failing against the unfixed
 tree**). No tool, schema or INDEX_VERSION change; additive response keys only.
 
-## v1.138.0 — #129 + #130: a fusion over one channel counted twice, and a 1.25 MB document on the floor
-
-Four findings reported from OUTSIDE this repo, while doc-indexing
-`jcodemunch-mcp` from a jcodemunch session. ⚠ Tracker was clean at the start
-(0 issues, 0 PRs) — re-verified, never transcribed.
-
-**#129 — `find_similar_sections` scored summaries and called them bodies.**
-The description advertised "title + body lexical Jaccard" and there was **no
-body channel**: `body_text = sec.get("summary")` was unconditional, and under
-`use_ai_summaries=False` a summary IS the heading text. So
-`body_tokens == title_tokens` and `0.70 * body + 0.30 * title` weighted one
-input against itself.
-
-⚠⚠ **The finding is not a wrong score, it is a TWO-CHANNEL VERDICT REPORTED
-OVER ONE CHANNEL** — complete with a `dominant_signal` naming which of the two
-won. 8 of 8 clusters on a 955-section corpus were the artifact; the "identical"
-pair was 1,105 bytes of ASCII diagram against a `> **Version note:**` paragraph.
-
-⚠ **The tool's own diff output was the tell it could not read.** Every variant
-returned `body_unique_a: []` AND `body_unique_b: []`. Two sections with
-different byte ranges cannot both be that, so "no unique content on either
-side" and "I did not read either side" were indistinguishable. `differs_by`
-now carries `body_signal`.
-
-⚠ **The cost was MEASURED, because the comment being deleted named a real
-tradeoff.** Reading every examined body: **0.24 s** at the 1000-section cap,
-2.5 s for all 9,507. The obvious optimisation — read only pairs surviving the
-title pre-filter — saves **~6%**, because **899 of 955 sections survive into
-some pair** on a doc set with repetitive headings. Rejected on the measurement,
-not on taste.
-
-⚠⚠ **AN "ALL PAIRS WERE title_only" CAP DOES NOT CLOSE THIS, AND MY FIRST ONE
-WAS THAT CAP.** Union-find merges transitively: two empty `## Architecture`
-stubs (title_only, 1.0) join a cluster holding two real unrelated Architecture
-sections, so the cluster contains a body pair, passes an all-pairs test, and
-takes its 1.0 from the pair that read nothing. The verdict now rests on
-**`evidence_max_score`** — the best pair that actually compared bodies —
-while reported `max_score` stays the true max, so the two numbers together
-show what happened (`max_score: 1.0`, `evidence_max_score: 0.3406`,
-`overlapping_topic`). **Found by re-running the fix on the real corpus, not by
-the tests I had just written.**
-
-⚠ The `title_only` refusal is scoped to the LEXICAL-ONLY path on purpose:
-cosine is a channel that did not come from the title, so refusing there would
-suppress genuine duplicates the embedding channel found. Pinned by a test.
-
-⚠ **Sibling CHECKED and CLEAN**: `search_sections(dedupe=true)` reads
-`retrieval/dedup.py`'s cluster sidecar, which uses real `content`. The defect
-did not reach ranked search.
-
-⚠⚠ **The fixtures were reading site-packages, and so were the PRE-EXISTING
-ones.** `test_find_similar_sections.py` left `use_embeddings` at `"auto"`,
-which enables embeddings whenever an offline provider happens to be installed —
-so this box ran a different program from CI, which installs neither. Measured:
-under `"auto"` the two empty stubs came back at **cosine 1.0** and the guard
-under test never fired. Both files now PIN `use_embeddings=False`.
-**[[feedback_an_assumption_about_the_machine_is_not_a_fixture]], one release
-after v1.137.1 made the same finding about provider probes.**
-
-**#130 — the best retrieval target in the corpus was silently dropped.**
-jcm's `CHANGELOG.md` is 1,252,519 bytes and was **not in the index at all**;
-`index_local` returned `file_count: 124`, `success: true`, `truncated: false`.
-The skip WAS counted and `coverage.skip_counts` WAS persisted — the response
-carried none of it.
-
-⚠⚠ **A count computed and withheld at the one moment the caller could act on
-it is the same defect as not computing it.** `truncated` refers only to the
-`max_files` cap, so it answered a different question truthfully while the
-caller read it as "did I get everything".
-
-⚠ **`truncated` KEEPS its meaning** — changing what a shipped key means is
-forbidden on 1.x. New `coverage_complete` is the field it was being misread as,
-plus `skip_counts` / `skipped_paths` / `skipped_paths_truncated`.
-
-⚠ **`coverage_complete` is keyed on ACTIONABLE skips only.** `gitignored` and
-`unsupported_extension` fire on every real repo (16 and 900 here); keying on
-all of them makes it `false` always, and a signal that always fires hides the
-case it exists for.
-
-⚠⚠ **The disclosure is on ALL FOUR response paths, and the fourth is
-`"No documentation files found"`.** A corpus whose every candidate was dropped
-for size returned that error verbatim — reads as "there is nothing here" when
-the truth is "there is something here and I refused it", and it is the one
-payload with no `file_count` to be suspicious of. Found because a test I wrote
-for something else hit it. A test asserts the count of attach sites.
-
-**`DEFAULT_MAX_FILE_SIZE` 500 KB → 5 MB, overridable via
-`JDOCMUNCH_MAX_FILE_SIZE`.** ⚠ Measured, not guessed: the real 1.25 MB file
-parses in **1.03 s**, **8.3 MB** peak, 1,515 sections at a 565-byte median, so
-the parser was never the constraint. ⚠⚠ **The ASYMMETRY is what made 500 KB
-indefensible, not the absolute value** — the same walk already granted
-`OFFICE_MAX_FILE_SIZE = 25 MB` to `.pdf`/`.docx`, so it accepted a 25 MB
-PowerPoint and refused a 600 KB Markdown file. ⚠ The resolver fails OPEN on
-garbage/`0`/negatives (a typo must not shrink a corpus) and resolves at CALL
-time — a default argument binds the constant at import, so an env var set
-afterwards is read and ignored.
-
-Measured end to end: **9,624 → 11,138 sections**, 4.7 s. ⚠ The disclosure
-surfaced a SECOND unfiled skip on its first run — `office_extra_not_installed:
-1`, `jcodemunch_whitepaper.pdf` — persisted and unreported the whole time.
-
-**sdist allowlist guard PORTED** (`tests/test_sdist_exclusions.py`, 10). This
-repo had NEITHER the canaries nor the allowlist; `pyproject.toml` excluded only
-`.claude/`. ⚠ The canary half proves NAMED bad paths are absent and a scratch
-file has no name to plant a canary under — jcm 1.108.305 shipped `relnotes.md`
-that way. ⚠ The reverse assertion (the allowlist names nothing that stopped
-shipping) is what catches a wholesale copy of jcm's list, which carries
-`uv.lock`/`Dockerfile` and two dozen root docs this repo does not have. ⚠ Also
-a per-member size budget — `tests/infographic.png` was 87% of this sdist until
-1.123.2 and no guard could see it. ⚠⚠ **jdatamunch was CHECKED and is missing
-the same guard**; ported there separately.
-
-⚠⚠ **JSON indexing INVESTIGATED and DELIBERATELY NOT CHANGED — the obvious
-remedy is wrong and the measurement says so.** The corpus was 88.2% `.json`
-sections, 80.8% from `benchmarks/`. General JSON indexing IS intended
-(`parser/json_parser.py` exists for it; OpenAPI is a separate sniffed path).
-**A `benchmarks/` skip drops 20 GENUINE documentation files** —
-`METHODOLOGY.md`, `REPRODUCING.md`, `whitepaper.md`, four `README.md`s — to
-remove 37 data files: **the directory is the wrong axis, the split is by file
-KIND.** ⚠ `SKIP_PATTERNS` is matched as a path SUBSTRING, so the entry would
-also take `docs/benchmarks/`. ⚠ Skip-name authority checked for the
-fourth-undeclared-copy problem and is CLEAN: `tools/_constants.py`, imported by
-`index_local` and `index_repo`, defined nowhere else. `extra_ignore_patterns`
-stays the mechanism.
-
-Tests `tests/test_jdoc_129_body_channel.py` (20; **11 fail / 9 pass** against
-the full pre-fix behaviour) and `tests/test_jdoc_130_oversize_disclosure.py`
-(21). Suite **2700 / 6**; `ruff check src/` clean. No tool, schema or
-INDEX_VERSION change.
-
-## Lessons from rotated entries (v1.116.0–v1.137.0, lifted 2026-08-29 / 2026-08-30)
+## Lessons from rotated entries (v1.116.0–v1.138.0, lifted 2026-08-29 / 2026-08-30 / 2026-09-17)
 
 ⚠⚠ **These outlived the releases that produced them.** Each line names the
 version whose full narrative now lives in `docs/CLAUDE-history.md`. **Read the
@@ -268,6 +188,26 @@ entry that earned no reusable rule got no line.
 
 **Writing a fix**
 
+- ⚠⚠ **A two-channel verdict reported over one channel is a different defect
+  from a wrong score**, and the tool's own diff output (`body_unique_a: []` on
+  both sides) was the tell it could not read. ⚠ An "all pairs were title_only"
+  cap does not close it: union-find merges transitively, so a cluster can pass
+  an all-pairs test on a score from the pair that read nothing. Rest the
+  verdict on the best pair that actually compared bodies. (v1.138.0)
+- ⚠⚠ **A count computed and withheld at the moment the caller could act on it
+  is the same defect as not computing it.** `truncated` answered a different
+  question truthfully while being read as "did I get everything"; the fix is a
+  NEW key (`coverage_complete`), never a changed meaning on 1.x, and it is keyed
+  on ACTIONABLE skips only, since a signal that always fires hides the case it
+  exists for. Disclose on ALL response paths, including the error one.
+  (v1.138.0)
+- ⚠⚠ **An asymmetry is what makes a limit indefensible, not its value.** The
+  walk accepted a 25 MB `.pptx` and refused a 600 KB `.md`. Measure before
+  raising (1.25 MB parsed in 1.03 s / 8.3 MB peak); resolve env overrides at
+  CALL time, since a default argument binds at import. (v1.138.0)
+- ⚠ **The obvious remedy can be the wrong axis.** A `benchmarks/` skip would
+  drop 20 genuine docs to remove 37 data files; the split was by file KIND.
+  `SKIP_PATTERNS` matches path substrings. (v1.138.0)
 - ⚠⚠ **An equivalence you ASSERT to ship an allow-list is owed a MEASUREMENT,
   and the measurement is a SEPARATE release.** 1.137.0 shipped the allow-list on
   an asserted equivalence; 1.137.1 measured it (max drift 6.0e-13 over 16 canary
@@ -931,7 +871,7 @@ path ([[feedback_fixture_query_corpus_pollution]]).
 ## Release history
 
 ⚠ **This file keeps the THREE newest dated `## vX.Y.Z` sections. Everything
-older is in `docs/CLAUDE-history.md`** — v1.137.1 rotated there 2026-09-01, v1.137.0 on 2026-08-30,
+older is in `docs/CLAUDE-history.md`** — v1.138.0 rotated there 2026-09-17, v1.137.1 on 2026-09-01, v1.137.0 on 2026-08-30,
 v1.116.0 through v1.135.0 on 2026-08-29, v1.115.0 and earlier on 2026-07-25. `CHANGELOG.md` covers most of
 them, but 1.67.0-1.92.0 and 1.96.0 exist ONLY in the history file.
 

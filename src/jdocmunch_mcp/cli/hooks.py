@@ -209,8 +209,14 @@ def run_pretooluse() -> int:
     """PreToolUse hook: intercept Read calls on large doc files.
 
     Reads hook JSON from stdin.  If the target is a doc file above the
-    size threshold, prints a stderr hint directing Claude to use
-    jDocMunch tools instead.
+    size threshold, emits a hint directing Claude to use jDocMunch tools
+    instead, as ``hookSpecificOutput.additionalContext`` JSON on stdout.
+
+    ⚠ That channel is the ONLY one that reaches the model from an exit-0
+    PreToolUse hook (#129). stderr on exit 0 goes to the debug log; plain
+    stdout is fed back only on UserPromptSubmit/SessionStart-class events;
+    a top-level ``systemMessage`` surfaces to the user. The hint was written
+    to stderr from 1.66.3 through 1.139.1 and was never received.
 
     Small files, non-doc files, and unreadable paths are silently allowed.
 
@@ -244,12 +250,25 @@ def run_pretooluse() -> int:
 
     # Full-file exploratory read on a large doc file -- warn but allow.
     # Hard deny breaks the Edit workflow (Claude Code requires Read before Edit).
-    print(
+    return _emit_additional_context(
+        "PreToolUse",
         f"jDocMunch hint: this is a {size:,}-byte doc file. "
         "Prefer search_sections + get_section for exploration. "
         "Use Read only when you need exact line numbers for Edit.",
-        file=sys.stderr,
     )
+
+
+def _emit_additional_context(event_name: str, text: str) -> int:
+    """Emit model-facing ``additionalContext`` for an exit-0 hook.
+
+    Same shape as jcodemunch-mcp's ``_common._emit_additional_context``:
+    ``{"hookSpecificOutput": {"hookEventName": ..., "additionalContext": ...}}``
+    on stdout, exit 0. Exit 2 would also reach the model via stderr, but it
+    blocks the call, and a hard deny breaks Read-before-Edit.
+    """
+    print(json.dumps({
+        "hookSpecificOutput": {"hookEventName": event_name, "additionalContext": text},
+    }))
     return 0
 
 

@@ -15,6 +15,15 @@ import pytest
 # PreToolUse hook
 # ---------------------------------------------------------------------------
 
+
+def _additional_context(stdout: str) -> str:
+    """The one exit-0 PreToolUse channel Claude Code feeds to the model (#129)."""
+    payload = json.loads(stdout)
+    out = payload["hookSpecificOutput"]
+    assert out["hookEventName"] == "PreToolUse"
+    return out["additionalContext"]
+
+
 class TestPreToolUse:
     """Tests for hook-pretooluse handler."""
 
@@ -36,7 +45,8 @@ class TestPreToolUse:
         p.write_text("x" * 5000)
         assert self._run({"tool_input": {"file_path": str(p)}}) == 0
         captured = capsys.readouterr()
-        assert "jDocMunch hint" in captured.err
+        assert "jDocMunch hint" in _additional_context(captured.out)
+        assert captured.err == ""
 
     def test_allows_targeted_read(self, tmp_path):
         p = tmp_path / "big.md"
@@ -52,13 +62,13 @@ class TestPreToolUse:
         p = tmp_path / "doc.rst"
         p.write_text("x" * 5000)
         assert self._run({"tool_input": {"file_path": str(p)}}) == 0
-        assert "jDocMunch hint" in capsys.readouterr().err
+        assert "jDocMunch hint" in _additional_context(capsys.readouterr().out)
 
     def test_warns_on_large_adoc(self, tmp_path, capsys):
         p = tmp_path / "doc.adoc"
         p.write_text("x" * 5000)
         assert self._run({"tool_input": {"file_path": str(p)}}) == 0
-        assert "jDocMunch hint" in capsys.readouterr().err
+        assert "jDocMunch hint" in _additional_context(capsys.readouterr().out)
 
     def test_handles_invalid_json(self):
         from jdocmunch_mcp.cli.hooks import run_pretooluse
