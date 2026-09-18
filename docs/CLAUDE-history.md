@@ -21,6 +21,73 @@ should already be in the brief; if it is not, that is the bug.
 this file.** Those are the only facts in it with a guaranteed expiry date, and
 several entries below carry them. Run the query.
 
+## Rotated 2026-09-17 — v1.139.0
+
+Moved out of `CLAUDE.md` on 2026-09-17 when v1.141.0 became a fourth dated
+section, the same day v1.138.0 rotated. What it earned was lifted into
+"Lessons from rotated entries" first: the unstated time basis, weighing the
+surface the client receives, and a tier that is a scope choice rather than a
+token lever.
+
+## v1.139.0 — a token count with no time basis, and a tier that is not a lever
+
+**`schema_tokens_avoided` was published bare.** `get_session_stats` →
+`tool_surface` reported it beside `schema_tokens_visible` /
+`schema_tokens_catalog` with no interval attached, and a reader supplies the
+missing one: **per request.** ⚠⚠ **The schema block is STABLE**, so it is paid
+at full rate roughly once per cache lifetime and at cache-read rates (~0.1x)
+after — jcm measured **86% of baseline input cached**
+(`benchmarks/codex_surface/`) and says in its own words that "N tokens in every
+request" is wrong *and that the repo said exactly that before measuring*. The
+field overstated the cost impact by about an order of magnitude, **in the
+direction that flatters us.** New `schema_tokens_basis` +
+`schema_tokens_basis_note`, from `src/jdocmunch_mcp/schema_basis.py`.
+
+⚠ **The count is NOT discounted.** It answers a real question — payload size —
+and a silently scaled one answers neither that nor the cost question. The fix
+for an unstated basis is a LABEL. (`analyze_perf`'s raw `hit_rate` beside
+`hit_rate_basis` is the same rule.)
+
+⚠⚠ **jcm shipped TWO releases that day and only one was ours.** 1.108.312 is
+this. **1.108.311 — refusing a mid-session tier switch that cannot repay the
+cache it invalidates — CANNOT occur here**: `JDOCMUNCH_TOOL_PROFILE` is read at
+STARTUP, there is no runtime switch, so there is no invalidation to price.
+Porting the gate would be machinery for a mechanism we do not have. A ratchet
+in `tests/test_schema_tokens_basis.py` fails the day
+`notifications/tools/list_changed` appears in `src/` with no pricing helper, and
+names the module to port from. ⚠ It is the ONE new test that passes against the
+unfixed tree, so it is the one that needed proving non-vacuous — proven by
+adding the forbidden call and watching it fire.
+
+⚠ **jdatamunch CAUGHT UP 2026-08-31, both halves** — v1.31.13 stamps the basis
+(`schema_token_basis.py`, singular `token`, not this repo's `schema_basis.py`)
+and measures its tiers in `benchmarks/tier_surface.json`: `core` 65.8% avoided,
+`standard` **5.6%** over three tools. Same verdict as here, a scope bundle
+rather than a token lever. Re-read that repo before quoting this line.
+
+**The tiers are MEASURED for the first time** — `benchmarks/tool_surface/`, a
+regenerable harness plus JSON artifact. At 64 tools / 13,252 schema tokens:
+`core` **−62.08%** (49 tools dropped), `standard` **−9.39%** (8 tools).
+⚠⚠ **`standard` is a SCOPE choice, not a token lever**, and the config surface
+implied otherwise. It stays — deleting a shipped profile breaks a 1.x config —
+and the config comment now says what it does. **A setting that implies a saving
+it does not deliver is the same defect class as an unstated basis.** jcm's
+`standard` measured 9 of 91 tools and 6.7%; same shape in both servers.
+
+⚠⚠ **Weigh what the client RECEIVES, never the catalog filtered by the tier
+bundle.** jcm's first attempt did the latter and was wrong by three tools in
+every tier — it kept a hidden set and dropped force-included ones, pricing a
+surface no client is sent. Here `_ALWAYS_PRESENT_TOOLS` and
+`JDOCMUNCH_DISABLED_TOOLS` both change the answer. New `_build_tools_list()` is
+the ONE producer of the published surface (`list_tools`, the meter and the
+benchmark all route through it) and `_schema_weight` the ONE estimator; the
+closure inside `_tool_surface_stats` is gone. ⚠ `_filter_tools` takes
+`profile_override` so a tier is priced **without switching to it** — answering a
+question about a surface must not mutate the session's.
+
+`tests/test_schema_tokens_basis.py` (9; **8 seen failing against the unfixed
+tree**). No tool, schema or INDEX_VERSION change; additive response keys only.
+
 ## Rotated 2026-09-17 — v1.138.0
 
 Moved out of `CLAUDE.md` on 2026-09-17 when v1.140.0 became a fourth dated

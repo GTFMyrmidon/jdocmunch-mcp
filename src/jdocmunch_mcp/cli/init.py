@@ -83,6 +83,12 @@ def _enforcement_hooks() -> dict[str, list]:
             "matcher": "",
             "hooks": [{"type": "command", "command": f"{exe} hook-precompact"}],
         }],
+        # #131: PreCompact has no model-facing output channel. The snapshot is
+        # restored here, on the sources whose prior state is this session's.
+        "SessionStart": [{
+            "matcher": "compact|resume|fork",
+            "hooks": [{"type": "command", "command": f"{exe} hook-sessionstart"}],
+        }],
     }
 
 # Cursor rules use MDC format (frontmatter + markdown).
@@ -400,7 +406,7 @@ def _merge_hooks(
 
 
 def install_hooks(*, dry_run: bool = False, backup: bool = True) -> str:
-    """Merge PreToolUse/PostToolUse/PreCompact hooks into ~/.claude/settings.json.
+    """Merge PreToolUse/PostToolUse/PreCompact/SessionStart hooks into ~/.claude/settings.json.
 
     Returns a status message.
     """
@@ -645,7 +651,7 @@ def run_init(
         print(f"  Hooks:{msg}")
         if demo and "would" in msg:
             _demo_actions.append((
-                "Install PreToolUse + PostToolUse + PreCompact hooks in ~/.claude/settings.json",
+                "Install PreToolUse + PostToolUse + PreCompact + SessionStart hooks in ~/.claude/settings.json",
                 "Large doc files would be routed through jDocMunch (search_sections + get_section) "
                 "instead of raw Read, and the index would auto-update after every Edit/Write",
             ))

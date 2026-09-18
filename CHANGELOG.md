@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [1.141.0] - 2026-09-17 - the snapshot moves to the event that can deliver it
+
+### Fixed - #131: the PreCompact snapshot went into a field Claude Code discards
+
+`hook-precompact` built a cwd-focused snapshot of the indexed doc repos and
+wrote it as a top-level `systemMessage`. PreCompact has no
+`hookSpecificOutput.additionalContext`, and Claude Code discards a PreCompact
+hook's `systemMessage`, so from 1.73.0 through 1.140.0 the snapshot was
+computed on every compaction and received by nobody. Found while fixing #129,
+which was the same class of defect on PreToolUse; split out because the
+remedy here is a new hook, not a channel change.
+
+**New `hook-sessionstart` subcommand and a `SessionStart` hook entry with
+matcher `compact|resume|fork`.** On those sources it builds the same snapshot
+`hook-precompact` used to build (same `cwd` focus, same path-safety from #66)
+and emits it as `additionalContext`, the one channel an exit-0 hook has to the
+model. On `startup` and `clear` it stays silent: a fresh session has no prior
+doc state, and injecting the snapshot there would present unrelated repos as
+current focus. Shape and source gate match jcodemunch-mcp's `run_sessionstart`.
+
+⚠ **`hook-precompact` STAYS, as a silent no-op.** Every `settings.json` an
+earlier `init` wrote names it, and removing the subcommand would turn each
+compaction into a hook error on every existing install. It drains stdin and
+exits 0. ⚠ **Existing installs need `jdocmunch-mcp init` re-run** to gain the
+SessionStart entry; the merge adds it beside the PreCompact one and leaves
+everything else untouched. A test pins that path.
+
+`tests/test_jdoc_131_sessionstart_snapshot.py` (16): the three sources
+inject, five non-sources are silent, malformed stdin and a snapshot exception
+never block, PreCompact writes nothing, the re-run `init` path, CLI dispatch,
+and a source-level ratchet that no hook handler names `systemMessage`.
+Ratchet proven non-vacuous with the 1.140.0 line restored: 2 of 16 fail.
+Three existing tests moved from `run_precompact` to `run_sessionstart`.
+
+No tool, schema or INDEX_VERSION change. One new CLI subcommand, one new hook
+entry from `init`. Suite **2756 / 6** locally, **2751 / 11** under the
+CI-equivalent sync; `ruff check src/` clean.
+
 ## [1.140.0] - 2026-09-17 - a hint nobody received, and a candidate budget spent on the weakest word
 
 ⚠ The tracker numbers here are jdocmunch's own: issue #129 (mimosel) and

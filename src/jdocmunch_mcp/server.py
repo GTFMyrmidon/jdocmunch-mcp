@@ -3147,7 +3147,13 @@ def main(argv: Optional[list] = None):
     # --- hook-precompact ---
     subparsers.add_parser(
         "hook-precompact",
-        help="PreCompact hook: session snapshot before context compaction (reads stdin)",
+        help="PreCompact hook: no-op kept for installed settings.json entries (#131; reads stdin)",
+    )
+
+    # --- hook-sessionstart (#131) ---
+    subparsers.add_parser(
+        "hook-sessionstart",
+        help="SessionStart hook: restore the doc session snapshot after compact/resume/fork (reads stdin)",
     )
 
     # --- hook-reindex ---
@@ -3297,6 +3303,10 @@ def main(argv: Optional[list] = None):
     if args.command == "hook-precompact":
         from .cli.hooks import run_precompact
         sys.exit(run_precompact())
+
+    if args.command == "hook-sessionstart":
+        from .cli.hooks import run_sessionstart
+        sys.exit(run_sessionstart())
 
     if args.command == "hook-reindex":
         from .cli.hooks import run_hook_reindex

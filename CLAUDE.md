@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.140.0 |
+**Version:** 1.141.0 |
 **Tests:** `PYTHONPATH=src python -m pytest tests/ -q`
 
 ⚠ **`python -m pytest`, not bare `pytest`**, matching the suite rule in
@@ -9,6 +9,34 @@
 into a different environment, and without `PYTHONPATH` the INSTALLED package
 shadows `src/`. ⚠⚠ **Neither form reproduces CI** — see "reproduce CI" under
 Standing operational notes; this one is the edit loop, not the gate.
+
+## v1.141.0 — #131: the snapshot moves to the event that can deliver it
+
+**`run_precompact` wrote the session snapshot as a top-level `systemMessage`
+on PreCompact, which Claude Code discards.** 1.73.0 through 1.140.0: computed
+on every compaction, received by nobody. Same class as #129, one event over.
+Now `run_sessionstart` + `hook-sessionstart` + a `SessionStart` entry with
+matcher `compact|resume|fork`, emitting `additionalContext`. Silent on
+`startup`/`clear` on purpose — a fresh session has no prior doc state and the
+snapshot would present unrelated repos as current focus. Ported from jcm's
+`hooks/snapshot.py::run_sessionstart`, same labels, same gate.
+
+⚠⚠ **`hook-precompact` STAYS as a silent no-op.** Every installed
+`settings.json` names it; deleting the subcommand turns every compaction into
+a hook error on every existing install. The 1.x contract names MCP tools, and
+a CLI subcommand that a config file invokes is the same kind of promise.
+⚠ **Existing installs get SessionStart only by re-running `init`** — the
+merge adds the missing event beside PreCompact (`test_init_adds_sessionstart_
+beside_an_existing_precompact_entry`). ⚠ **No test here can prove Claude Code
+delivers `additionalContext` on SessionStart** — that is a claim about the
+host, taken from jcm's measured hooks and Claude Code's docs, not from this
+suite.
+
+`tests/test_jdoc_131_sessionstart_snapshot.py` (16). The `systemMessage`
+ratchet walks the AST of all four handlers for the string constant; proven
+non-vacuous with the old line restored (2 of 16 fail). ⚠ The #129 ratchet is
+scoped to `run_pretooluse` and would NOT have caught this — a ratchet catches
+the shape it names and nothing adjacent, which is why this file has its own.
 
 ## v1.140.0 — #129 + #130: a hint nobody received, and a budget spent on the weakest word
 
@@ -101,66 +129,7 @@ checks asserts nothing. Proven non-vacuous: with $3.00 put back, 3 of 4 fail.
 Suite **2722 / 11** under the CI-equivalent sync; `ruff check src/` clean. No
 tool, schema or INDEX_VERSION change; `cost_avoided` VALUES change, keys do not.
 
-## v1.139.0 — a token count with no time basis, and a tier that is not a lever
-
-**`schema_tokens_avoided` was published bare.** `get_session_stats` →
-`tool_surface` reported it beside `schema_tokens_visible` /
-`schema_tokens_catalog` with no interval attached, and a reader supplies the
-missing one: **per request.** ⚠⚠ **The schema block is STABLE**, so it is paid
-at full rate roughly once per cache lifetime and at cache-read rates (~0.1x)
-after — jcm measured **86% of baseline input cached**
-(`benchmarks/codex_surface/`) and says in its own words that "N tokens in every
-request" is wrong *and that the repo said exactly that before measuring*. The
-field overstated the cost impact by about an order of magnitude, **in the
-direction that flatters us.** New `schema_tokens_basis` +
-`schema_tokens_basis_note`, from `src/jdocmunch_mcp/schema_basis.py`.
-
-⚠ **The count is NOT discounted.** It answers a real question — payload size —
-and a silently scaled one answers neither that nor the cost question. The fix
-for an unstated basis is a LABEL. (`analyze_perf`'s raw `hit_rate` beside
-`hit_rate_basis` is the same rule.)
-
-⚠⚠ **jcm shipped TWO releases that day and only one was ours.** 1.108.312 is
-this. **1.108.311 — refusing a mid-session tier switch that cannot repay the
-cache it invalidates — CANNOT occur here**: `JDOCMUNCH_TOOL_PROFILE` is read at
-STARTUP, there is no runtime switch, so there is no invalidation to price.
-Porting the gate would be machinery for a mechanism we do not have. A ratchet
-in `tests/test_schema_tokens_basis.py` fails the day
-`notifications/tools/list_changed` appears in `src/` with no pricing helper, and
-names the module to port from. ⚠ It is the ONE new test that passes against the
-unfixed tree, so it is the one that needed proving non-vacuous — proven by
-adding the forbidden call and watching it fire.
-
-⚠ **jdatamunch CAUGHT UP 2026-08-31, both halves** — v1.31.13 stamps the basis
-(`schema_token_basis.py`, singular `token`, not this repo's `schema_basis.py`)
-and measures its tiers in `benchmarks/tier_surface.json`: `core` 65.8% avoided,
-`standard` **5.6%** over three tools. Same verdict as here, a scope bundle
-rather than a token lever. Re-read that repo before quoting this line.
-
-**The tiers are MEASURED for the first time** — `benchmarks/tool_surface/`, a
-regenerable harness plus JSON artifact. At 64 tools / 13,252 schema tokens:
-`core` **−62.08%** (49 tools dropped), `standard` **−9.39%** (8 tools).
-⚠⚠ **`standard` is a SCOPE choice, not a token lever**, and the config surface
-implied otherwise. It stays — deleting a shipped profile breaks a 1.x config —
-and the config comment now says what it does. **A setting that implies a saving
-it does not deliver is the same defect class as an unstated basis.** jcm's
-`standard` measured 9 of 91 tools and 6.7%; same shape in both servers.
-
-⚠⚠ **Weigh what the client RECEIVES, never the catalog filtered by the tier
-bundle.** jcm's first attempt did the latter and was wrong by three tools in
-every tier — it kept a hidden set and dropped force-included ones, pricing a
-surface no client is sent. Here `_ALWAYS_PRESENT_TOOLS` and
-`JDOCMUNCH_DISABLED_TOOLS` both change the answer. New `_build_tools_list()` is
-the ONE producer of the published surface (`list_tools`, the meter and the
-benchmark all route through it) and `_schema_weight` the ONE estimator; the
-closure inside `_tool_surface_stats` is gone. ⚠ `_filter_tools` takes
-`profile_override` so a tier is priced **without switching to it** — answering a
-question about a surface must not mutate the session's.
-
-`tests/test_schema_tokens_basis.py` (9; **8 seen failing against the unfixed
-tree**). No tool, schema or INDEX_VERSION change; additive response keys only.
-
-## Lessons from rotated entries (v1.116.0–v1.138.0, lifted 2026-08-29 / 2026-08-30 / 2026-09-17)
+## Lessons from rotated entries (v1.116.0–v1.139.0, lifted 2026-08-29 / 2026-08-30 / 2026-09-17)
 
 ⚠⚠ **These outlived the releases that produced them.** Each line names the
 version whose full narrative now lives in `docs/CLAUDE-history.md`. **Read the
@@ -303,6 +272,20 @@ entry that earned no reusable rule got no line.
 
 **Claims and evidence**
 
+- ⚠⚠ **A count with no time basis gets one supplied by the reader, and the
+  reader picks "per request."** A stable schema block is paid at cache-read
+  rates after the first hit, so a bare `schema_tokens_avoided` overstated the
+  saving by about an order of magnitude in the direction that flatters us. The
+  fix for an unstated basis is a LABEL (`*_basis`), never a silently scaled
+  number. (v1.139.0)
+- ⚠ **Weigh what the client RECEIVES, never the catalog filtered by a tier
+  bundle** — force-included and disabled tools both change the answer. One
+  producer of the published surface, one estimator. (v1.139.0)
+- ⚠ **A setting that implies a saving it does not deliver is the same defect
+  as an unstated basis.** `standard` measured 9.39% and stays as a SCOPE
+  choice; the config comment says so. Do not port a gate for a mechanism this
+  repo does not have (no runtime tier switch, so no invalidation to price); a
+  ratchet names the module to port from if it ever arrives. (v1.139.0)
 - ⚠⚠ **A rebuild underneath a scan cannot prove absence.** Staleness that means
   "the SOURCE moved" is blind to an index being rewritten under an unchanged
   tree. (v1.119.0)
@@ -871,7 +854,7 @@ path ([[feedback_fixture_query_corpus_pollution]]).
 ## Release history
 
 ⚠ **This file keeps the THREE newest dated `## vX.Y.Z` sections. Everything
-older is in `docs/CLAUDE-history.md`** — v1.138.0 rotated there 2026-09-17, v1.137.1 on 2026-09-01, v1.137.0 on 2026-08-30,
+older is in `docs/CLAUDE-history.md`** — v1.139.0 and v1.138.0 rotated there 2026-09-17, v1.137.1 on 2026-09-01, v1.137.0 on 2026-08-30,
 v1.116.0 through v1.135.0 on 2026-08-29, v1.115.0 and earlier on 2026-07-25. `CHANGELOG.md` covers most of
 them, but 1.67.0-1.92.0 and 1.96.0 exist ONLY in the history file.
 
@@ -918,7 +901,7 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 - `storage/doc_store.py` — DocIndex, DocStore, detect_changes, incremental_save
 - `parser/` — one file per format (markdown, rst, asciidoc, notebook, html, text, openapi, json, xml)
 - `tools/` — index_local, index_repo, index_file, get_toc, get_toc_tree, search_sections, get_section, get_sections, list_repos, delete_index, get_broken_links, get_doc_coverage, get_backlinks, get_stale_pages, get_wiki_stats, check_section_delete_safe, get_section_blast_radius, find_similar_sections
-- `cli/hooks.py` — PreToolUse (Read interceptor) + PostToolUse (auto-reindex) + PreCompact (session snapshot) hook handlers for Claude Code; owns `_DOC_EXTENSIONS`
+- `cli/hooks.py` — PreToolUse (Read interceptor) + PostToolUse (auto-reindex) + SessionStart (session snapshot on compact/resume/fork, #131) hook handlers for Claude Code; PreCompact kept as a no-op; owns `_DOC_EXTENSIONS`
 - `watch.py` — (#78) `watch` daemon: `discover_local_doc_repos` + `watch_docs` (watchfiles-based, incremental `index_local` refresh, rediscover loop)
 - `service_installer.py` — (#78) cross-platform login-service installer for `watch` (`jdocmunch-watch`; systemd/launchd/Task Scheduler)
 - `cli/init.py` — `jdocmunch-mcp init` full onboarding: client detection, config patching, CLAUDE.md policy, Cursor/Windsurf rules, hooks, index; `claude-md` subcommand
@@ -934,7 +917,8 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 | `index-file <path>` | Re-index a single file within an existing index |
 | `hook-pretooluse` | PreToolUse hook: intercept Read on large doc files (reads stdin) |
 | `hook-posttooluse` | PostToolUse hook: auto-reindex doc files after Edit/Write (reads stdin) |
-| `hook-precompact` | PreCompact hook: session snapshot before context compaction (reads stdin) |
+| `hook-precompact` | PreCompact hook: silent no-op kept for installed settings.json entries (#131; reads stdin) |
+| `hook-sessionstart` | (#131) SessionStart hook: restore the doc session snapshot after compact/resume/fork as `additionalContext` (reads stdin) |
 | `watch` | (#78) Foreground daemon: auto-reindex every locally-indexed doc repo on any on-disk doc change. `--no-ai-summaries`, `--quiet` |
 | `watch-install` / `watch-uninstall` | (#78) Install/remove the doc watcher as a login service (systemd/launchd/Task Scheduler; `jdocmunch-watch`). `watch-install` takes `watch`'s flags: `--no-ai-summaries`, `--quiet` (#120) |
 | `watch-status` | (#78) Print doc-watcher service state + per-repo watch coverage (also the `get_watch_status` MCP tool) |
