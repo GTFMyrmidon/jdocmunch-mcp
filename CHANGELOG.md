@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.142.0] - 2026-09-19 - the change set index_local already had
+
 ### Added - #132: `index_local` returns the change set it already computed (whakomatic)
 
 Contributed by **whakomatic**, who wrote the feature, the tests and the cap.

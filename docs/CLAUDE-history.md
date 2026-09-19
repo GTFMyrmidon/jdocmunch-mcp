@@ -21,6 +21,55 @@ should already be in the brief; if it is not, that is the bug.
 this file.** Those are the only facts in it with a guaranteed expiry date, and
 several entries below carry them. Run the query.
 
+## Rotated 2026-09-19 — v1.139.1
+
+Moved out of `CLAUDE.md` on 2026-09-19 when v1.142.0 became a fourth dated
+section. What it earned was lifted into "Lessons from rotated entries" first:
+a constant written for a future date, a family key inheriting one member's
+price, copies that agree while wrong together, and a pin that must say whether
+it vouches.
+
+## v1.139.1 — a rate written for a date that never arrived
+
+**`token_tracker.PRICING["claude_sonnet"]` was $3.00/1M input tokens.** Claude
+Sonnet 5 is **$2.00/1M** and always has been: it launched at $2.00 with a rise
+to $3.00 scheduled for **2026-09-01**, and Anthropic cancelled that increase the
+day before it would have applied. $3.00 is the superseded Sonnet 4.6's rate —
+exactly what the line's comment ("Claude Sonnet 5 / 4.6") conflated.
+
+⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
+before it, and reads identically to a stale one.** The header said "As of
+2026-06-24", which made the value look *checked*. It was wrong on that date too.
+**A date on a table is evidence of when someone looked, never of what they saw.**
+
+⚠⚠ **A key that names a FAMILY inherits whichever member's price someone last
+looked at.** Three of the four keys are family names; each comment now names the
+ONE model its rate belongs to. ⚠ **The KEYS are unchanged** — `claude_sonnet` is
+emitted verbatim in the `cost_avoided` block of every retrieval response, so a
+rename is a wire change on 1.x. The model identity goes in the comment.
+
+⚠⚠ **Four copies of this rate exist across the suite and they AGREED WITH EACH
+OTHER while being wrong together**, which is why nothing caught it. Verified
+against the source page's *Base Input Tokens* column, not another copy of the
+table. ⚠ `TOKEN_SAVINGS.md` was the fourth copy here and carried two figures
+DERIVED from the rate (`0.0055` / `0.2830` in the worked `_meta` example) —
+derived literals move when a rate moves and are invisible to a search for the
+rate's name.
+
+⚠ **`gpt5_latest` is UNTOUCHED and the CHANGELOG says so.** Not an Anthropic
+model, no source consulted; pinned at the value it shipped with so a drift is
+visible, not because $10.00 was verified. **Pinning a number is not the same as
+vouching for it, and the pin must say which it is.**
+
+`tests/test_pricing_rates.py` (4). The only prior reference to `PRICING` was a
+key-PRESENCE check (`tests/test_storage.py:259`), so **no test pinned any value**
+and a wrong rate could sit here indefinitely. ⚠ The prices are **restated** from
+the source page, not imported from the module — a pin that reads the value it
+checks asserts nothing. Proven non-vacuous: with $3.00 put back, 3 of 4 fail.
+
+Suite **2722 / 11** under the CI-equivalent sync; `ruff check src/` clean. No
+tool, schema or INDEX_VERSION change; `cost_avoided` VALUES change, keys do not.
+
 ## Rotated 2026-09-17 — v1.139.0
 
 Moved out of `CLAUDE.md` on 2026-09-17 when v1.141.0 became a fourth dated

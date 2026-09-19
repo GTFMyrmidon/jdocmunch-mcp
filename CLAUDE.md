@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.141.0 |
+**Version:** 1.142.0 |
 **Tests:** `PYTHONPATH=src python -m pytest tests/ -q`
 
 ⚠ **`python -m pytest`, not bare `pytest`**, matching the suite rule in
@@ -9,6 +9,36 @@
 into a different environment, and without `PYTHONPATH` the INSTALLED package
 shadows `src/`. ⚠⚠ **Neither form reproduces CI** — see "reproduce CI" under
 Standing operational notes; this one is the edit loop, not the gate.
+
+## v1.142.0 — #132: the change set `index_local` already had (whakomatic)
+
+**`index_local` computed the new / changed / deleted lists and every file's
+mtime, then returned three counts.** Now `changes` (`{doc_path, status,
+mtime}`, newest first), `changes_total` and `changes_truncated`, on all three
+success shapes including "No changes detected" (`[]`, `0`, `false`, so nobody
+branches on presence). Contributor PR, merged as `a01c2b2` before any CHANGELOG
+work of ours (policy 3b).
+
+⚠⚠ **`CHANGES_CAP = 50` was settled BEFORE merge, and that ordering is the
+lesson.** The first head returned every file. Measured on this repo, 315 files
+on a full index: `changes` was 39,755 of 41,129 response bytes; capped, the
+response is 7,673. **An unbounded list on 1.x cannot be bounded later** — a
+caller who read it as complete has a behaviour change, so the cap and its
+disclosure keys must arrive with the field. ⚠ The sibling key was the tell:
+the same response already capped `files` at 20.
+
+⚠ **The cap is a head cut and deleted entries sort LAST, so deletions drop
+first.** The `new` / `changed` / `deleted` counts are the authority, never
+`len(changes)`. The tool description says so.
+
+⚠ `discover_doc_files` and `_resolve_explicit_paths` now return FOUR values
+(mtimes last). No callers outside `tools/index_local.py`;
+`tools/index_repo.py::discover_doc_files` is a different function. ⚠ `mtime`
+is naive local ISO time on purpose, matching `indexed_at`.
+
+Request-changes to fixed head took under a day inside the 24-hour timebox;
+fork owner is a `User`, so our push was available and not needed.
+`tests/test_file_recency.py` (8). No tool, schema or INDEX_VERSION change.
 
 ## v1.141.0 — #131: the snapshot moves to the event that can deliver it
 
@@ -88,48 +118,7 @@ there. Tests use a 500-section corpus.
 3b). Trial-merged onto master locally before approving: 2733 / 6, ruff clean.
 CLA status read on the head SHA (`count=1`, not from `gh pr checks`).
 
-## v1.139.1 — a rate written for a date that never arrived
-
-**`token_tracker.PRICING["claude_sonnet"]` was $3.00/1M input tokens.** Claude
-Sonnet 5 is **$2.00/1M** and always has been: it launched at $2.00 with a rise
-to $3.00 scheduled for **2026-09-01**, and Anthropic cancelled that increase the
-day before it would have applied. $3.00 is the superseded Sonnet 4.6's rate —
-exactly what the line's comment ("Claude Sonnet 5 / 4.6") conflated.
-
-⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
-before it, and reads identically to a stale one.** The header said "As of
-2026-06-24", which made the value look *checked*. It was wrong on that date too.
-**A date on a table is evidence of when someone looked, never of what they saw.**
-
-⚠⚠ **A key that names a FAMILY inherits whichever member's price someone last
-looked at.** Three of the four keys are family names; each comment now names the
-ONE model its rate belongs to. ⚠ **The KEYS are unchanged** — `claude_sonnet` is
-emitted verbatim in the `cost_avoided` block of every retrieval response, so a
-rename is a wire change on 1.x. The model identity goes in the comment.
-
-⚠⚠ **Four copies of this rate exist across the suite and they AGREED WITH EACH
-OTHER while being wrong together**, which is why nothing caught it. Verified
-against the source page's *Base Input Tokens* column, not another copy of the
-table. ⚠ `TOKEN_SAVINGS.md` was the fourth copy here and carried two figures
-DERIVED from the rate (`0.0055` / `0.2830` in the worked `_meta` example) —
-derived literals move when a rate moves and are invisible to a search for the
-rate's name.
-
-⚠ **`gpt5_latest` is UNTOUCHED and the CHANGELOG says so.** Not an Anthropic
-model, no source consulted; pinned at the value it shipped with so a drift is
-visible, not because $10.00 was verified. **Pinning a number is not the same as
-vouching for it, and the pin must say which it is.**
-
-`tests/test_pricing_rates.py` (4). The only prior reference to `PRICING` was a
-key-PRESENCE check (`tests/test_storage.py:259`), so **no test pinned any value**
-and a wrong rate could sit here indefinitely. ⚠ The prices are **restated** from
-the source page, not imported from the module — a pin that reads the value it
-checks asserts nothing. Proven non-vacuous: with $3.00 put back, 3 of 4 fail.
-
-Suite **2722 / 11** under the CI-equivalent sync; `ruff check src/` clean. No
-tool, schema or INDEX_VERSION change; `cost_avoided` VALUES change, keys do not.
-
-## Lessons from rotated entries (v1.116.0–v1.139.0, lifted 2026-08-29 / 2026-08-30 / 2026-09-17)
+## Lessons from rotated entries (v1.116.0–v1.139.1, lifted 2026-08-29 / 2026-08-30 / 2026-09-17 / 2026-09-19)
 
 ⚠⚠ **These outlived the releases that produced them.** Each line names the
 version whose full narrative now lives in `docs/CLAUDE-history.md`. **Read the
@@ -286,6 +275,21 @@ entry that earned no reusable rule got no line.
   choice; the config comment says so. Do not port a gate for a mechanism this
   repo does not have (no runtime tier switch, so no invalidation to price); a
   ratchet names the module to port from if it ever arrives. (v1.139.0)
+- ⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
+  before it, and reads identically to a stale one.** A date on a table is
+  evidence of when someone looked, never of what they saw. Sonnet 5 was $2.00,
+  never the $3.00 scheduled for 2026-09-01 and cancelled. (v1.139.1)
+- ⚠⚠ **A key that names a FAMILY inherits whichever member's price someone
+  last looked at.** Name the ONE model in the comment; the KEYS (`claude_sonnet`
+  etc.) are wire format in `cost_avoided` and never rename on 1.x. (v1.139.1)
+- ⚠⚠ **Copies that agree with each other prove nothing.** Four copies of the
+  rate across the suite were wrong together. Verify against the source page,
+  and search for DERIVED literals (`TOKEN_SAVINGS.md` carried two) — they move
+  with the rate and are invisible to a search for its name. (v1.139.1)
+- ⚠ **Pinning a number is not vouching for it, and the pin must say which.**
+  `gpt5_latest` is pinned unverified. `tests/test_pricing_rates.py` RESTATES
+  prices rather than importing them — a pin that reads the value it checks
+  asserts nothing. (v1.139.1)
 - ⚠⚠ **A rebuild underneath a scan cannot prove absence.** Staleness that means
   "the SOURCE moved" is blind to an index being rewritten under an unchanged
   tree. (v1.119.0)
@@ -854,7 +858,7 @@ path ([[feedback_fixture_query_corpus_pollution]]).
 ## Release history
 
 ⚠ **This file keeps the THREE newest dated `## vX.Y.Z` sections. Everything
-older is in `docs/CLAUDE-history.md`** — v1.139.0 and v1.138.0 rotated there 2026-09-17, v1.137.1 on 2026-09-01, v1.137.0 on 2026-08-30,
+older is in `docs/CLAUDE-history.md`** — v1.139.1 rotated there 2026-09-19, v1.139.0 and v1.138.0 on 2026-09-17, v1.137.1 on 2026-09-01, v1.137.0 on 2026-08-30,
 v1.116.0 through v1.135.0 on 2026-08-29, v1.115.0 and earlier on 2026-07-25. `CHANGELOG.md` covers most of
 them, but 1.67.0-1.92.0 and 1.96.0 exist ONLY in the history file.
 
