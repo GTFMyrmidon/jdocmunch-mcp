@@ -1,6 +1,6 @@
 # jdocmunch-mcp
 
-**Version:** 1.139.1 |
+**Version:** 1.142.0 |
 **Tests:** `PYTHONPATH=src python -m pytest tests/ -q`
 
 ⚠ **`python -m pytest`, not bare `pytest`**, matching the suite rule in
@@ -10,237 +10,115 @@ into a different environment, and without `PYTHONPATH` the INSTALLED package
 shadows `src/`. ⚠⚠ **Neither form reproduces CI** — see "reproduce CI" under
 Standing operational notes; this one is the edit loop, not the gate.
 
-## v1.139.1 — a rate written for a date that never arrived
+## v1.142.0 — #132: the change set `index_local` already had (whakomatic)
 
-**`token_tracker.PRICING["claude_sonnet"]` was $3.00/1M input tokens.** Claude
-Sonnet 5 is **$2.00/1M** and always has been: it launched at $2.00 with a rise
-to $3.00 scheduled for **2026-09-01**, and Anthropic cancelled that increase the
-day before it would have applied. $3.00 is the superseded Sonnet 4.6's rate —
-exactly what the line's comment ("Claude Sonnet 5 / 4.6") conflated.
+**`index_local` computed the new / changed / deleted lists and every file's
+mtime, then returned three counts.** Now `changes` (`{doc_path, status,
+mtime}`, newest first), `changes_total` and `changes_truncated`, on all three
+success shapes including "No changes detected" (`[]`, `0`, `false`, so nobody
+branches on presence). Contributor PR, merged as `a01c2b2` before any CHANGELOG
+work of ours (policy 3b).
 
-⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
-before it, and reads identically to a stale one.** The header said "As of
-2026-06-24", which made the value look *checked*. It was wrong on that date too.
-**A date on a table is evidence of when someone looked, never of what they saw.**
+⚠⚠ **`CHANGES_CAP = 50` was settled BEFORE merge, and that ordering is the
+lesson.** The first head returned every file. Measured on this repo, 315 files
+on a full index: `changes` was 39,755 of 41,129 response bytes; capped, the
+response is 7,673. **An unbounded list on 1.x cannot be bounded later** — a
+caller who read it as complete has a behaviour change, so the cap and its
+disclosure keys must arrive with the field. ⚠ The sibling key was the tell:
+the same response already capped `files` at 20.
 
-⚠⚠ **A key that names a FAMILY inherits whichever member's price someone last
-looked at.** Three of the four keys are family names; each comment now names the
-ONE model its rate belongs to. ⚠ **The KEYS are unchanged** — `claude_sonnet` is
-emitted verbatim in the `cost_avoided` block of every retrieval response, so a
-rename is a wire change on 1.x. The model identity goes in the comment.
+⚠ **The cap is a head cut and deleted entries sort LAST, so deletions drop
+first.** The `new` / `changed` / `deleted` counts are the authority, never
+`len(changes)`. The tool description says so.
 
-⚠⚠ **Four copies of this rate exist across the suite and they AGREED WITH EACH
-OTHER while being wrong together**, which is why nothing caught it. Verified
-against the source page's *Base Input Tokens* column, not another copy of the
-table. ⚠ `TOKEN_SAVINGS.md` was the fourth copy here and carried two figures
-DERIVED from the rate (`0.0055` / `0.2830` in the worked `_meta` example) —
-derived literals move when a rate moves and are invisible to a search for the
-rate's name.
+⚠ `discover_doc_files` and `_resolve_explicit_paths` now return FOUR values
+(mtimes last). No callers outside `tools/index_local.py`;
+`tools/index_repo.py::discover_doc_files` is a different function. ⚠ `mtime`
+is naive local ISO time on purpose, matching `indexed_at`.
 
-⚠ **`gpt5_latest` is UNTOUCHED and the CHANGELOG says so.** Not an Anthropic
-model, no source consulted; pinned at the value it shipped with so a drift is
-visible, not because $10.00 was verified. **Pinning a number is not the same as
-vouching for it, and the pin must say which it is.**
+Request-changes to fixed head took under a day inside the 24-hour timebox;
+fork owner is a `User`, so our push was available and not needed.
+`tests/test_file_recency.py` (8). No tool, schema or INDEX_VERSION change.
 
-`tests/test_pricing_rates.py` (4). The only prior reference to `PRICING` was a
-key-PRESENCE check (`tests/test_storage.py:259`), so **no test pinned any value**
-and a wrong rate could sit here indefinitely. ⚠ The prices are **restated** from
-the source page, not imported from the module — a pin that reads the value it
-checks asserts nothing. Proven non-vacuous: with $3.00 put back, 3 of 4 fail.
+## v1.141.0 — #131: the snapshot moves to the event that can deliver it
 
-Suite **2722 / 11** under the CI-equivalent sync; `ruff check src/` clean. No
-tool, schema or INDEX_VERSION change; `cost_avoided` VALUES change, keys do not.
+**`run_precompact` wrote the session snapshot as a top-level `systemMessage`
+on PreCompact, which Claude Code discards.** 1.73.0 through 1.140.0: computed
+on every compaction, received by nobody. Same class as #129, one event over.
+Now `run_sessionstart` + `hook-sessionstart` + a `SessionStart` entry with
+matcher `compact|resume|fork`, emitting `additionalContext`. Silent on
+`startup`/`clear` on purpose — a fresh session has no prior doc state and the
+snapshot would present unrelated repos as current focus. Ported from jcm's
+`hooks/snapshot.py::run_sessionstart`, same labels, same gate.
 
-## v1.139.0 — a token count with no time basis, and a tier that is not a lever
+⚠⚠ **`hook-precompact` STAYS as a silent no-op.** Every installed
+`settings.json` names it; deleting the subcommand turns every compaction into
+a hook error on every existing install. The 1.x contract names MCP tools, and
+a CLI subcommand that a config file invokes is the same kind of promise.
+⚠ **Existing installs get SessionStart only by re-running `init`** — the
+merge adds the missing event beside PreCompact (`test_init_adds_sessionstart_
+beside_an_existing_precompact_entry`). ⚠ **No test here can prove Claude Code
+delivers `additionalContext` on SessionStart** — that is a claim about the
+host, taken from jcm's measured hooks and Claude Code's docs, not from this
+suite.
 
-**`schema_tokens_avoided` was published bare.** `get_session_stats` →
-`tool_surface` reported it beside `schema_tokens_visible` /
-`schema_tokens_catalog` with no interval attached, and a reader supplies the
-missing one: **per request.** ⚠⚠ **The schema block is STABLE**, so it is paid
-at full rate roughly once per cache lifetime and at cache-read rates (~0.1x)
-after — jcm measured **86% of baseline input cached**
-(`benchmarks/codex_surface/`) and says in its own words that "N tokens in every
-request" is wrong *and that the repo said exactly that before measuring*. The
-field overstated the cost impact by about an order of magnitude, **in the
-direction that flatters us.** New `schema_tokens_basis` +
-`schema_tokens_basis_note`, from `src/jdocmunch_mcp/schema_basis.py`.
+`tests/test_jdoc_131_sessionstart_snapshot.py` (16). The `systemMessage`
+ratchet walks the AST of all four handlers for the string constant; proven
+non-vacuous with the old line restored (2 of 16 fail). ⚠ The #129 ratchet is
+scoped to `run_pretooluse` and would NOT have caught this — a ratchet catches
+the shape it names and nothing adjacent, which is why this file has its own.
 
-⚠ **The count is NOT discounted.** It answers a real question — payload size —
-and a silently scaled one answers neither that nor the cost question. The fix
-for an unstated basis is a LABEL. (`analyze_perf`'s raw `hit_rate` beside
-`hit_rate_basis` is the same rule.)
+## v1.140.0 — #129 + #130: a hint nobody received, and a budget spent on the weakest word
 
-⚠⚠ **jcm shipped TWO releases that day and only one was ours.** 1.108.312 is
-this. **1.108.311 — refusing a mid-session tier switch that cannot repay the
-cache it invalidates — CANNOT occur here**: `JDOCMUNCH_TOOL_PROFILE` is read at
-STARTUP, there is no runtime switch, so there is no invalidation to price.
-Porting the gate would be machinery for a mechanism we do not have. A ratchet
-in `tests/test_schema_tokens_basis.py` fails the day
-`notifications/tools/list_changed` appears in `src/` with no pricing helper, and
-names the module to port from. ⚠ It is the ONE new test that passes against the
-unfixed tree, so it is the one that needed proving non-vacuous — proven by
-adding the forbidden call and watching it fire.
+⚠ **Tracker-number collision.** These are jdocmunch's own #129 (mimosel, issue)
+and #130 (whakomatic, PR). The rotated v1.138.0 entry also says "#129 + #130",
+and those were jcodemunch-side finding numbers. Read the author, not the number.
 
-⚠ **jdatamunch CAUGHT UP 2026-08-31, both halves** — v1.31.13 stamps the basis
-(`schema_token_basis.py`, singular `token`, not this repo's `schema_basis.py`)
-and measures its tiers in `benchmarks/tier_surface.json`: `core` 65.8% avoided,
-`standard` **5.6%** over three tools. Same verdict as here, a scope bundle
-rather than a token lever. Re-read that repo before quoting this line.
+**#129 — the PreToolUse hint went to stderr on exit 0, which the model never
+sees.** From 1.66.3 through 1.139.1, `run_pretooluse` printed "prefer
+search_sections + get_section" to stderr and returned 0. Claude Code sends
+that to the debug log. The docstring said "directing Claude". Now emitted as
+`hookSpecificOutput.additionalContext` JSON on stdout via a new
+`_emit_additional_context`, the shape ported from jcm's `hooks/_common.py`.
 
-**The tiers are MEASURED for the first time** — `benchmarks/tool_surface/`, a
-regenerable harness plus JSON artifact. At 64 tools / 13,252 schema tokens:
-`core` **−62.08%** (49 tools dropped), `standard` **−9.39%** (8 tools).
-⚠⚠ **`standard` is a SCOPE choice, not a token lever**, and the config surface
-implied otherwise. It stays — deleting a shipped profile breaks a 1.x config —
-and the config comment now says what it does. **A setting that implies a saving
-it does not deliver is the same defect class as an unstated basis.** jcm's
-`standard` measured 9 of 91 tools and 6.7%; same shape in both servers.
+⚠⚠ **An exit-0 hook has ONE model-facing channel per event, and it differs by
+event.** stderr → debug log. Plain stdout → model only on UserPromptSubmit /
+SessionStart-class events. Top-level `systemMessage` → the user. PreCompact
+has NO channel and discards `systemMessage`. **A hook whose output is on the
+wrong channel is indistinguishable from one that fired correctly and was
+ignored**, which is why this sat for 73 minor versions.
 
-⚠⚠ **Weigh what the client RECEIVES, never the catalog filtered by the tier
-bundle.** jcm's first attempt did the latter and was wrong by three tools in
-every tier — it kept a hidden set and dropped force-included ones, pricing a
-surface no client is sent. Here `_ALWAYS_PRESENT_TOOLS` and
-`JDOCMUNCH_DISABLED_TOOLS` both change the answer. New `_build_tools_list()` is
-the ONE producer of the published surface (`list_tools`, the meter and the
-benchmark all route through it) and `_schema_weight` the ONE estimator; the
-closure inside `_tool_surface_stats` is gone. ⚠ `_filter_tools` takes
-`profile_override` so a tier is priced **without switching to it** — answering a
-question about a surface must not mutate the session's.
+⚠⚠ **`run_precompact` has the SAME defect and is NOT fixed here.** It writes
+`{"systemMessage": snapshot}` on PreCompact. Filed as #131 rather than folded
+in: the remedy is a new `SessionStart` hook on `source=compact` plus `init`
+wiring (jcm's `hooks/snapshot.py` is the model), and one-issue-one-verdict
+says a channel fix and a new hook are two verdicts.
 
-`tests/test_schema_tokens_basis.py` (9; **8 seen failing against the unfixed
-tree**). No tool, schema or INDEX_VERSION change; additive response keys only.
+`tests/test_jdoc_129_hint_channel.py` (6). The source-level ratchet against
+`print(..., file=sys.stderr)` inside `run_pretooluse` was proven non-vacuous
+with the old print restored: 2 of 6 fail. ⚠ The ratchet is scoped to
+`run_pretooluse` on purpose; `run_posttooluse` legitimately passes
+`stderr=subprocess.DEVNULL`.
 
-## v1.138.0 — #129 + #130: a fusion over one channel counted twice, and a 1.25 MB document on the floor
+**#130 — Stage-A pruning admitted the most common term first (whakomatic).**
+`PostingIndex.candidates` walked terms in query order and returned at 200
+ids, so a term with document frequency over the cap took every slot and the
+section carrying the rare terms never reached BM25. Contributor measured on a
+4,970-section index: 0% hit rate with the common word first, 100% with it last.
+Now rarest-first with a total tiebreak; the overflowing list fills the rest via
+`heapq.nsmallest`, which also removed a pre-existing hash-seed dependence.
 
-Four findings reported from OUTSIDE this repo, while doc-indexing
-`jcodemunch-mcp` from a jcodemunch session. ⚠ Tracker was clean at the start
-(0 issues, 0 PRs) — re-verified, never transcribed.
+⚠ **Raising the cap is the wrong lever**: in query order it must exceed the
+corpus's highest document frequency, which grows with the corpus. ⚠ **The
+replay gate cannot express this** — the self-fixture's top term is in 105 of
+570 sections, under the cap, so both algorithms admit identical candidates
+there. Tests use a 500-section corpus.
 
-**#129 — `find_similar_sections` scored summaries and called them bodies.**
-The description advertised "title + body lexical Jaccard" and there was **no
-body channel**: `body_text = sec.get("summary")` was unconditional, and under
-`use_ai_summaries=False` a summary IS the heading text. So
-`body_tokens == title_tokens` and `0.70 * body + 0.30 * title` weighted one
-input against itself.
+⚠ **Contributor PR merged FIRST, before any CHANGELOG work of ours** (policy
+3b). Trial-merged onto master locally before approving: 2733 / 6, ruff clean.
+CLA status read on the head SHA (`count=1`, not from `gh pr checks`).
 
-⚠⚠ **The finding is not a wrong score, it is a TWO-CHANNEL VERDICT REPORTED
-OVER ONE CHANNEL** — complete with a `dominant_signal` naming which of the two
-won. 8 of 8 clusters on a 955-section corpus were the artifact; the "identical"
-pair was 1,105 bytes of ASCII diagram against a `> **Version note:**` paragraph.
-
-⚠ **The tool's own diff output was the tell it could not read.** Every variant
-returned `body_unique_a: []` AND `body_unique_b: []`. Two sections with
-different byte ranges cannot both be that, so "no unique content on either
-side" and "I did not read either side" were indistinguishable. `differs_by`
-now carries `body_signal`.
-
-⚠ **The cost was MEASURED, because the comment being deleted named a real
-tradeoff.** Reading every examined body: **0.24 s** at the 1000-section cap,
-2.5 s for all 9,507. The obvious optimisation — read only pairs surviving the
-title pre-filter — saves **~6%**, because **899 of 955 sections survive into
-some pair** on a doc set with repetitive headings. Rejected on the measurement,
-not on taste.
-
-⚠⚠ **AN "ALL PAIRS WERE title_only" CAP DOES NOT CLOSE THIS, AND MY FIRST ONE
-WAS THAT CAP.** Union-find merges transitively: two empty `## Architecture`
-stubs (title_only, 1.0) join a cluster holding two real unrelated Architecture
-sections, so the cluster contains a body pair, passes an all-pairs test, and
-takes its 1.0 from the pair that read nothing. The verdict now rests on
-**`evidence_max_score`** — the best pair that actually compared bodies —
-while reported `max_score` stays the true max, so the two numbers together
-show what happened (`max_score: 1.0`, `evidence_max_score: 0.3406`,
-`overlapping_topic`). **Found by re-running the fix on the real corpus, not by
-the tests I had just written.**
-
-⚠ The `title_only` refusal is scoped to the LEXICAL-ONLY path on purpose:
-cosine is a channel that did not come from the title, so refusing there would
-suppress genuine duplicates the embedding channel found. Pinned by a test.
-
-⚠ **Sibling CHECKED and CLEAN**: `search_sections(dedupe=true)` reads
-`retrieval/dedup.py`'s cluster sidecar, which uses real `content`. The defect
-did not reach ranked search.
-
-⚠⚠ **The fixtures were reading site-packages, and so were the PRE-EXISTING
-ones.** `test_find_similar_sections.py` left `use_embeddings` at `"auto"`,
-which enables embeddings whenever an offline provider happens to be installed —
-so this box ran a different program from CI, which installs neither. Measured:
-under `"auto"` the two empty stubs came back at **cosine 1.0** and the guard
-under test never fired. Both files now PIN `use_embeddings=False`.
-**[[feedback_an_assumption_about_the_machine_is_not_a_fixture]], one release
-after v1.137.1 made the same finding about provider probes.**
-
-**#130 — the best retrieval target in the corpus was silently dropped.**
-jcm's `CHANGELOG.md` is 1,252,519 bytes and was **not in the index at all**;
-`index_local` returned `file_count: 124`, `success: true`, `truncated: false`.
-The skip WAS counted and `coverage.skip_counts` WAS persisted — the response
-carried none of it.
-
-⚠⚠ **A count computed and withheld at the one moment the caller could act on
-it is the same defect as not computing it.** `truncated` refers only to the
-`max_files` cap, so it answered a different question truthfully while the
-caller read it as "did I get everything".
-
-⚠ **`truncated` KEEPS its meaning** — changing what a shipped key means is
-forbidden on 1.x. New `coverage_complete` is the field it was being misread as,
-plus `skip_counts` / `skipped_paths` / `skipped_paths_truncated`.
-
-⚠ **`coverage_complete` is keyed on ACTIONABLE skips only.** `gitignored` and
-`unsupported_extension` fire on every real repo (16 and 900 here); keying on
-all of them makes it `false` always, and a signal that always fires hides the
-case it exists for.
-
-⚠⚠ **The disclosure is on ALL FOUR response paths, and the fourth is
-`"No documentation files found"`.** A corpus whose every candidate was dropped
-for size returned that error verbatim — reads as "there is nothing here" when
-the truth is "there is something here and I refused it", and it is the one
-payload with no `file_count` to be suspicious of. Found because a test I wrote
-for something else hit it. A test asserts the count of attach sites.
-
-**`DEFAULT_MAX_FILE_SIZE` 500 KB → 5 MB, overridable via
-`JDOCMUNCH_MAX_FILE_SIZE`.** ⚠ Measured, not guessed: the real 1.25 MB file
-parses in **1.03 s**, **8.3 MB** peak, 1,515 sections at a 565-byte median, so
-the parser was never the constraint. ⚠⚠ **The ASYMMETRY is what made 500 KB
-indefensible, not the absolute value** — the same walk already granted
-`OFFICE_MAX_FILE_SIZE = 25 MB` to `.pdf`/`.docx`, so it accepted a 25 MB
-PowerPoint and refused a 600 KB Markdown file. ⚠ The resolver fails OPEN on
-garbage/`0`/negatives (a typo must not shrink a corpus) and resolves at CALL
-time — a default argument binds the constant at import, so an env var set
-afterwards is read and ignored.
-
-Measured end to end: **9,624 → 11,138 sections**, 4.7 s. ⚠ The disclosure
-surfaced a SECOND unfiled skip on its first run — `office_extra_not_installed:
-1`, `jcodemunch_whitepaper.pdf` — persisted and unreported the whole time.
-
-**sdist allowlist guard PORTED** (`tests/test_sdist_exclusions.py`, 10). This
-repo had NEITHER the canaries nor the allowlist; `pyproject.toml` excluded only
-`.claude/`. ⚠ The canary half proves NAMED bad paths are absent and a scratch
-file has no name to plant a canary under — jcm 1.108.305 shipped `relnotes.md`
-that way. ⚠ The reverse assertion (the allowlist names nothing that stopped
-shipping) is what catches a wholesale copy of jcm's list, which carries
-`uv.lock`/`Dockerfile` and two dozen root docs this repo does not have. ⚠ Also
-a per-member size budget — `tests/infographic.png` was 87% of this sdist until
-1.123.2 and no guard could see it. ⚠⚠ **jdatamunch was CHECKED and is missing
-the same guard**; ported there separately.
-
-⚠⚠ **JSON indexing INVESTIGATED and DELIBERATELY NOT CHANGED — the obvious
-remedy is wrong and the measurement says so.** The corpus was 88.2% `.json`
-sections, 80.8% from `benchmarks/`. General JSON indexing IS intended
-(`parser/json_parser.py` exists for it; OpenAPI is a separate sniffed path).
-**A `benchmarks/` skip drops 20 GENUINE documentation files** —
-`METHODOLOGY.md`, `REPRODUCING.md`, `whitepaper.md`, four `README.md`s — to
-remove 37 data files: **the directory is the wrong axis, the split is by file
-KIND.** ⚠ `SKIP_PATTERNS` is matched as a path SUBSTRING, so the entry would
-also take `docs/benchmarks/`. ⚠ Skip-name authority checked for the
-fourth-undeclared-copy problem and is CLEAN: `tools/_constants.py`, imported by
-`index_local` and `index_repo`, defined nowhere else. `extra_ignore_patterns`
-stays the mechanism.
-
-Tests `tests/test_jdoc_129_body_channel.py` (20; **11 fail / 9 pass** against
-the full pre-fix behaviour) and `tests/test_jdoc_130_oversize_disclosure.py`
-(21). Suite **2700 / 6**; `ruff check src/` clean. No tool, schema or
-INDEX_VERSION change.
-
-## Lessons from rotated entries (v1.116.0–v1.137.0, lifted 2026-08-29 / 2026-08-30)
+## Lessons from rotated entries (v1.116.0–v1.139.1, lifted 2026-08-29 / 2026-08-30 / 2026-09-17 / 2026-09-19)
 
 ⚠⚠ **These outlived the releases that produced them.** Each line names the
 version whose full narrative now lives in `docs/CLAUDE-history.md`. **Read the
@@ -268,6 +146,26 @@ entry that earned no reusable rule got no line.
 
 **Writing a fix**
 
+- ⚠⚠ **A two-channel verdict reported over one channel is a different defect
+  from a wrong score**, and the tool's own diff output (`body_unique_a: []` on
+  both sides) was the tell it could not read. ⚠ An "all pairs were title_only"
+  cap does not close it: union-find merges transitively, so a cluster can pass
+  an all-pairs test on a score from the pair that read nothing. Rest the
+  verdict on the best pair that actually compared bodies. (v1.138.0)
+- ⚠⚠ **A count computed and withheld at the moment the caller could act on it
+  is the same defect as not computing it.** `truncated` answered a different
+  question truthfully while being read as "did I get everything"; the fix is a
+  NEW key (`coverage_complete`), never a changed meaning on 1.x, and it is keyed
+  on ACTIONABLE skips only, since a signal that always fires hides the case it
+  exists for. Disclose on ALL response paths, including the error one.
+  (v1.138.0)
+- ⚠⚠ **An asymmetry is what makes a limit indefensible, not its value.** The
+  walk accepted a 25 MB `.pptx` and refused a 600 KB `.md`. Measure before
+  raising (1.25 MB parsed in 1.03 s / 8.3 MB peak); resolve env overrides at
+  CALL time, since a default argument binds at import. (v1.138.0)
+- ⚠ **The obvious remedy can be the wrong axis.** A `benchmarks/` skip would
+  drop 20 genuine docs to remove 37 data files; the split was by file KIND.
+  `SKIP_PATTERNS` matches path substrings. (v1.138.0)
 - ⚠⚠ **An equivalence you ASSERT to ship an allow-list is owed a MEASUREMENT,
   and the measurement is a SEPARATE release.** 1.137.0 shipped the allow-list on
   an asserted equivalence; 1.137.1 measured it (max drift 6.0e-13 over 16 canary
@@ -363,6 +261,35 @@ entry that earned no reusable rule got no line.
 
 **Claims and evidence**
 
+- ⚠⚠ **A count with no time basis gets one supplied by the reader, and the
+  reader picks "per request."** A stable schema block is paid at cache-read
+  rates after the first hit, so a bare `schema_tokens_avoided` overstated the
+  saving by about an order of magnitude in the direction that flatters us. The
+  fix for an unstated basis is a LABEL (`*_basis`), never a silently scaled
+  number. (v1.139.0)
+- ⚠ **Weigh what the client RECEIVES, never the catalog filtered by a tier
+  bundle** — force-included and disabled tools both change the answer. One
+  producer of the published surface, one estimator. (v1.139.0)
+- ⚠ **A setting that implies a saving it does not deliver is the same defect
+  as an unstated basis.** `standard` measured 9.39% and stays as a SCOPE
+  choice; the config comment says so. Do not port a gate for a mechanism this
+  repo does not have (no runtime tier switch, so no invalidation to price); a
+  ratchet names the module to port from if it ever arrives. (v1.139.0)
+- ⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
+  before it, and reads identically to a stale one.** A date on a table is
+  evidence of when someone looked, never of what they saw. Sonnet 5 was $2.00,
+  never the $3.00 scheduled for 2026-09-01 and cancelled. (v1.139.1)
+- ⚠⚠ **A key that names a FAMILY inherits whichever member's price someone
+  last looked at.** Name the ONE model in the comment; the KEYS (`claude_sonnet`
+  etc.) are wire format in `cost_avoided` and never rename on 1.x. (v1.139.1)
+- ⚠⚠ **Copies that agree with each other prove nothing.** Four copies of the
+  rate across the suite were wrong together. Verify against the source page,
+  and search for DERIVED literals (`TOKEN_SAVINGS.md` carried two) — they move
+  with the rate and are invisible to a search for its name. (v1.139.1)
+- ⚠ **Pinning a number is not vouching for it, and the pin must say which.**
+  `gpt5_latest` is pinned unverified. `tests/test_pricing_rates.py` RESTATES
+  prices rather than importing them — a pin that reads the value it checks
+  asserts nothing. (v1.139.1)
 - ⚠⚠ **A rebuild underneath a scan cannot prove absence.** Staleness that means
   "the SOURCE moved" is blind to an index being rewritten under an unchanged
   tree. (v1.119.0)
@@ -478,10 +405,16 @@ descendant-inclusive, every one of those sums silently starts double-counting.
 ## Release: the two steps that are only written down here
 
 ⚠⚠ **The full checklist lives in the `release` skill, which is now TRACKED
-HERE at `.claude/skills/release/SKILL.md` (2026-09-01).** It is still
-GITIGNORED and therefore MACHINE-LOCAL in jcodemunch-mcp, which is where this
-copy came from — verbatim, plus a marked delta block, because two copies that
+HERE at `.claude/skills/release/SKILL.md` (2026-09-01).** It was copied from
+jcodemunch-mcp — verbatim, plus a marked delta block, because two copies that
 drift silently are worse than one copy with an explicit delta list.
+⚠⚠ **It drifted silently anyway, within a day.** jcm rewrote step 7 on
+2026-09-02 and nobody ported it; 1.142.0 (2026-09-19) handed over the stale
+line. Re-synced that day. ⚠ jcm now TRACKS its copy (2026-09-04) and its
+publish steps are superseded by its `release.yml`; a THIRD, untracked copy sits
+at `C:\MCPs\.claude\skills\release\`. **Three copies, no test binding any two**
+— diff this file's body against jcm's before a release rather than trusting
+"verbatim".
 
 ⚠⚠ **The two items below STAY restated here, and that is not redundancy.**
 Each has already cost a real incident, and a skill file is loaded only when
@@ -931,7 +864,7 @@ path ([[feedback_fixture_query_corpus_pollution]]).
 ## Release history
 
 ⚠ **This file keeps the THREE newest dated `## vX.Y.Z` sections. Everything
-older is in `docs/CLAUDE-history.md`** — v1.137.1 rotated there 2026-09-01, v1.137.0 on 2026-08-30,
+older is in `docs/CLAUDE-history.md`** — v1.139.1 rotated there 2026-09-19, v1.139.0 and v1.138.0 on 2026-09-17, v1.137.1 on 2026-09-01, v1.137.0 on 2026-08-30,
 v1.116.0 through v1.135.0 on 2026-08-29, v1.115.0 and earlier on 2026-07-25. `CHANGELOG.md` covers most of
 them, but 1.67.0-1.92.0 and 1.96.0 exist ONLY in the history file.
 
@@ -978,7 +911,7 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 - `storage/doc_store.py` — DocIndex, DocStore, detect_changes, incremental_save
 - `parser/` — one file per format (markdown, rst, asciidoc, notebook, html, text, openapi, json, xml)
 - `tools/` — index_local, index_repo, index_file, get_toc, get_toc_tree, search_sections, get_section, get_sections, list_repos, delete_index, get_broken_links, get_doc_coverage, get_backlinks, get_stale_pages, get_wiki_stats, check_section_delete_safe, get_section_blast_radius, find_similar_sections
-- `cli/hooks.py` — PreToolUse (Read interceptor) + PostToolUse (auto-reindex) + PreCompact (session snapshot) hook handlers for Claude Code; owns `_DOC_EXTENSIONS`
+- `cli/hooks.py` — PreToolUse (Read interceptor) + PostToolUse (auto-reindex) + SessionStart (session snapshot on compact/resume/fork, #131) hook handlers for Claude Code; PreCompact kept as a no-op; owns `_DOC_EXTENSIONS`
 - `watch.py` — (#78) `watch` daemon: `discover_local_doc_repos` + `watch_docs` (watchfiles-based, incremental `index_local` refresh, rediscover loop)
 - `service_installer.py` — (#78) cross-platform login-service installer for `watch` (`jdocmunch-watch`; systemd/launchd/Task Scheduler)
 - `cli/init.py` — `jdocmunch-mcp init` full onboarding: client detection, config patching, CLAUDE.md policy, Cursor/Windsurf rules, hooks, index; `claude-md` subcommand
@@ -994,7 +927,8 @@ Documentation section indexing for the jMunch suite. Companion to jcodemunch-mcp
 | `index-file <path>` | Re-index a single file within an existing index |
 | `hook-pretooluse` | PreToolUse hook: intercept Read on large doc files (reads stdin) |
 | `hook-posttooluse` | PostToolUse hook: auto-reindex doc files after Edit/Write (reads stdin) |
-| `hook-precompact` | PreCompact hook: session snapshot before context compaction (reads stdin) |
+| `hook-precompact` | PreCompact hook: silent no-op kept for installed settings.json entries (#131; reads stdin) |
+| `hook-sessionstart` | (#131) SessionStart hook: restore the doc session snapshot after compact/resume/fork as `additionalContext` (reads stdin) |
 | `watch` | (#78) Foreground daemon: auto-reindex every locally-indexed doc repo on any on-disk doc change. `--no-ai-summaries`, `--quiet` |
 | `watch-install` / `watch-uninstall` | (#78) Install/remove the doc watcher as a login service (systemd/launchd/Task Scheduler; `jdocmunch-watch`). `watch-install` takes `watch`'s flags: `--no-ai-summaries`, `--quiet` (#120) |
 | `watch-status` | (#78) Print doc-watcher service state + per-repo watch coverage (also the `get_watch_status` MCP tool) |

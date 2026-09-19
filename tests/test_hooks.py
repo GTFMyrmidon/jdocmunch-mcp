@@ -15,6 +15,15 @@ import pytest
 # PreToolUse hook
 # ---------------------------------------------------------------------------
 
+
+def _additional_context(stdout: str) -> str:
+    """The one exit-0 PreToolUse channel Claude Code feeds to the model (#129)."""
+    payload = json.loads(stdout)
+    out = payload["hookSpecificOutput"]
+    assert out["hookEventName"] == "PreToolUse"
+    return out["additionalContext"]
+
+
 class TestPreToolUse:
     """Tests for hook-pretooluse handler."""
 
@@ -36,7 +45,8 @@ class TestPreToolUse:
         p.write_text("x" * 5000)
         assert self._run({"tool_input": {"file_path": str(p)}}) == 0
         captured = capsys.readouterr()
-        assert "jDocMunch hint" in captured.err
+        assert "jDocMunch hint" in _additional_context(captured.out)
+        assert captured.err == ""
 
     def test_allows_targeted_read(self, tmp_path):
         p = tmp_path / "big.md"
@@ -52,13 +62,13 @@ class TestPreToolUse:
         p = tmp_path / "doc.rst"
         p.write_text("x" * 5000)
         assert self._run({"tool_input": {"file_path": str(p)}}) == 0
-        assert "jDocMunch hint" in capsys.readouterr().err
+        assert "jDocMunch hint" in _additional_context(capsys.readouterr().out)
 
     def test_warns_on_large_adoc(self, tmp_path, capsys):
         p = tmp_path / "doc.adoc"
         p.write_text("x" * 5000)
         assert self._run({"tool_input": {"file_path": str(p)}}) == 0
-        assert "jDocMunch hint" in capsys.readouterr().err
+        assert "jDocMunch hint" in _additional_context(capsys.readouterr().out)
 
     def test_handles_invalid_json(self):
         from jdocmunch_mcp.cli.hooks import run_pretooluse
@@ -148,7 +158,8 @@ class TestPostToolUse:
 class TestPreCompact:
     """Tests for hook-precompact handler."""
 
-    def test_returns_snapshot(self, capsys):
+    def test_precompact_is_silent(self, capsys):
+        """#131: PreCompact discards systemMessage, so nothing is written there."""
         from jdocmunch_mcp.cli.hooks import run_precompact
         mock_repos = {
             "repos": [{"name": "test-repo", "section_count": 42, "doc_count": 5, "source_root": "/tmp/docs"}],
@@ -157,11 +168,23 @@ class TestPreCompact:
         with mock.patch("sys.stdin", io.StringIO("{}")):
             with mock.patch("jdocmunch_mcp.tools.list_repos.list_repos", return_value=mock_repos):
                 assert run_precompact() == 0
+        assert capsys.readouterr().out == ""
 
-        out = capsys.readouterr().out
-        result = json.loads(out)
-        assert "systemMessage" in result
-        assert "test-repo" in result["systemMessage"]
+    def test_sessionstart_restores_snapshot_on_compact(self, capsys):
+        from jdocmunch_mcp.cli.hooks import run_sessionstart
+        mock_repos = {
+            "repos": [{"name": "test-repo", "section_count": 42, "doc_count": 5, "source_root": "/tmp/docs"}],
+            "count": 1,
+        }
+        with mock.patch("sys.stdin", io.StringIO(json.dumps({"source": "compact"}))):
+            with mock.patch("jdocmunch_mcp.tools.list_repos.list_repos", return_value=mock_repos):
+                assert run_sessionstart() == 0
+
+        result = json.loads(capsys.readouterr().out)
+        out = result["hookSpecificOutput"]
+        assert out["hookEventName"] == "SessionStart"
+        assert "test-repo" in out["additionalContext"]
+        assert "systemMessage" not in result
 
     def test_returns_nothing_when_no_repos(self, capsys):
         from jdocmunch_mcp.cli.hooks import run_precompact
@@ -204,6 +227,8 @@ class TestInstallHooks:
         assert hooks["PreToolUse"][0]["hooks"][0]["command"] == f"{exe} hook-pretooluse"
         assert hooks["PostToolUse"][0]["hooks"][0]["command"] == f"{exe} hook-posttooluse"
         assert hooks["PreCompact"][0]["hooks"][0]["command"] == f"{exe} hook-precompact"
+        assert hooks["SessionStart"][0]["hooks"][0]["command"] == f"{exe} hook-sessionstart"
+        assert hooks["SessionStart"][0]["matcher"] == "compact|resume|fork"
 
     def test_idempotent(self, tmp_path):
         from jdocmunch_mcp.cli.init import install_hooks

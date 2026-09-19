@@ -121,7 +121,7 @@ def test_hook_commands_built_from_resolved_executable():
     hooks = _enforcement_hooks()
     cmds = [h["command"] for rules in hooks.values() for r in rules for h in r["hooks"]]
     assert {c.rsplit(" ", 1)[1] for c in cmds} == {
-        "hook-pretooluse", "hook-posttooluse", "hook-precompact",
+        "hook-pretooluse", "hook-posttooluse", "hook-precompact", "hook-sessionstart",
     }
     for c in cmds:
         assert c.startswith(exe)

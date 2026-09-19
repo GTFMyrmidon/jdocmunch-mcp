@@ -209,8 +209,14 @@ def run_pretooluse() -> int:
     """PreToolUse hook: intercept Read calls on large doc files.
 
     Reads hook JSON from stdin.  If the target is a doc file above the
-    size threshold, prints a stderr hint directing Claude to use
-    jDocMunch tools instead.
+    size threshold, emits a hint directing Claude to use jDocMunch tools
+    instead, as ``hookSpecificOutput.additionalContext`` JSON on stdout.
+
+    ⚠ That channel is the ONLY one that reaches the model from an exit-0
+    PreToolUse hook (#129). stderr on exit 0 goes to the debug log; plain
+    stdout is fed back only on UserPromptSubmit/SessionStart-class events;
+    a top-level ``systemMessage`` surfaces to the user. The hint was written
+    to stderr from 1.66.3 through 1.139.1 and was never received.
 
     Small files, non-doc files, and unreadable paths are silently allowed.
 
@@ -244,12 +250,25 @@ def run_pretooluse() -> int:
 
     # Full-file exploratory read on a large doc file -- warn but allow.
     # Hard deny breaks the Edit workflow (Claude Code requires Read before Edit).
-    print(
+    return _emit_additional_context(
+        "PreToolUse",
         f"jDocMunch hint: this is a {size:,}-byte doc file. "
         "Prefer search_sections + get_section for exploration. "
         "Use Read only when you need exact line numbers for Edit.",
-        file=sys.stderr,
     )
+
+
+def _emit_additional_context(event_name: str, text: str) -> int:
+    """Emit model-facing ``additionalContext`` for an exit-0 hook.
+
+    Same shape as jcodemunch-mcp's ``_common._emit_additional_context``:
+    ``{"hookSpecificOutput": {"hookEventName": ..., "additionalContext": ...}}``
+    on stdout, exit 0. Exit 2 would also reach the model via stderr, but it
+    blocks the call, and a hard deny breaks Read-before-Edit.
+    """
+    print(json.dumps({
+        "hookSpecificOutput": {"hookEventName": event_name, "additionalContext": text},
+    }))
     return 0
 
 
@@ -306,31 +325,73 @@ def run_posttooluse() -> int:
 
 
 def run_precompact() -> int:
-    """PreCompact hook: generate session snapshot before context compaction.
+    """PreCompact hook: kept as a no-op for settings.json entries already installed.
 
-    Reads hook JSON from stdin. Builds a compact snapshot of the current
-    doc session state and returns it as a systemMessage for context injection.
+    ⚠ PreCompact has NO exit-0 output channel (#131). It has no
+    ``hookSpecificOutput.additionalContext``, and Claude Code discards a
+    PreCompact hook's top-level ``systemMessage``. From 1.73.0 through 1.140.0
+    this hook wrote the session snapshot into that field, and nobody received
+    it. The snapshot now reaches the model through ``run_sessionstart`` on
+    ``source=compact``, which fires right after the compaction this hook fires
+    before.
+
+    The subcommand stays registered: a 1.x ``settings.json`` written by an
+    earlier ``init`` still names it, and an unknown subcommand would turn every
+    compaction into a hook error. Re-run ``jdocmunch-mcp init`` to add the
+    SessionStart entry beside it.
 
     Returns exit code (always 0 -- errors are swallowed to avoid blocking).
     """
     try:
-        data = json.load(sys.stdin)  # Validate stdin is valid JSON
+        json.load(sys.stdin)  # Drain stdin so the caller never sees EPIPE.
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return 0
+
+
+_SESSIONSTART_SOURCES = {
+    "compact": "restored after compaction",
+    "resume": "restored on resume",
+    "fork": "carried into this fork",
+}
+
+
+def run_sessionstart() -> int:
+    """SessionStart hook: re-inject the doc session snapshot after compaction.
+
+    Reads hook JSON from stdin. On ``source`` compact / resume / fork, builds
+    the same cwd-focused snapshot ``run_precompact`` used to build and emits it
+    as ``hookSpecificOutput.additionalContext`` (#131), the one channel an
+    exit-0 hook has to the model. Stays silent on startup / clear: a fresh
+    session has no prior doc state worth restoring, and the snapshot would
+    present unrelated repos as current focus.
+
+    Returns exit code (always 0 -- errors are swallowed to avoid blocking).
+    """
+    try:
+        data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
+    if not isinstance(data, dict):
+        return 0
 
-    cwd = data.get("cwd") if isinstance(data, dict) else None
+    source = data.get("source")
+    source = source.strip().lower() if isinstance(source, str) else ""
+    label = _SESSIONSTART_SOURCES.get(source)
+    if label is None:
+        return 0
 
     try:
-        snapshot = _build_snapshot(cwd=cwd)
+        snapshot = _build_snapshot(cwd=data.get("cwd"))
     except Exception:
         return 0
-
-    if not snapshot:
+    if not snapshot.strip():
         return 0
 
-    result = {"systemMessage": snapshot}
-    json.dump(result, sys.stdout)
-    return 0
+    return _emit_additional_context(
+        "SessionStart",
+        f"## jDocMunch session state ({label})\n\n{snapshot}",
+    )
 
 
 def _hook_include_source_roots() -> bool:

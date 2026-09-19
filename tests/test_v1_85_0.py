@@ -127,18 +127,19 @@ class TestPrecompactSnapshotScoping:
         assert snap.count("- **repo") == 3
         assert "3 omitted" in snap
 
-    def test_run_precompact_threads_cwd(self, tmp_path, capsys):
-        from jdocmunch_mcp.cli.hooks import run_precompact
+    def test_run_sessionstart_threads_cwd(self, tmp_path, capsys):
+        """Was run_precompact until #131 moved the snapshot to SessionStart."""
+        from jdocmunch_mcp.cli.hooks import run_sessionstart
         a = tmp_path / "proj"; a.mkdir()
         repos = _repos(
             {"name": "matched", "section_count": 5, "doc_count": 2, "source_root": str(a)},
             {"name": "unmatched", "section_count": 9, "doc_count": 3, "source_root": str(tmp_path / "elsewhere")},
         )
-        stdin = json.dumps({"cwd": str(a)})
+        stdin = json.dumps({"cwd": str(a), "source": "compact"})
         with mock.patch("sys.stdin", io.StringIO(stdin)):
             with mock.patch("jdocmunch_mcp.tools.list_repos.list_repos", return_value=repos):
-                assert run_precompact() == 0
-        msg = json.loads(capsys.readouterr().out)["systemMessage"]
+                assert run_sessionstart() == 0
+        msg = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "matched" in msg
         assert "unmatched" not in msg
 

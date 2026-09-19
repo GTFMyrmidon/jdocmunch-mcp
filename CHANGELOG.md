@@ -2,6 +2,175 @@
 
 ## [Unreleased]
 
+## [1.142.0] - 2026-09-19 - the change set index_local already had
+
+### Added - #132: `index_local` returns the change set it already computed (whakomatic)
+
+Contributed by **whakomatic**, who wrote the feature, the tests and the cap.
+
+Change detection produces the new, changed and deleted file lists on every
+`index_local` call, and the discovery walk reads each file's modification
+time. The response reduced both to three counts, so a caller wanting a
+"recently edited" view at session start had to walk the tree again. The
+response now carries what was already in hand:
+
+- `changes`: one `{doc_path, status, mtime}` entry per affected file. `status`
+  uses the same `new` / `changed` / `deleted` words as the count fields.
+  `mtime` is ISO 8601 local time with no zone, the same convention as
+  `indexed_at`, and `null` for a deleted file. Sorted newest first, entries
+  with no `mtime` after the dated ones, `doc_path` breaking ties.
+- `changes_total`: the uncapped count.
+- `changes_truncated`: true when entries were dropped.
+
+All three keys are present on every success shape: a full index (every file is
+`new`), an incremental pass, and the "No changes detected" return, which emits
+`[]`, `0` and `false` so a caller never branches on presence.
+
+**The list is capped at 50 (`CHANGES_CAP`), and the cap was settled before
+merge on purpose.** The first version of the PR returned every file. Measured
+on this repository, 315 files on a full index: `changes` was 39,755 bytes of a
+41,129-byte response. With the cap the same response is 7,673 bytes. The same
+response already caps `files` at 20 for the same reason, and on a full index
+the list tells the caller nothing per file, since every entry is `new`. A
+field that ships on 1.x returning everything cannot later start returning 50
+without changing behaviour for whoever read it as complete, so the bound had
+to arrive with the field.
+
+The cap is a plain head cut and deleted entries sort last, so deletions are
+dropped first. The `new` / `changed` / `deleted` counts are the authority, not
+the length of `changes`; the tool description says so where an agent reads it.
+
+Internal: `discover_doc_files` returns a fourth value, the mtimes it already
+read, and `_resolve_explicit_paths` returns them as a fourth value too. Both
+are module-level helpers in `tools/index_local.py` with no callers outside it;
+`tools/index_repo.py` has a function of the same name that is a different
+function and is unchanged. No tool, schema, storage or `INDEX_VERSION` change;
+every existing `index_local` response key is still present, asserted per shape
+in `tests/test_file_recency.py` (8). `index_repo` and `index_file` responses
+are unchanged.
+
+## [1.141.0] - 2026-09-17 - the snapshot moves to the event that can deliver it
+
+### Fixed - #131: the PreCompact snapshot went into a field Claude Code discards
+
+`hook-precompact` built a cwd-focused snapshot of the indexed doc repos and
+wrote it as a top-level `systemMessage`. PreCompact has no
+`hookSpecificOutput.additionalContext`, and Claude Code discards a PreCompact
+hook's `systemMessage`, so from 1.73.0 through 1.140.0 the snapshot was
+computed on every compaction and received by nobody. Found while fixing #129,
+which was the same class of defect on PreToolUse; split out because the
+remedy here is a new hook, not a channel change.
+
+**New `hook-sessionstart` subcommand and a `SessionStart` hook entry with
+matcher `compact|resume|fork`.** On those sources it builds the same snapshot
+`hook-precompact` used to build (same `cwd` focus, same path-safety from #66)
+and emits it as `additionalContext`, the one channel an exit-0 hook has to the
+model. On `startup` and `clear` it stays silent: a fresh session has no prior
+doc state, and injecting the snapshot there would present unrelated repos as
+current focus. Shape and source gate match jcodemunch-mcp's `run_sessionstart`.
+
+⚠ **`hook-precompact` STAYS, as a silent no-op.** Every `settings.json` an
+earlier `init` wrote names it, and removing the subcommand would turn each
+compaction into a hook error on every existing install. It drains stdin and
+exits 0. ⚠ **Existing installs need `jdocmunch-mcp init` re-run** to gain the
+SessionStart entry; the merge adds it beside the PreCompact one and leaves
+everything else untouched. A test pins that path.
+
+`tests/test_jdoc_131_sessionstart_snapshot.py` (16): the three sources
+inject, five non-sources are silent, malformed stdin and a snapshot exception
+never block, PreCompact writes nothing, the re-run `init` path, CLI dispatch,
+and a source-level ratchet that no hook handler names `systemMessage`.
+Ratchet proven non-vacuous with the 1.140.0 line restored: 2 of 16 fail.
+Three existing tests moved from `run_precompact` to `run_sessionstart`.
+
+No tool, schema or INDEX_VERSION change. One new CLI subcommand, one new hook
+entry from `init`. Suite **2756 / 6** locally, **2751 / 11** under the
+CI-equivalent sync; `ruff check src/` clean.
+
+## [1.140.0] - 2026-09-17 - a hint nobody received, and a candidate budget spent on the weakest word
+
+⚠ The tracker numbers here are jdocmunch's own: issue #129 (mimosel) and
+PR #130 (whakomatic). The `#129` / `#130` headings under 1.138.0 below are
+jcodemunch-side finding numbers and refer to different work.
+
+### Fixed - #129: the PreToolUse hint was written to stderr, so Claude never saw it
+
+`hook-pretooluse` intercepts a full-file `Read` on a large doc file and prints
+a steering hint ("prefer `search_sections` + `get_section`"). From 1.66.3
+through 1.139.1 that hint went to **stderr with exit 0**. Claude Code sends an
+exit-0 hook's stderr to the debug log only. The docstring said the text was
+"directing Claude"; it was directing nobody, and registering the hook cost an
+interpreter start per matching `Read` for no effect.
+
+The hint is now emitted as `hookSpecificOutput.additionalContext` JSON on
+stdout, the one channel an exit-0 PreToolUse hook has to the model. Plain
+stdout would not have worked either: only prompt- and session-class events
+feed plain stdout back as context. A top-level `systemMessage` surfaces to the
+user. jcodemunch-mcp already documents all three in its hook module header,
+and its `_emit_additional_context` is the shape ported here.
+
+⚠⚠ **A hook that exits 0 has exactly one model-facing channel per event, and
+the channel is not the same for every event.** Reported by @mimosel with the
+documentation quote, the failing line, the sibling's fix and the version range.
+The fix is theirs; the commit is ours because the report arrived with no PR.
+
+⚠ The hint stays advisory. A `permissionDecision: deny` would reach the model
+too, and would break Read-before-Edit.
+
+**Sibling checked and NOT fixed here: `hook-precompact` has the same defect**
+with a different shape. It writes `{"systemMessage": ...}` on PreCompact, an
+event that has no `additionalContext` and discards `systemMessage`. Filed as
+#131; the remedy is a `SessionStart` hook on `source=compact`, which is new
+wiring, not a one-line channel change.
+
+`tests/test_jdoc_129_hint_channel.py` (6): the JSON shape, nothing on stderr,
+no deny, and a source-level ratchet against `print(..., file=sys.stderr)` in
+`run_pretooluse`. Ratchet proven non-vacuous: with the stderr print put back,
+2 of 6 fail. Three existing `test_hooks.py` assertions moved from `.err` to the
+parsed `additionalContext`.
+
+### Fixed - #130: Stage-A candidate pruning admitted the most common query term first (@whakomatic)
+
+`PostingIndex.candidates` walked query terms in the order typed and returned
+the moment it held `MAX_CANDIDATES` (200) ids. On a corpus where one term's
+posting list exceeds the cap, that term filled every slot before any other
+term was consulted, so the one section carrying the rare, identifying terms
+never reached BM25 at all. BM25 can only re-rank what Stage A admitted; the
+section did not rank low, it was absent. Measured by the contributor on a
+4,970-section index: "body relative absolute" missed the target entirely,
+"relative absolute body" put it at rank 1, and across 60 targets the hit rate
+was 0% with the common word leading and 100% with it trailing.
+
+Postings are now admitted **rarest term first**, ties broken on the term so
+the order is total. Whole lists are taken while they fit; the first list that
+overflows fills the remaining room via `heapq.nsmallest` and the loop stops,
+since every later term is at least as common. The `nsmallest` fill also removes
+a hash-seed dependence that was already there: the old set iteration could
+return different candidates in two processes for the same query.
+
+⚠ **Raising the cap is not the alternative.** In query order the cap must
+exceed the document frequency of the most common word a user might type, and
+that grows with the corpus. Below the line the target is never admitted, above
+it always is, so it was an ordering defect, not a budget one.
+
+⚠ **The replay gate could not see it.** The self-fixture has 570 sections and
+its most frequent term appears in 105, well under the cap, so old and new code
+admit identical candidates there. The regression tests build a 500-section
+corpus so one term overflows.
+
+Known limitation, from the PR: after an overflow the loop stops, so a longer
+list that overlaps the admitted set heavily is skipped even if it would have
+fitted. Ordering by marginal gain is a separate change.
+
+`tests/test_prune_rarest_first.py` (6), including a three-interpreter
+`PYTHONHASHSEED` determinism check, which an in-process loop cannot express
+because the seed is fixed before the test body runs.
+
+Suite **2739 / 6** locally, **2734 / 11** under the CI-equivalent sync; `ruff check src/` clean. No tool,
+schema or INDEX_VERSION change. `search_sections` results can change on
+corpora where a query term's document frequency exceeds 200: sections that were
+previously never scored now are.
+
 ## [1.139.1] - 2026-09-01 - the Sonnet rate was written for a date that never arrived
 
 ### Fixed - the Sonnet rate in `PRICING` was written for a date that never arrived

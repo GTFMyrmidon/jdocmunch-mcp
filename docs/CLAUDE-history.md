@@ -21,6 +21,260 @@ should already be in the brief; if it is not, that is the bug.
 this file.** Those are the only facts in it with a guaranteed expiry date, and
 several entries below carry them. Run the query.
 
+## Rotated 2026-09-19 — v1.139.1
+
+Moved out of `CLAUDE.md` on 2026-09-19 when v1.142.0 became a fourth dated
+section. What it earned was lifted into "Lessons from rotated entries" first:
+a constant written for a future date, a family key inheriting one member's
+price, copies that agree while wrong together, and a pin that must say whether
+it vouches.
+
+## v1.139.1 — a rate written for a date that never arrived
+
+**`token_tracker.PRICING["claude_sonnet"]` was $3.00/1M input tokens.** Claude
+Sonnet 5 is **$2.00/1M** and always has been: it launched at $2.00 with a rise
+to $3.00 scheduled for **2026-09-01**, and Anthropic cancelled that increase the
+day before it would have applied. $3.00 is the superseded Sonnet 4.6's rate —
+exactly what the line's comment ("Claude Sonnet 5 / 4.6") conflated.
+
+⚠⚠ **A constant written for a FUTURE date is wrong for the whole interval
+before it, and reads identically to a stale one.** The header said "As of
+2026-06-24", which made the value look *checked*. It was wrong on that date too.
+**A date on a table is evidence of when someone looked, never of what they saw.**
+
+⚠⚠ **A key that names a FAMILY inherits whichever member's price someone last
+looked at.** Three of the four keys are family names; each comment now names the
+ONE model its rate belongs to. ⚠ **The KEYS are unchanged** — `claude_sonnet` is
+emitted verbatim in the `cost_avoided` block of every retrieval response, so a
+rename is a wire change on 1.x. The model identity goes in the comment.
+
+⚠⚠ **Four copies of this rate exist across the suite and they AGREED WITH EACH
+OTHER while being wrong together**, which is why nothing caught it. Verified
+against the source page's *Base Input Tokens* column, not another copy of the
+table. ⚠ `TOKEN_SAVINGS.md` was the fourth copy here and carried two figures
+DERIVED from the rate (`0.0055` / `0.2830` in the worked `_meta` example) —
+derived literals move when a rate moves and are invisible to a search for the
+rate's name.
+
+⚠ **`gpt5_latest` is UNTOUCHED and the CHANGELOG says so.** Not an Anthropic
+model, no source consulted; pinned at the value it shipped with so a drift is
+visible, not because $10.00 was verified. **Pinning a number is not the same as
+vouching for it, and the pin must say which it is.**
+
+`tests/test_pricing_rates.py` (4). The only prior reference to `PRICING` was a
+key-PRESENCE check (`tests/test_storage.py:259`), so **no test pinned any value**
+and a wrong rate could sit here indefinitely. ⚠ The prices are **restated** from
+the source page, not imported from the module — a pin that reads the value it
+checks asserts nothing. Proven non-vacuous: with $3.00 put back, 3 of 4 fail.
+
+Suite **2722 / 11** under the CI-equivalent sync; `ruff check src/` clean. No
+tool, schema or INDEX_VERSION change; `cost_avoided` VALUES change, keys do not.
+
+## Rotated 2026-09-17 — v1.139.0
+
+Moved out of `CLAUDE.md` on 2026-09-17 when v1.141.0 became a fourth dated
+section, the same day v1.138.0 rotated. What it earned was lifted into
+"Lessons from rotated entries" first: the unstated time basis, weighing the
+surface the client receives, and a tier that is a scope choice rather than a
+token lever.
+
+## v1.139.0 — a token count with no time basis, and a tier that is not a lever
+
+**`schema_tokens_avoided` was published bare.** `get_session_stats` →
+`tool_surface` reported it beside `schema_tokens_visible` /
+`schema_tokens_catalog` with no interval attached, and a reader supplies the
+missing one: **per request.** ⚠⚠ **The schema block is STABLE**, so it is paid
+at full rate roughly once per cache lifetime and at cache-read rates (~0.1x)
+after — jcm measured **86% of baseline input cached**
+(`benchmarks/codex_surface/`) and says in its own words that "N tokens in every
+request" is wrong *and that the repo said exactly that before measuring*. The
+field overstated the cost impact by about an order of magnitude, **in the
+direction that flatters us.** New `schema_tokens_basis` +
+`schema_tokens_basis_note`, from `src/jdocmunch_mcp/schema_basis.py`.
+
+⚠ **The count is NOT discounted.** It answers a real question — payload size —
+and a silently scaled one answers neither that nor the cost question. The fix
+for an unstated basis is a LABEL. (`analyze_perf`'s raw `hit_rate` beside
+`hit_rate_basis` is the same rule.)
+
+⚠⚠ **jcm shipped TWO releases that day and only one was ours.** 1.108.312 is
+this. **1.108.311 — refusing a mid-session tier switch that cannot repay the
+cache it invalidates — CANNOT occur here**: `JDOCMUNCH_TOOL_PROFILE` is read at
+STARTUP, there is no runtime switch, so there is no invalidation to price.
+Porting the gate would be machinery for a mechanism we do not have. A ratchet
+in `tests/test_schema_tokens_basis.py` fails the day
+`notifications/tools/list_changed` appears in `src/` with no pricing helper, and
+names the module to port from. ⚠ It is the ONE new test that passes against the
+unfixed tree, so it is the one that needed proving non-vacuous — proven by
+adding the forbidden call and watching it fire.
+
+⚠ **jdatamunch CAUGHT UP 2026-08-31, both halves** — v1.31.13 stamps the basis
+(`schema_token_basis.py`, singular `token`, not this repo's `schema_basis.py`)
+and measures its tiers in `benchmarks/tier_surface.json`: `core` 65.8% avoided,
+`standard` **5.6%** over three tools. Same verdict as here, a scope bundle
+rather than a token lever. Re-read that repo before quoting this line.
+
+**The tiers are MEASURED for the first time** — `benchmarks/tool_surface/`, a
+regenerable harness plus JSON artifact. At 64 tools / 13,252 schema tokens:
+`core` **−62.08%** (49 tools dropped), `standard` **−9.39%** (8 tools).
+⚠⚠ **`standard` is a SCOPE choice, not a token lever**, and the config surface
+implied otherwise. It stays — deleting a shipped profile breaks a 1.x config —
+and the config comment now says what it does. **A setting that implies a saving
+it does not deliver is the same defect class as an unstated basis.** jcm's
+`standard` measured 9 of 91 tools and 6.7%; same shape in both servers.
+
+⚠⚠ **Weigh what the client RECEIVES, never the catalog filtered by the tier
+bundle.** jcm's first attempt did the latter and was wrong by three tools in
+every tier — it kept a hidden set and dropped force-included ones, pricing a
+surface no client is sent. Here `_ALWAYS_PRESENT_TOOLS` and
+`JDOCMUNCH_DISABLED_TOOLS` both change the answer. New `_build_tools_list()` is
+the ONE producer of the published surface (`list_tools`, the meter and the
+benchmark all route through it) and `_schema_weight` the ONE estimator; the
+closure inside `_tool_surface_stats` is gone. ⚠ `_filter_tools` takes
+`profile_override` so a tier is priced **without switching to it** — answering a
+question about a surface must not mutate the session's.
+
+`tests/test_schema_tokens_basis.py` (9; **8 seen failing against the unfixed
+tree**). No tool, schema or INDEX_VERSION change; additive response keys only.
+
+## Rotated 2026-09-17 — v1.138.0
+
+Moved out of `CLAUDE.md` on 2026-09-17 when v1.140.0 became a fourth dated
+section. What it earned was lifted into "Lessons from rotated entries" first:
+the two-channel verdict over one channel and the transitive union-find trap,
+the withheld count as a defect, the asymmetric size limit, and the wrong-axis
+remedy for JSON indexing.
+
+## v1.138.0 — #129 + #130: a fusion over one channel counted twice, and a 1.25 MB document on the floor
+
+Four findings reported from OUTSIDE this repo, while doc-indexing
+`jcodemunch-mcp` from a jcodemunch session. ⚠ Tracker was clean at the start
+(0 issues, 0 PRs) — re-verified, never transcribed.
+
+**#129 — `find_similar_sections` scored summaries and called them bodies.**
+The description advertised "title + body lexical Jaccard" and there was **no
+body channel**: `body_text = sec.get("summary")` was unconditional, and under
+`use_ai_summaries=False` a summary IS the heading text. So
+`body_tokens == title_tokens` and `0.70 * body + 0.30 * title` weighted one
+input against itself.
+
+⚠⚠ **The finding is not a wrong score, it is a TWO-CHANNEL VERDICT REPORTED
+OVER ONE CHANNEL** — complete with a `dominant_signal` naming which of the two
+won. 8 of 8 clusters on a 955-section corpus were the artifact; the "identical"
+pair was 1,105 bytes of ASCII diagram against a `> **Version note:**` paragraph.
+
+⚠ **The tool's own diff output was the tell it could not read.** Every variant
+returned `body_unique_a: []` AND `body_unique_b: []`. Two sections with
+different byte ranges cannot both be that, so "no unique content on either
+side" and "I did not read either side" were indistinguishable. `differs_by`
+now carries `body_signal`.
+
+⚠ **The cost was MEASURED, because the comment being deleted named a real
+tradeoff.** Reading every examined body: **0.24 s** at the 1000-section cap,
+2.5 s for all 9,507. The obvious optimisation — read only pairs surviving the
+title pre-filter — saves **~6%**, because **899 of 955 sections survive into
+some pair** on a doc set with repetitive headings. Rejected on the measurement,
+not on taste.
+
+⚠⚠ **AN "ALL PAIRS WERE title_only" CAP DOES NOT CLOSE THIS, AND MY FIRST ONE
+WAS THAT CAP.** Union-find merges transitively: two empty `## Architecture`
+stubs (title_only, 1.0) join a cluster holding two real unrelated Architecture
+sections, so the cluster contains a body pair, passes an all-pairs test, and
+takes its 1.0 from the pair that read nothing. The verdict now rests on
+**`evidence_max_score`** — the best pair that actually compared bodies —
+while reported `max_score` stays the true max, so the two numbers together
+show what happened (`max_score: 1.0`, `evidence_max_score: 0.3406`,
+`overlapping_topic`). **Found by re-running the fix on the real corpus, not by
+the tests I had just written.**
+
+⚠ The `title_only` refusal is scoped to the LEXICAL-ONLY path on purpose:
+cosine is a channel that did not come from the title, so refusing there would
+suppress genuine duplicates the embedding channel found. Pinned by a test.
+
+⚠ **Sibling CHECKED and CLEAN**: `search_sections(dedupe=true)` reads
+`retrieval/dedup.py`'s cluster sidecar, which uses real `content`. The defect
+did not reach ranked search.
+
+⚠⚠ **The fixtures were reading site-packages, and so were the PRE-EXISTING
+ones.** `test_find_similar_sections.py` left `use_embeddings` at `"auto"`,
+which enables embeddings whenever an offline provider happens to be installed —
+so this box ran a different program from CI, which installs neither. Measured:
+under `"auto"` the two empty stubs came back at **cosine 1.0** and the guard
+under test never fired. Both files now PIN `use_embeddings=False`.
+**[[feedback_an_assumption_about_the_machine_is_not_a_fixture]], one release
+after v1.137.1 made the same finding about provider probes.**
+
+**#130 — the best retrieval target in the corpus was silently dropped.**
+jcm's `CHANGELOG.md` is 1,252,519 bytes and was **not in the index at all**;
+`index_local` returned `file_count: 124`, `success: true`, `truncated: false`.
+The skip WAS counted and `coverage.skip_counts` WAS persisted — the response
+carried none of it.
+
+⚠⚠ **A count computed and withheld at the one moment the caller could act on
+it is the same defect as not computing it.** `truncated` refers only to the
+`max_files` cap, so it answered a different question truthfully while the
+caller read it as "did I get everything".
+
+⚠ **`truncated` KEEPS its meaning** — changing what a shipped key means is
+forbidden on 1.x. New `coverage_complete` is the field it was being misread as,
+plus `skip_counts` / `skipped_paths` / `skipped_paths_truncated`.
+
+⚠ **`coverage_complete` is keyed on ACTIONABLE skips only.** `gitignored` and
+`unsupported_extension` fire on every real repo (16 and 900 here); keying on
+all of them makes it `false` always, and a signal that always fires hides the
+case it exists for.
+
+⚠⚠ **The disclosure is on ALL FOUR response paths, and the fourth is
+`"No documentation files found"`.** A corpus whose every candidate was dropped
+for size returned that error verbatim — reads as "there is nothing here" when
+the truth is "there is something here and I refused it", and it is the one
+payload with no `file_count` to be suspicious of. Found because a test I wrote
+for something else hit it. A test asserts the count of attach sites.
+
+**`DEFAULT_MAX_FILE_SIZE` 500 KB → 5 MB, overridable via
+`JDOCMUNCH_MAX_FILE_SIZE`.** ⚠ Measured, not guessed: the real 1.25 MB file
+parses in **1.03 s**, **8.3 MB** peak, 1,515 sections at a 565-byte median, so
+the parser was never the constraint. ⚠⚠ **The ASYMMETRY is what made 500 KB
+indefensible, not the absolute value** — the same walk already granted
+`OFFICE_MAX_FILE_SIZE = 25 MB` to `.pdf`/`.docx`, so it accepted a 25 MB
+PowerPoint and refused a 600 KB Markdown file. ⚠ The resolver fails OPEN on
+garbage/`0`/negatives (a typo must not shrink a corpus) and resolves at CALL
+time — a default argument binds the constant at import, so an env var set
+afterwards is read and ignored.
+
+Measured end to end: **9,624 → 11,138 sections**, 4.7 s. ⚠ The disclosure
+surfaced a SECOND unfiled skip on its first run — `office_extra_not_installed:
+1`, `jcodemunch_whitepaper.pdf` — persisted and unreported the whole time.
+
+**sdist allowlist guard PORTED** (`tests/test_sdist_exclusions.py`, 10). This
+repo had NEITHER the canaries nor the allowlist; `pyproject.toml` excluded only
+`.claude/`. ⚠ The canary half proves NAMED bad paths are absent and a scratch
+file has no name to plant a canary under — jcm 1.108.305 shipped `relnotes.md`
+that way. ⚠ The reverse assertion (the allowlist names nothing that stopped
+shipping) is what catches a wholesale copy of jcm's list, which carries
+`uv.lock`/`Dockerfile` and two dozen root docs this repo does not have. ⚠ Also
+a per-member size budget — `tests/infographic.png` was 87% of this sdist until
+1.123.2 and no guard could see it. ⚠⚠ **jdatamunch was CHECKED and is missing
+the same guard**; ported there separately.
+
+⚠⚠ **JSON indexing INVESTIGATED and DELIBERATELY NOT CHANGED — the obvious
+remedy is wrong and the measurement says so.** The corpus was 88.2% `.json`
+sections, 80.8% from `benchmarks/`. General JSON indexing IS intended
+(`parser/json_parser.py` exists for it; OpenAPI is a separate sniffed path).
+**A `benchmarks/` skip drops 20 GENUINE documentation files** —
+`METHODOLOGY.md`, `REPRODUCING.md`, `whitepaper.md`, four `README.md`s — to
+remove 37 data files: **the directory is the wrong axis, the split is by file
+KIND.** ⚠ `SKIP_PATTERNS` is matched as a path SUBSTRING, so the entry would
+also take `docs/benchmarks/`. ⚠ Skip-name authority checked for the
+fourth-undeclared-copy problem and is CLEAN: `tools/_constants.py`, imported by
+`index_local` and `index_repo`, defined nowhere else. `extra_ignore_patterns`
+stays the mechanism.
+
+Tests `tests/test_jdoc_129_body_channel.py` (20; **11 fail / 9 pass** against
+the full pre-fix behaviour) and `tests/test_jdoc_130_oversize_disclosure.py`
+(21). Suite **2700 / 6**; `ruff check src/` clean. No tool, schema or
+INDEX_VERSION change.
+
 ## Rotated 2026-08-30 — v1.137.0
 
 Moved out of `CLAUDE.md` when v1.139.0 made a fourth dated section. What it

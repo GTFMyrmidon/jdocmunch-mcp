@@ -687,7 +687,7 @@ def _all_tools() -> list[Tool]:
     return [
         Tool(
             name="index_local",
-            description="Index a local folder containing documentation files (.md, .txt, .rst; plus .pdf/.docx/.pptx/.epub when the optional [office] extra is installed — converted to Markdown locally). Parses by heading hierarchy into sections for efficient retrieval. An already-indexed source is recognized before storage is chosen: the established handle is reused (or refreshed), an explicit conflicting name returns a conflict instead of creating a duplicate index, and multiple equivalent legacy indexes return bounded ambiguity. Embeddings auto-enable when a provider is configured (GOOGLE_API_KEY, OPENAI_API_KEY, openai-compatible + JDOCMUNCH_OPENAI_COMPAT_URL + JDOCMUNCH_OPENAI_COMPAT_MODEL, or sentence-transformers). Coverage: `coverage_complete` answers 'did I get everything', with `skip_counts` / `skipped_paths` naming what was dropped and why; `truncated` answers ONLY the max_files cap and is false when a file was dropped for any other reason. Files over the per-file size cap (5MB default, JDOCMUNCH_MAX_FILE_SIZE) are reported under skip_counts.oversize.",
+            description="Index a local folder containing documentation files (.md, .txt, .rst; plus .pdf/.docx/.pptx/.epub when the optional [office] extra is installed — converted to Markdown locally). Parses by heading hierarchy into sections for efficient retrieval. An already-indexed source is recognized before storage is chosen: the established handle is reused (or refreshed), an explicit conflicting name returns a conflict instead of creating a duplicate index, and multiple equivalent legacy indexes return bounded ambiguity. Embeddings auto-enable when a provider is configured (GOOGLE_API_KEY, OPENAI_API_KEY, openai-compatible + JDOCMUNCH_OPENAI_COMPAT_URL + JDOCMUNCH_OPENAI_COMPAT_MODEL, or sentence-transformers). Coverage: `coverage_complete` answers 'did I get everything', with `skip_counts` / `skipped_paths` naming what was dropped and why; `truncated` answers ONLY the max_files cap and is false when a file was dropped for any other reason. Files over the per-file size cap (5MB default, JDOCMUNCH_MAX_FILE_SIZE) are reported under skip_counts.oversize. Response includes a `changes` list with one {doc_path, status: new|changed|deleted, mtime} entry per file, sorted newest first and capped at 50 entries, useful for a 'recently edited' map at session start. `changes_total` is the uncapped count and `changes_truncated` is true when entries were dropped. Deleted files sort last, so the cap drops them first: the `new`/`changed`/`deleted` count fields are the authority, not the length of `changes`.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -3842,7 +3842,13 @@ def main(argv: Optional[list] = None):
     # --- hook-precompact ---
     subparsers.add_parser(
         "hook-precompact",
-        help="PreCompact hook: session snapshot before context compaction (reads stdin)",
+        help="PreCompact hook: no-op kept for installed settings.json entries (#131; reads stdin)",
+    )
+
+    # --- hook-sessionstart (#131) ---
+    subparsers.add_parser(
+        "hook-sessionstart",
+        help="SessionStart hook: restore the doc session snapshot after compact/resume/fork (reads stdin)",
     )
 
     # --- hook-reindex ---
@@ -3999,6 +4005,10 @@ def main(argv: Optional[list] = None):
     if args.command == "hook-precompact":
         from .cli.hooks import run_precompact
         sys.exit(run_precompact())
+
+    if args.command == "hook-sessionstart":
+        from .cli.hooks import run_sessionstart
+        sys.exit(run_sessionstart())
 
     if args.command == "hook-reindex":
         from .cli.hooks import run_hook_reindex

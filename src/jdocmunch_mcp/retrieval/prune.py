@@ -14,10 +14,22 @@ Two-stage retrieval flow:
 The posting list is built once per DocIndex instance, lazily on first
 search. No persistence — rebuild cost on a 5k-section index is ~50ms.
 
-The cap (default 200) is the union size; we collect across all postings
-until we hit the cap, then stop. With multi-token queries we sample early
-posting lists more deeply than later ones — fine for retrieval quality,
-since BM25 will re-rank anyway.
+The cap (default 200) is the union size, and postings are admitted **rarest
+term first**, which is the whole of the cap's correctness.
+
+Collecting in query order instead stopped as soon as the cap was full, so more
+common terms could take the whole budget: the candidate set became a histogram
+of the corpus's most frequent term rather than a search, and the rare term that
+identifies the section got whatever was left over, usually nothing. BM25 can
+only re-rank what Stage A let through, so a section crowded out that way did
+not score low; it was not scored at all. The result set depended on word ORDER,
+and it degraded as a corpus grew, since document frequency rises with the
+corpus and more terms reach the cap.
+
+Raising the cap is not the alternative: in query order it would have to
+exceed the document frequency of the most common word a user might type, and
+that frequency grows with the corpus, so the cap would have to grow with it.
+An ordering defect, not a budget one.
 
 Falls back to full-corpus scan when the query has zero in-vocabulary terms
 (rare; usually means a typo).
@@ -25,6 +37,7 @@ Falls back to full-corpus scan when the query has zero in-vocabulary terms
 
 from __future__ import annotations
 
+import heapq
 from typing import Iterable, Optional
 
 from .tokenize import tokenize
@@ -101,19 +114,37 @@ class PostingIndex:
         if not terms:
             return None
 
-        out: set[str] = set()
-        any_hit = False
-        for term in terms:
+        # Rarest first. `dict.fromkeys` dedupes a repeated term while keeping a
+        # stable order for the tiebreak below.
+        buckets: list[tuple[int, str, set[str]]] = []
+        for term in dict.fromkeys(terms):
             postings = self.postings.get(term)
-            if postings is None:
-                continue
-            any_hit = True
-            for sid in postings:
-                out.add(sid)
-                if len(out) >= max_candidates:
-                    return out
-        if not any_hit:
+            if postings is not None:
+                buckets.append((len(postings), term, postings))
+        if not buckets:
             return None
+        buckets.sort(key=lambda b: (b[0], b[1]))
+
+        out: set[str] = set()
+        for size, _term, postings in buckets:
+            # A posting list larger than the whole cap cannot fit beside anything,
+            # so skip the union rather than materializing it.
+            if size <= max_candidates:
+                merged = out | postings
+                if len(merged) <= max_candidates:
+                    out = merged
+                    continue
+            # This term overflows the budget, and every later one is at least as
+            # common, so nothing after it could fit either. Fill the remaining
+            # room deterministically: set iteration order follows the per-process
+            # string hash seed, so without this the same query could return
+            # different sections in two processes. `nsmallest` avoids sorting a
+            # posting list that may be the whole corpus.
+            room = max_candidates - len(out)
+            if room > 0:
+                out.update(heapq.nsmallest(
+                    room, (sid for sid in postings if sid not in out)))
+            break
         return out
 
 
