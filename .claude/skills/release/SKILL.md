@@ -24,6 +24,17 @@ deltas that apply HERE are:
 | Step 2c command | `uv sync --locked --group dev --extra watch --python 3.13` | **`uv sync --group dev --python 3.13`** then `uv run --python 3.13 pytest tests/ -q` |
 | Skip count | 19–26 | **11** under the CI-equivalent sync (6 locally with `PYTHONPATH=src`) |
 | `mcpb/manifest.json` | generated, gitignored | same — generated, do not edit |
+| Step 7 default route | `!` device flow, typed by jjg | **TOKEN ROUTE, run by the agent from its own shell**: `cd /c/MCPs/jdocmunch-mcp && GITHUB_TOKEN="" /c/Users/j/mcp-publisher.exe login github --token "$(GITHUB_TOKEN="" gh auth token)" && /c/Users/j/mcp-publisher.exe publish`. The `!` device flow below WORKS and is the FALLBACK |
+
+⚠⚠ **The step 7 row overrides the verbatim text's "THE DEFAULT ROUTE FOR THIS
+STEP".** The device flow costs jjg a browser round trip and died once with
+`incorrect_device_code` (1.141.0, 2026-09-17); the token route published first
+try from the agent shell the same day. On 2026-09-19 (1.142.0) the device flow
+was handed over anyway because the verbatim line was followed and this table
+had no row. It worked, which is why it stays as the fallback. ⚠ The method must
+be `github` — `github-oidc` has no `--token` flag. ⚠ If `login` or `publish`
+TIMES OUT rather than 401s, check the registry host is reachable before
+re-authenticating; that is not a credential problem.
 
 ⚠⚠ **Step 2c's command is BOUND**: `tests/test_brief_bindings.py` ties it to
 `.github/workflows/test.yml`, so copying jcm's flags here turns CI red rather
