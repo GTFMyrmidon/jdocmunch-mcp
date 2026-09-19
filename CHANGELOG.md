@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### Added - #132: `index_local` returns the change set it already computed (whakomatic)
+
+Contributed by **whakomatic**, who wrote the feature, the tests and the cap.
+
+Change detection produces the new, changed and deleted file lists on every
+`index_local` call, and the discovery walk reads each file's modification
+time. The response reduced both to three counts, so a caller wanting a
+"recently edited" view at session start had to walk the tree again. The
+response now carries what was already in hand:
+
+- `changes`: one `{doc_path, status, mtime}` entry per affected file. `status`
+  uses the same `new` / `changed` / `deleted` words as the count fields.
+  `mtime` is ISO 8601 local time with no zone, the same convention as
+  `indexed_at`, and `null` for a deleted file. Sorted newest first, entries
+  with no `mtime` after the dated ones, `doc_path` breaking ties.
+- `changes_total`: the uncapped count.
+- `changes_truncated`: true when entries were dropped.
+
+All three keys are present on every success shape: a full index (every file is
+`new`), an incremental pass, and the "No changes detected" return, which emits
+`[]`, `0` and `false` so a caller never branches on presence.
+
+**The list is capped at 50 (`CHANGES_CAP`), and the cap was settled before
+merge on purpose.** The first version of the PR returned every file. Measured
+on this repository, 315 files on a full index: `changes` was 39,755 bytes of a
+41,129-byte response. With the cap the same response is 7,673 bytes. The same
+response already caps `files` at 20 for the same reason, and on a full index
+the list tells the caller nothing per file, since every entry is `new`. A
+field that ships on 1.x returning everything cannot later start returning 50
+without changing behaviour for whoever read it as complete, so the bound had
+to arrive with the field.
+
+The cap is a plain head cut and deleted entries sort last, so deletions are
+dropped first. The `new` / `changed` / `deleted` counts are the authority, not
+the length of `changes`; the tool description says so where an agent reads it.
+
+Internal: `discover_doc_files` returns a fourth value, the mtimes it already
+read, and `_resolve_explicit_paths` returns them as a fourth value too. Both
+are module-level helpers in `tools/index_local.py` with no callers outside it;
+`tools/index_repo.py` has a function of the same name that is a different
+function and is unchanged. No tool, schema, storage or `INDEX_VERSION` change;
+every existing `index_local` response key is still present, asserted per shape
+in `tests/test_file_recency.py` (8). `index_repo` and `index_file` responses
+are unchanged.
+
 ## [1.141.0] - 2026-09-17 - the snapshot moves to the event that can deliver it
 
 ### Fixed - #131: the PreCompact snapshot went into a field Claude Code discards
