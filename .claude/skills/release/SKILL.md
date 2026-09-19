@@ -8,8 +8,10 @@ description: Publishing a jMunch release (jcodemunch-mcp, jdocmunch-mcp, jdatamu
 ## ⚠⚠ READ FIRST — this file is jcodemunch-mcp's copy, kept VERBATIM
 
 It was copied here 2026-09-01 because **jdoc had no copy at all** and a release
-was attempted without it. `.claude/skills/` is gitignored in jcm, so the skill
-is MACHINE-LOCAL and vanishes on any other box — which is what CLAUDE.md's
+was attempted without it. At that time `.claude/skills/` was gitignored in jcm and the
+skill was MACHINE-LOCAL (⚠ no longer: jcm TRACKS its copy as of 2026-09-04, and
+a third, untracked suite copy sits at `C:\MCPs\.claude\skills\release\`) —
+which is what CLAUDE.md's
 "Release: the two steps that are only written down here" section exists to
 survive. **Kept verbatim on purpose:** two copies that drift silently are worse
 than one copy plus an explicit delta list. Everything below is jcm's text; the
@@ -24,17 +26,15 @@ deltas that apply HERE are:
 | Step 2c command | `uv sync --locked --group dev --extra watch --python 3.13` | **`uv sync --group dev --python 3.13`** then `uv run --python 3.13 pytest tests/ -q` |
 | Skip count | 19–26 | **11** under the CI-equivalent sync (6 locally with `PYTHONPATH=src`) |
 | `mcpb/manifest.json` | generated, gitignored | same — generated, do not edit |
-| Step 7 default route | `!` device flow, typed by jjg | **TOKEN ROUTE, run by the agent from its own shell**: `cd /c/MCPs/jdocmunch-mcp && GITHUB_TOKEN="" /c/Users/j/mcp-publisher.exe login github --token "$(GITHUB_TOKEN="" gh auth token)" && /c/Users/j/mcp-publisher.exe publish`. The `!` device flow below WORKS and is the FALLBACK |
+| Step 7 | retired path; `release.yml` publishes (hand-finish only) | **LIVE path, every release.** Token login run by the agent, as the body's step 7 now says; `<repo>` is `jdocmunch-mcp` |
 
-⚠⚠ **The step 7 row overrides the verbatim text's "THE DEFAULT ROUTE FOR THIS
-STEP".** The device flow costs jjg a browser round trip and died once with
-`incorrect_device_code` (1.141.0, 2026-09-17); the token route published first
-try from the agent shell the same day. On 2026-09-19 (1.142.0) the device flow
-was handed over anyway because the verbatim line was followed and this table
-had no row. It worked, which is why it stays as the fallback. ⚠ The method must
-be `github` — `github-oidc` has no `--token` flag. ⚠ If `login` or `publish`
-TIMES OUT rather than 401s, check the registry host is reachable before
-re-authenticating; that is not a credential problem.
+⚠ **Step 7's body was RE-SYNCED to jcm's text on 2026-09-19**, so it needs no
+override row. Until then this copy carried jcm's 2026-09-01 wording, which named
+a `!` Git Bash device flow as the default; jcm replaced that on 2026-09-02 with
+a single cmd.exe line and nobody ported it. 1.142.0 handed the stale line over.
+The body now reads: token login by the agent first, the cmd.exe line as the
+fallback. **"Kept verbatim" is a claim about a DATE** — diff this file's body
+against jcm's before trusting it, because nothing here asserts they still match.
 
 ⚠⚠ **Step 2c's command is BOUND**: `tests/test_brief_bindings.py` ties it to
 `.github/workflows/test.yml`, so copying jcm's flags here turns CI red rather
@@ -169,6 +169,24 @@ GITHUB_TOKEN="" gh release create vX.Y.Z dist/*X.Y.Z* --repo jgravelle/<repo> --
 #    command, run from the repo root (publish reads server.json from the CWD).
 #    The device flow blocks on a browser and its prompt does not surface from an
 #    agent shell, so jjg runs this in-session with the `!` prefix.
+#    ⚠⚠ **DEFAULT ROUTE: THE TOKEN LOGIN, RUN BY THE AGENT AS A TOOL CALL. jjg
+#    TYPES NOTHING** (ported from jdocmunch-mcp's delta table, 2026-09-19).
+#    Passing the existing gh token skips the device flow entirely, so nothing
+#    blocks on a browser and the agent shell can run it:
+#        cd /c/MCPs/<repo> && GITHUB_TOKEN="" /c/Users/j/mcp-publisher.exe login github --token "$(GITHUB_TOKEN="" gh auth token)" && /c/Users/j/mcp-publisher.exe publish
+#    Measured in jdoc: published first try from the agent shell for 1.141.0
+#    (2026-09-17), the same day a handed-over device flow died with
+#    `incorrect_device_code`. 1.142.0 (2026-09-19) handed the device flow over
+#    anyway because this block named no other route; it worked, and cost jjg a
+#    browser round trip for nothing.
+#    ⚠ The method must be `github`. `github-oidc` has NO `--token` flag -- it
+#    prints the `login` usage block and EXITS 0, so it reads as a usage error.
+#    ⚠ A TIMEOUT IS NOT AN EXPIRED TOKEN. If `login` or `publish` dies on
+#    `dial tcp ... failed to respond`, check the registry host is reachable
+#    before re-authenticating; re-logging in burns the five minutes on the
+#    wrong problem.
+#    **EVERYTHING BELOW ABOUT WHAT jjg TYPES IS THE FALLBACK**, for when the
+#    token route fails for a reason that is not a timeout.
 #    ⚠⚠ THE DEV PLATFORM IS WINDOWS. `~` IS NOT A PATH HERE. cmd.exe treats it as
 #    a literal directory name and fails with "The system cannot find the path
 #    specified" -- 2026-08-13, mid-release, because this line used to read
@@ -180,22 +198,20 @@ GITHUB_TOKEN="" gh release create vX.Y.Z dist/*X.Y.Z* --repo jgravelle/<repo> --
 #    line does not need: there is ONE dev box and the binary is at
 #    C:\Users\j\mcp-publisher.exe. Pick the line matching the prompt you are
 #    actually at:
-#    ⚠⚠ **THE `!` PREFIX IS GIT BASH, NOT cmd.exe AND NOT PowerShell.** This
-#    block says "jjg runs this in-session with the `!` prefix" nine lines up and
-#    then offered ONLY Windows-native forms -- a contradiction that costs a turn
-#    every time. Measured 2026-09-01 on the jmunch-mcp upload: the cmd.exe line
-#    was handed over for a `!` prompt and died on `cd: too many arguments`,
-#    because `/d` is a cmd.exe flag that bash reads as a second argument.
-#    ⚠⚠ **PICK THE FORM BY THE PROMPT, NOT BY THE OPERATING SYSTEM.** "The dev
-#    platform is Windows" is true and is NOT the discriminator: `!` runs bash ON
-#    Windows. The rule about no `~` and no `$env:USERPROFILE` still holds for the
-#    two native forms; the bash form uses /c/ paths BECAUSE it is bash.
-#      `!` prefix, in-session (Git Bash) -- THE DEFAULT ROUTE FOR THIS STEP:
-#        cd /c/MCPs/<repo> && "/c/Users/j/mcp-publisher.exe" login github && "/c/Users/j/mcp-publisher.exe" publish
-#      cmd.exe (jjg's own terminal window):
+#    ⚠⚠ **GIVE THE cmd.exe FORM. ONE FORM. NO MENU.** jjg is NEVER at a Bash
+#    prompt -- stated flatly 2026-09-02 (*"We've danced this dance a thousand
+#    times"*) after this block's `/c/...` "default route" was handed over and
+#    died on "The system cannot find the path specified".
+#    ⚠⚠ **THE `!` PREFIX RUNS GIT BASH, AND THAT IS NOT THE RULE.** The
+#    2026-09-01 revision reasoned from the mechanism -- `!` is bash, so write
+#    bash -- and inverted the practice, because the premise it needed was which
+#    prompt jjg ACTUALLY USES, and nobody had asked. **A mechanism is not a
+#    habit.** If a line must genuinely run through `!`, that is a tool call to
+#    make, not a paste to hand over.
+#    ⚠ Offering three labelled forms is not thoroughness; it is the indecision
+#    that picked the wrong one. Delete the alternatives.
+#      THE LINE (cmd.exe; `/d` because he will be in another repo's directory):
 #        cd /d C:\MCPs\<repo> && "C:\Users\j\mcp-publisher.exe" login github && "C:\Users\j\mcp-publisher.exe" publish
-#      PowerShell (jjg's own terminal window):
-#        cd C:\MCPs\<repo>; & "C:\Users\j\mcp-publisher.exe" login github; & "C:\Users\j\mcp-publisher.exe" publish
 #    ⚠ `login` alone is NOT a valid invocation -- the auth method is a required
 #    argument, so it must be `login github`.
 #    ⚠ Then VERIFY against the live API - the CLI checkmark is not proof.

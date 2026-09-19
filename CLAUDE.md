@@ -405,10 +405,16 @@ descendant-inclusive, every one of those sums silently starts double-counting.
 ## Release: the two steps that are only written down here
 
 ⚠⚠ **The full checklist lives in the `release` skill, which is now TRACKED
-HERE at `.claude/skills/release/SKILL.md` (2026-09-01).** It is still
-GITIGNORED and therefore MACHINE-LOCAL in jcodemunch-mcp, which is where this
-copy came from — verbatim, plus a marked delta block, because two copies that
+HERE at `.claude/skills/release/SKILL.md` (2026-09-01).** It was copied from
+jcodemunch-mcp — verbatim, plus a marked delta block, because two copies that
 drift silently are worse than one copy with an explicit delta list.
+⚠⚠ **It drifted silently anyway, within a day.** jcm rewrote step 7 on
+2026-09-02 and nobody ported it; 1.142.0 (2026-09-19) handed over the stale
+line. Re-synced that day. ⚠ jcm now TRACKS its copy (2026-09-04) and its
+publish steps are superseded by its `release.yml`; a THIRD, untracked copy sits
+at `C:\MCPs\.claude\skills\release\`. **Three copies, no test binding any two**
+— diff this file's body against jcm's before a release rather than trusting
+"verbatim".
 
 ⚠⚠ **The two items below STAY restated here, and that is not redundancy.**
 Each has already cost a real incident, and a skill file is loaded only when
